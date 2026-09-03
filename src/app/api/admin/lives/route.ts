@@ -1,236 +1,211 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { checkRateLimit, sanitizeInput } from '@/lib/security'
+import { z } from 'zod'
+import { createServerGuards } from '@/lib/auth/server-guards'
+import { checkRateLimit } from '@/lib/security'
+import { createAdminClient } from '@/lib/supabase/admin'
 
-// GET: Fetch all lives (any authenticated user)
-export async function GET(request: Request) {
+const liveIdSchema = z.string().uuid()
+const scheduledAtSchema = z.string().datetime({ offset: true })
+const durationSchema = z.number().int().min(1).max(480)
+const replayUrlSchema = z.union([z.string().url(), z.literal('')])
+
+const createLiveSchema = z.object({
+  title: z.string().trim().min(1),
+  description: z.string().trim().default(''),
+  scheduled_at: scheduledAtSchema,
+  duration_minutes: durationSchema.default(60),
+}).strict()
+
+const updateLiveSchema = z.object({
+  id: liveIdSchema,
+  title: z.string().trim().min(1).optional(),
+  description: z.string().trim().optional(),
+  scheduled_at: scheduledAtSchema.optional(),
+  duration_minutes: durationSchema.optional(),
+  is_live: z.boolean().optional(),
+  replay_url: replayUrlSchema.optional(),
+}).strict().refine(
+  (value) => Object.keys(value).some((key) => key !== 'id'),
+  { message: 'At least one update field is required' },
+)
+
+const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, is_live, viewer_count, created_at'
+const CREDENTIAL_COLUMNS = 'live_id, rtmp_url, stream_key'
+
+function rateLimit(request: Request, operation: string) {
   const ip = request.headers.get('x-forwarded-for') || 'unknown'
-  const rateLimitResult = checkRateLimit(`lives-get-${ip}`, 60, 60000)
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
+  const result = checkRateLimit(`lives-${operation}-${ip}`, operation === 'get' ? 60 : 20, 60000)
+  if (result.allowed) return null
+
+  return NextResponse.json(
+    { error: 'Too many requests' },
+    { status: 429, headers: { 'X-RateLimit-Remaining': '0' } },
+  )
+}
+
+async function requireCanonicalAdmin() {
+  try {
+    const { createClient } = await import('@/lib/supabase/server')
+    const serverClient = await createClient()
+    const { data: { user }, error } = await serverClient.auth.getUser()
+    await createServerGuards(user, error).requireAdmin()
+    return null
+  } catch (error: unknown) {
+    const status = error && typeof error === 'object' && 'status' in error
+      ? (error as { status: number }).status
+      : 500
+    return NextResponse.json({ error: 'Forbidden' }, { status })
+  }
+}
+
+async function parseJson(request: Request) {
+  try {
+    return { body: await request.json() as unknown, response: null }
+  } catch {
+    return {
+      body: null,
+      response: NextResponse.json({ error: 'Invalid request body' }, { status: 400 }),
+    }
+  }
+}
+
+export async function GET(request: Request) {
+  const limited = rateLimit(request, 'get')
+  if (limited) return limited
+
+  const forbidden = await requireCanonicalAdmin()
+  if (forbidden) return forbidden
+
+  try {
+    const admin = createAdminClient()
+    const { data: lives, error: livesError } = await admin
+      .from('lives')
+      .select(LIVE_COLUMNS)
+      .order('scheduled_at', { ascending: false })
+
+    if (livesError) {
+      return NextResponse.json({ error: 'Failed to fetch lives' }, { status: 500 })
+    }
+
+    const liveIds = (lives ?? []).map((live) => live.id)
+    const { data: credentials, error: credentialsError } = await admin
+      .from('live_credentials')
+      .select(CREDENTIAL_COLUMNS)
+      .in('live_id', liveIds)
+
+    if (credentialsError) {
+      return NextResponse.json({ error: 'Failed to fetch lives' }, { status: 500 })
+    }
+
+    const credentialsByLive = new Map(
+      (credentials ?? []).map((credential) => [credential.live_id, credential]),
     )
-  }
+    const authorizedLives = (lives ?? []).map((live) => {
+      const credential = credentialsByLive.get(live.id)
+      return {
+        ...live,
+        rtmp_url: credential?.rtmp_url ?? '',
+        stream_key: credential?.stream_key ?? '',
+      }
+    })
 
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const { data: lives, error } = await supabase
-    .from('lives')
-    .select('*')
-    .order('scheduled_at', { ascending: false })
-
-  if (error) {
+    return NextResponse.json({ lives: authorizedLives })
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch lives' }, { status: 500 })
   }
-
-  // For non-admin users, don't expose sensitive fields
-  const safeLives = (lives || []).map((live: Record<string, unknown>) => {
-    const { stream_key, rtmp_url, ...safeLive } = live
-    return safeLive
-  })
-
-  return NextResponse.json({ lives: safeLives })
 }
 
-// POST: Create new live (admin only)
 export async function POST(request: Request) {
-  const ip = request.headers.get('x-forwarded-for') || 'unknown'
-  const rateLimitResult = checkRateLimit(`lives-post-${ip}`, 20, 60000)
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    )
+  const limited = rateLimit(request, 'post')
+  if (limited) return limited
+
+  const forbidden = await requireCanonicalAdmin()
+  if (forbidden) return forbidden
+
+  const { body, response } = await parseJson(request)
+  if (response) return response
+
+  const parsed = createLiveSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'Invalid live data' }, { status: 400 })
   }
 
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile || profile.role !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  }
-
-  let body;
   try {
-    body = await request.json()
+    const { data: live, error } = await createAdminClient()
+      .from('lives')
+      .insert(parsed.data)
+      .select(LIVE_COLUMNS)
+      .single()
+
+    if (error) {
+      return NextResponse.json({ error: 'Failed to create live' }, { status: 500 })
+    }
+
+    return NextResponse.json({ live }, { status: 201 })
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
-  }
-
-  const { title, description, scheduled_at, duration_minutes } = body
-
-  if (!title || !scheduled_at) {
-    return NextResponse.json({ error: 'Title and scheduled_at are required' }, { status: 400 })
-  }
-
-  // Validate scheduled_at is a valid ISO date
-  const parsedDate = new Date(scheduled_at)
-  if (isNaN(parsedDate.getTime())) {
-    return NextResponse.json({ error: 'Invalid scheduled_at date format' }, { status: 400 })
-  }
-
-  // Validate duration_minutes if provided
-  if (duration_minutes !== undefined && (typeof duration_minutes !== 'number' || duration_minutes < 1 || duration_minutes > 480)) {
-    return NextResponse.json({ error: 'Duration must be between 1 and 480 minutes' }, { status: 400 })
-  }
-
-  const { data: live, error } = await supabase
-    .from('lives')
-    .insert({
-      title: sanitizeInput(title),
-      description: sanitizeInput(description || ''),
-      scheduled_at,
-      duration_minutes: duration_minutes || 60,
-    })
-    .select()
-    .single()
-
-  if (error) {
     return NextResponse.json({ error: 'Failed to create live' }, { status: 500 })
   }
-
-  return NextResponse.json({ live }, { status: 201 })
 }
 
-// PUT: Update live (admin only)
 export async function PUT(request: Request) {
-  const ip = request.headers.get('x-forwarded-for') || 'unknown'
-  const rateLimitResult = checkRateLimit(`lives-put-${ip}`, 20, 60000)
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    )
+  const limited = rateLimit(request, 'put')
+  if (limited) return limited
+
+  const forbidden = await requireCanonicalAdmin()
+  if (forbidden) return forbidden
+
+  const { body, response } = await parseJson(request)
+  if (response) return response
+
+  const parsed = updateLiveSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'Invalid live data' }, { status: 400 })
   }
 
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile || profile.role !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  }
-
-  let body;
+  const { id, ...updates } = parsed.data
   try {
-    body = await request.json()
+    const { data: live, error } = await createAdminClient()
+      .from('lives')
+      .update(updates)
+      .eq('id', id)
+      .select(LIVE_COLUMNS)
+      .single()
+
+    if (error) {
+      return NextResponse.json({ error: 'Failed to update live' }, { status: 500 })
+    }
+
+    return NextResponse.json({ live })
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
-  }
-
-  const { id, title, description, scheduled_at, duration_minutes, is_live, replay_url } = body
-
-  if (!id) {
-    return NextResponse.json({ error: 'Live ID is required' }, { status: 400 })
-  }
-
-  // Validate ID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-  if (!uuidRegex.test(id)) {
-    return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 })
-  }
-
-  // Only allow specific fields to be updated (prevent mass assignment)
-  const updates: Record<string, unknown> = {}
-  if (title !== undefined) updates.title = sanitizeInput(title)
-  if (description !== undefined) updates.description = sanitizeInput(description)
-  if (scheduled_at !== undefined) updates.scheduled_at = scheduled_at
-  if (duration_minutes !== undefined) updates.duration_minutes = duration_minutes
-  if (is_live !== undefined) updates.is_live = is_live
-  if (replay_url !== undefined) updates.replay_url = replay_url
-
-  const { data: live, error } = await supabase
-    .from('lives')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .single()
-
-  if (error) {
     return NextResponse.json({ error: 'Failed to update live' }, { status: 500 })
   }
-
-  return NextResponse.json({ live })
 }
 
-// DELETE: Delete live (admin only)
 export async function DELETE(request: Request) {
-  const ip = request.headers.get('x-forwarded-for') || 'unknown'
-  const rateLimitResult = checkRateLimit(`lives-delete-${ip}`, 20, 60000)
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    )
+  const limited = rateLimit(request, 'delete')
+  if (limited) return limited
+
+  const forbidden = await requireCanonicalAdmin()
+  if (forbidden) return forbidden
+
+  const id = new URL(request.url).searchParams.get('id')
+  const parsedId = liveIdSchema.safeParse(id)
+  if (!parsedId.success) {
+    return NextResponse.json({ error: 'Invalid live ID' }, { status: 400 })
   }
 
-  const supabase = await createClient()
+  try {
+    const { error } = await createAdminClient()
+      .from('lives')
+      .delete()
+      .eq('id', parsedId.data)
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+    if (error) {
+      return NextResponse.json({ error: 'Failed to delete live' }, { status: 500 })
+    }
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile || profile.role !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  }
-
-  const { searchParams } = new URL(request.url)
-  const id = searchParams.get('id')
-
-  if (!id) {
-    return NextResponse.json({ error: 'Live ID is required' }, { status: 400 })
-  }
-
-  // Validate ID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-  if (!uuidRegex.test(id)) {
-    return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 })
-  }
-
-  const { error } = await supabase
-    .from('lives')
-    .delete()
-    .eq('id', id)
-
-  if (error) {
+    return NextResponse.json({ success: true })
+  } catch {
     return NextResponse.json({ error: 'Failed to delete live' }, { status: 500 })
   }
-
-  return NextResponse.json({ success: true })
 }

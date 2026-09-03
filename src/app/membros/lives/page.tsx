@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Video, Calendar, Clock, Play } from 'lucide-react'
 import LivePlayer from '@/components/lives/LivePlayer'
 
 interface Live {
@@ -22,22 +21,22 @@ export default function LivesPage() {
   const [supabase] = useState(() => createClient())
 
   useEffect(() => {
-    fetchLives()
+    const fetchLives = async () => {
+      const { data, error } = await supabase
+        .from('lives')
+        .select('id, title, description, scheduled_at, duration_minutes, replay_url, is_live, viewer_count')
+        .order('scheduled_at', { ascending: false })
+
+      if (!error) {
+        setLives(data || [])
+      }
+      setLoading(false)
+    }
+
+    void fetchLives()
     const interval = setInterval(fetchLives, 30000)
     return () => clearInterval(interval)
-  }, [])
-
-  const fetchLives = async () => {
-    const { data, error } = await supabase
-      .from('lives')
-      .select('*')
-      .order('scheduled_at', { ascending: false })
-
-    if (!error) {
-      setLives(data || [])
-    }
-    setLoading(false)
-  }
+  }, [supabase])
 
   const now = new Date()
   const activeLives = lives.filter(l => l.is_live)

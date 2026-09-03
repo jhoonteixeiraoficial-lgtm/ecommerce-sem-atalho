@@ -1,9 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
-import { Video, Calendar, Clock, Plus, Trash2, Edit3, Radio, Square, ExternalLink, Copy, Check, X, Play } from 'lucide-react'
+import { Video, Calendar, Plus, Trash2, Edit3, Radio, Square, ExternalLink, Copy, Check, X, Play } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 
@@ -21,6 +19,13 @@ interface Live {
   created_at: string
 }
 
+async function loadAdminLives() {
+  const response = await fetch('/api/admin/lives')
+  if (!response.ok) throw new Error('Unable to load lives')
+  const data = await response.json() as { lives: Live[] }
+  return data.lives
+}
+
 export default function AdminLivesPage() {
   const [lives, setLives] = useState<Live[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,8 +36,6 @@ export default function AdminLivesPage() {
   const [replayUrl, setReplayUrl] = useState('')
   const [copied, setCopied] = useState('')
   const [error, setError] = useState('')
-  const router = useRouter()
-  const [supabase] = useState(() => createClient())
 
   const [form, setForm] = useState({
     title: '',
@@ -42,48 +45,32 @@ export default function AdminLivesPage() {
   })
 
   useEffect(() => {
-    checkAdminAndFetch()
+    loadAdminLives()
+      .then(setLives)
+      .catch(() => setError('Erro ao carregar lives'))
+      .finally(() => setLoading(false))
   }, [])
 
-  const checkAdminAndFetch = async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      router.push('/login')
-      return
-    }
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile || profile.role !== 'admin') {
-      router.push('/membros/dashboard')
-      return
-    }
-
-    await fetchLives()
-  }
-
   const fetchLives = async () => {
-    const { data, error } = await supabase
-      .from('lives')
-      .select('*')
-      .order('scheduled_at', { ascending: false })
-
-    if (error) {
+    try {
+      const refreshedLives = await loadAdminLives()
+      setLives(refreshedLives)
+      return refreshedLives
+    } catch {
       setError('Erro ao carregar lives')
-    } else {
-      setLives(data || [])
+      return []
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
-  const generateStreamKey = () => {
-    return Array.from({ length: 32 }, () =>
-      'abcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 36))
-    ).join('')
+  const mutateLive = async (method: 'POST' | 'PUT', body: Record<string, unknown>) => {
+    const response = await fetch('/api/admin/lives', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) throw new Error('Unable to save live')
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -95,35 +82,27 @@ export default function AdminLivesPage() {
       return
     }
 
-    if (editingLive) {
-      const { error } = await supabase
-        .from('lives')
-        .update({
+    try {
+      const scheduledAt = new Date(form.scheduled_at).toISOString()
+      if (editingLive) {
+        await mutateLive('PUT', {
+          id: editingLive.id,
           title: form.title,
           description: form.description,
-          scheduled_at: form.scheduled_at,
+          scheduled_at: scheduledAt,
           duration_minutes: form.duration_minutes,
         })
-        .eq('id', editingLive.id)
-
-      if (error) {
-        setError('Erro ao atualizar live')
-        return
-      }
-    } else {
-      const { error } = await supabase
-        .from('lives')
-        .insert({
+      } else {
+        await mutateLive('POST', {
           title: form.title,
           description: form.description,
-          scheduled_at: form.scheduled_at,
+          scheduled_at: scheduledAt,
           duration_minutes: form.duration_minutes,
         })
-
-      if (error) {
-        setError('Erro ao criar live')
-        return
       }
+    } catch {
+      setError(editingLive ? 'Erro ao atualizar live' : 'Erro ao criar live')
+      return
     }
 
     setForm({ title: '', description: '', scheduled_at: '', duration_minutes: 60 })
@@ -144,36 +123,19 @@ export default function AdminLivesPage() {
   }
 
   const handleStartLive = async (live: Live) => {
-    const streamKey = generateStreamKey()
-    const { data, error } = await supabase
-      .from('lives')
-      .update({
-        is_live: true,
-        stream_key: streamKey,
-        rtmp_url: 'rtmp://live.twitch.tv/app/',
-      })
-      .eq('id', live.id)
-      .select()
-      .single()
-
-    if (error) {
+    try {
+      await mutateLive('PUT', { id: live.id, is_live: true })
+      const refreshedLives = await fetchLives()
+      setShowStreamModal(refreshedLives.find(item => item.id === live.id) ?? live)
+    } catch {
       setError('Erro ao iniciar live')
-      return
-    }
-
-    await fetchLives()
-    if (data) {
-      setShowStreamModal(data)
     }
   }
 
   const handleStopLive = async (live: Live) => {
-    const { error } = await supabase
-      .from('lives')
-      .update({ is_live: false })
-      .eq('id', live.id)
-
-    if (error) {
+    try {
+      await mutateLive('PUT', { id: live.id, is_live: false })
+    } catch {
       setError('Erro ao finalizar live')
       return
     }
@@ -186,12 +148,9 @@ export default function AdminLivesPage() {
   const handleSaveReplay = async () => {
     if (!showReplayModal) return
 
-    const { error } = await supabase
-      .from('lives')
-      .update({ replay_url: replayUrl })
-      .eq('id', showReplayModal.id)
-
-    if (error) {
+    try {
+      await mutateLive('PUT', { id: showReplayModal.id, replay_url: replayUrl })
+    } catch {
       setError('Erro ao salvar replay')
       return
     }
@@ -204,12 +163,10 @@ export default function AdminLivesPage() {
   const handleDelete = async (id: string) => {
     if (!confirm('Tem certeza que deseja excluir esta live?')) return
 
-    const { error } = await supabase
-      .from('lives')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
+    try {
+      const response = await fetch(`/api/admin/lives?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error('Unable to delete live')
+    } catch {
       setError('Erro ao excluir live')
       return
     }
@@ -419,37 +376,47 @@ export default function AdminLivesPage() {
               </button>
             </div>
             <div className="space-y-3">
-              <div>
-                <label className="text-xs text-text-muted">RTMP URL</label>
-                <div className="flex items-center gap-2 mt-1">
-                  <code className="flex-1 p-2.5 bg-surface-raised rounded-lg text-xs text-text-primary font-mono break-all">
-                    {showStreamModal.rtmp_url || 'rtmp://live.twitch.tv/app/'}
-                  </code>
-                  <button
-                    onClick={() => copyToClipboard(showStreamModal.rtmp_url || 'rtmp://live.twitch.tv/app/', 'rtmp')}
-                    className="p-2 rounded-lg bg-surface-raised hover:bg-surface transition-colors"
-                  >
-                    {copied === 'rtmp' ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4 text-text-muted" />}
-                  </button>
+              {showStreamModal.rtmp_url && (
+                <div>
+                  <label className="text-xs text-text-muted">URL de ingestão</label>
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="flex-1 p-2.5 bg-surface-raised rounded-lg text-xs text-text-primary font-mono break-all">
+                      {showStreamModal.rtmp_url}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(showStreamModal.rtmp_url, 'rtmp')}
+                      className="p-2 rounded-lg bg-surface-raised hover:bg-surface transition-colors"
+                    >
+                      {copied === 'rtmp' ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4 text-text-muted" />}
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <div>
-                <label className="text-xs text-text-muted">Stream Key</label>
-                <div className="flex items-center gap-2 mt-1">
-                  <code className="flex-1 p-2.5 bg-surface-raised rounded-lg text-xs text-text-primary font-mono break-all">
-                    {showStreamModal.stream_key}
-                  </code>
-                  <button
-                    onClick={() => copyToClipboard(showStreamModal.stream_key, 'key')}
-                    className="p-2 rounded-lg bg-surface-raised hover:bg-surface transition-colors"
-                  >
-                    {copied === 'key' ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4 text-text-muted" />}
-                  </button>
+              )}
+              {showStreamModal.stream_key && (
+                <div>
+                  <label className="text-xs text-text-muted">Stream Key</label>
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="flex-1 p-2.5 bg-surface-raised rounded-lg text-xs text-text-primary font-mono break-all">
+                      {showStreamModal.stream_key}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(showStreamModal.stream_key, 'key')}
+                      className="p-2 rounded-lg bg-surface-raised hover:bg-surface transition-colors"
+                    >
+                      {copied === 'key' ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4 text-text-muted" />}
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <p className="text-[11px] text-text-muted">
-                Cole esses dados no OBS Studio: Configurações → Transmissão → Servidor personalizado.
-              </p>
+              )}
+              {showStreamModal.rtmp_url && showStreamModal.stream_key ? (
+                <p className="text-[11px] text-text-muted">
+                  Cole esses dados no OBS Studio em Configurações, Transmissão e Servidor personalizado.
+                </p>
+              ) : (
+                <p className="text-sm text-text-muted">
+                  Configure a transmissão no YouTube Studio e no OBS. Cadastre com segurança a URL de ingestão e a chave fornecidas pelo YouTube antes de iniciar a transmissão.
+                </p>
+              )}
             </div>
             <Button onClick={() => setShowStreamModal(null)} className="w-full">Fechar</Button>
           </div>
