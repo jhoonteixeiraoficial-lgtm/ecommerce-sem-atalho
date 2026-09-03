@@ -1,10 +1,15 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Heart, MessageCircle, Send, MoreVertical, Edit2, Trash2, X, Check } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import {
+  attemptReactionOperation,
+  createReactionOperationTracker,
+  type ReactionOperationTracker,
+} from './reaction-operation';
 
 interface Post {
   id: string;
@@ -79,6 +84,9 @@ export default function Feed() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [supabase] = useState(() => createClient());
+  const reactionOperations = useRef<ReactionOperationTracker | null>(null);
+  reactionOperations.current ??= createReactionOperationTracker();
+  const reactionOperationTracker = reactionOperations.current;
 
   const fetchPosts = useCallback(async () => {
     setLoading(true);
@@ -304,26 +312,33 @@ export default function Feed() {
       return;
     }
 
-    const operationId = crypto.randomUUID();
-
     try {
-      const response = await fetch('/api/community/reactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          post_id: postId,
-          reaction_type: reactionType,
-          operation_id: operationId
-        })
-      });
+      const succeeded = await attemptReactionOperation(
+        reactionOperationTracker,
+        postId,
+        reactionType,
+        async (operationId) => {
+          const response = await fetch('/api/community/reactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              post_id: postId,
+              reaction_type: reactionType,
+              operation_id: operationId
+            })
+          });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        setError(errorData.error || 'Erro ao reagir');
-        return;
-      }
+          if (!response.ok) {
+            const errorData = await response.json();
+            setError(errorData.error || 'Erro ao reagir');
+            return false;
+          }
 
-      const result = await response.json();
+          await response.json();
+          return true;
+        },
+      );
+      if (!succeeded) return;
 
       const reactionsResponse = await fetch(`/api/community/reactions?post_id=${postId}`);
       if (reactionsResponse.ok) {

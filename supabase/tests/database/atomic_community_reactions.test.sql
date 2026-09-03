@@ -47,15 +47,15 @@ select ok(
 select has_function(
   'public',
   'toggle_community_reaction',
-  array['uuid', 'text', 'uuid'],
+  array['uuid', 'uuid', 'text', 'uuid'],
   'idempotent reaction toggle RPC exists'
 );
 
 select hasnt_function(
   'public',
   'toggle_community_reaction',
-  array['uuid', 'text'],
-  'non-idempotent reaction toggle signature is removed'
+  array['uuid', 'text', 'uuid'],
+  'authenticated reaction toggle signature is removed'
 );
 
 select ok(
@@ -64,30 +64,31 @@ select ok(
       and proowner = 'postgres'::regrole
       and proconfig = array['search_path=""']
     from pg_catalog.pg_proc
-    where oid = to_regprocedure('public.toggle_community_reaction(uuid,text,uuid)')
+    where oid = to_regprocedure('public.toggle_community_reaction(uuid,uuid,text,uuid)')
   ), false),
   'reaction toggle is postgres-owned SECURITY DEFINER with an empty search path'
 );
 
 select ok(
-  has_function_privilege('authenticated', 'public.toggle_community_reaction(uuid,text,uuid)', 'EXECUTE')
-    and not has_function_privilege('anon', 'public.toggle_community_reaction(uuid,text,uuid)', 'EXECUTE')
-    and not has_function_privilege('service_role', 'public.toggle_community_reaction(uuid,text,uuid)', 'EXECUTE')
+  has_function_privilege('service_role', 'public.toggle_community_reaction(uuid,uuid,text,uuid)', 'EXECUTE')
+    and not has_function_privilege('authenticated', 'public.toggle_community_reaction(uuid,uuid,text,uuid)', 'EXECUTE')
+    and not has_function_privilege('anon', 'public.toggle_community_reaction(uuid,uuid,text,uuid)', 'EXECUTE')
     and not exists (
       select 1
       from pg_catalog.pg_proc as functions
       cross join lateral pg_catalog.aclexplode(functions.proacl) as privileges
-      where functions.oid = to_regprocedure('public.toggle_community_reaction(uuid,text,uuid)')
+      where functions.oid = to_regprocedure('public.toggle_community_reaction(uuid,uuid,text,uuid)')
         and privileges.grantee = 0
         and privileges.privilege_type = 'EXECUTE'
     ),
-  'only authenticated sessions can execute the reaction toggle'
+  'only trusted service sessions can execute the reaction toggle'
 );
 
 set local role anon;
 select throws_ok(
   $$
     select public.toggle_community_reaction(
+      '00000000-0000-0000-0000-000000000401',
       '00000000-0000-0000-0000-000000001401',
       'like',
       '00000000-0000-0000-0000-000000009401'
@@ -100,13 +101,13 @@ select throws_ok(
 reset role;
 
 create temporary table first_reaction_result (result jsonb not null);
-grant select, insert on table first_reaction_result to authenticated;
+grant select, insert on table first_reaction_result to service_role;
 
-select set_config('request.jwt.claim.role', 'authenticated', true);
-select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000401', true);
-set local role authenticated;
+select set_config('request.jwt.claim.role', 'service_role', true);
+set local role service_role;
 insert into first_reaction_result (result)
 select public.toggle_community_reaction(
+  '00000000-0000-0000-0000-000000000401',
   '00000000-0000-0000-0000-000000001401',
   'love',
   '00000000-0000-0000-0000-000000009401'
@@ -119,9 +120,10 @@ select is(
   'first operation atomically adds a reaction'
 );
 
-set local role authenticated;
+set local role service_role;
 select is(
   public.toggle_community_reaction(
+    '00000000-0000-0000-0000-000000000401',
     '00000000-0000-0000-0000-000000001401',
     'love',
     '00000000-0000-0000-0000-000000009401'
@@ -162,12 +164,13 @@ select is(
       and reaction_type = 'love'
   ),
   '00000000-0000-0000-0000-000000000401'::uuid,
-  'the RPC derives reaction ownership from auth.uid()'
+  'the RPC applies reaction ownership to the validated actor'
 );
 
-set local role authenticated;
+set local role service_role;
 select is(
   public.toggle_community_reaction(
+    '00000000-0000-0000-0000-000000000401',
     '00000000-0000-0000-0000-000000001401',
     'love',
     '00000000-0000-0000-0000-000000009402'
@@ -189,10 +192,11 @@ select is(
   'the distinct remove operation leaves no reaction row'
 );
 
-set local role authenticated;
+set local role service_role;
 select throws_ok(
   $$
     select public.toggle_community_reaction(
+      '00000000-0000-0000-0000-000000000401',
       '00000000-0000-0000-0000-000000001401',
       'like',
       '00000000-0000-0000-0000-000000009401'
@@ -204,11 +208,11 @@ select throws_ok(
 );
 reset role;
 
-select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000402', true);
-set local role authenticated;
+set local role service_role;
 select throws_ok(
   $$
     select public.toggle_community_reaction(
+      '00000000-0000-0000-0000-000000000402',
       '00000000-0000-0000-0000-000000001401',
       'like',
       '00000000-0000-0000-0000-000000009403'
@@ -220,11 +224,11 @@ select throws_ok(
 );
 reset role;
 
-select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000401', true);
-set local role authenticated;
+set local role service_role;
 select throws_ok(
   $$
     select public.toggle_community_reaction(
+      '00000000-0000-0000-0000-000000000401',
       '00000000-0000-0000-0000-000000001401',
       'angry',
       '00000000-0000-0000-0000-000000009404'
@@ -238,6 +242,7 @@ select throws_ok(
 select throws_ok(
   $$
     select public.toggle_community_reaction(
+      '00000000-0000-0000-0000-000000000401',
       '00000000-0000-0000-0000-000000001401',
       'like',
       null

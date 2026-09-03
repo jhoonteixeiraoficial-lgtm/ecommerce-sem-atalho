@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { createAdminClient } from '@/lib/supabase/admin'
 import {
   enforceCommunityRateLimit,
   invalidInput,
@@ -19,7 +20,7 @@ const REACTION_COLUMNS = 'id, post_id, user_id, reaction_type, created_at'
 export async function POST(request: Request) {
   const context = await requireCommunityUser()
   if (context.response) return context.response
-  const { authorizedUser, supabase } = context
+  const { authorizedUser } = context
 
   const limited = enforceCommunityRateLimit(authorizedUser.id, 'reactions', 'post', 30)
   if (limited) return limited
@@ -29,18 +30,27 @@ export async function POST(request: Request) {
   const parsed = toggleReactionSchema.safeParse(json.body)
   if (!parsed.success) return invalidInput()
 
-  const { data, error } = await supabase.rpc('toggle_community_reaction', {
-    p_post_id: parsed.data.post_id,
-    p_reaction_type: parsed.data.reaction_type,
-    p_operation_id: parsed.data.operation_id,
-  })
+  let data: unknown = null
+  let error: unknown = null
+  try {
+    const result = await createAdminClient().rpc('toggle_community_reaction', {
+      p_actor_id: authorizedUser.id,
+      p_post_id: parsed.data.post_id,
+      p_reaction_type: parsed.data.reaction_type,
+      p_operation_id: parsed.data.operation_id,
+    })
+    data = result.data
+    error = result.error
+  } catch {
+    error = true
+  }
 
   if (error || !data || typeof data !== 'object' || !('removed' in data)) {
     return NextResponse.json({ error: 'Failed to toggle reaction' }, { status: 500 })
   }
 
-  if (data.removed === true) return NextResponse.json({ removed: true })
-  return NextResponse.json({ reaction: data.reaction }, { status: 201 })
+  if ((data as { removed?: unknown }).removed === true) return NextResponse.json({ removed: true })
+  return NextResponse.json({ reaction: (data as { reaction?: unknown }).reaction }, { status: 201 })
 }
 
 export async function GET(request: Request) {

@@ -22,24 +22,9 @@ const categories = [
   'ia',
 ] as const
 const contentSchema = z.string().min(1).max(5000).refine((value) => value.trim().length > 0)
-const imageUrlSchema = z.string().transform((value, context) => {
-  if (value.length > 2048 || /\s/u.test(value)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid image URL' })
-    return z.NEVER
-  }
-
-  try {
-    const normalized = new URL(value)
-    if (normalized.protocol !== 'https:' || normalized.toString().length > 2048) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid image URL' })
-      return z.NEVER
-    }
-    return normalized.toString()
-  } catch {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid image URL' })
-    return z.NEVER
-  }
-})
+// This intentionally narrow grammar is mirrored by the database constraint.
+const strictImageUrl = /^https:\/\/(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\/[A-Za-z0-9._~!$&()*+,;=:@%/?#-]*)?$/
+const imageUrlSchema = z.string().max(2048).regex(strictImageUrl)
 const getPostsSchema = z.object({
   category: z.enum(['all', ...categories]).optional(),
   page: boundedIntegerParam(10_000).default('1'),

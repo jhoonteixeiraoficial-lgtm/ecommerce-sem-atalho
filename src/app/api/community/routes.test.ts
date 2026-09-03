@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
   from: vi.fn(),
   rpc: vi.fn(),
+  adminRpc: vi.fn(),
+  createAdminClient: vi.fn(),
 }))
 
 vi.mock('server-only', () => ({}))
@@ -25,6 +27,10 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@/lib/auth/server-guards', () => ({
   createServerGuards: mocks.createServerGuards,
+}))
+
+vi.mock('@/lib/supabase/admin', () => ({
+  createAdminClient: mocks.createAdminClient,
 }))
 
 vi.mock('@/lib/security', async (importOriginal) => ({
@@ -126,6 +132,8 @@ beforeEach(() => {
   mocks.checkRateLimit.mockReturnValue({ allowed: true, remaining: 10 })
   mocks.from.mockImplementation(queryFor)
   mocks.rpc.mockResolvedValue({ data: { removed: false, reaction: { id: RESOURCE_ID } }, error: null })
+  mocks.adminRpc.mockResolvedValue({ data: { removed: false, reaction: { id: RESOURCE_ID } }, error: null })
+  mocks.createAdminClient.mockReturnValue({ rpc: mocks.adminRpc })
 })
 
 describe('canonical community authorization', () => {
@@ -163,6 +171,7 @@ describe('canonical community authorization', () => {
     await expect(response.json()).resolves.toEqual({ error: message })
     expect(mocks.from).not.toHaveBeenCalled()
     expect(mocks.rpc).not.toHaveBeenCalled()
+    expect(mocks.adminRpc).not.toHaveBeenCalled()
   })
 
   it('passes auth lookup failures into the canonical guard', async () => {
@@ -214,8 +223,15 @@ describe('strict community input validation', () => {
     ['post HTTP URL', createPost, { content: 'Post', category: 'geral', image_url: 'http://images.example.test/post.png' }],
     ['post padded URL', createPost, { content: 'Post', category: 'geral', image_url: ' https://images.example.test/post.png ' }],
     ['post interior-space URL', createPost, { content: 'Post', category: 'geral', image_url: 'https://images.example.test/post image.png' }],
+    ['post newline URL', createPost, { content: 'Post', category: 'geral', image_url: 'https://images.example.test/image.png\n' }],
     ['post URL length', createPost, { content: 'Post', category: 'geral', image_url: `https://images.example.test/${'x'.repeat(2049)}` }],
     ['post malformed URL', createPost, { content: 'Post', category: 'geral', image_url: 'not a url' }],
+    ['post malformed colon host', createPost, { content: 'Post', category: 'geral', image_url: 'https://:' }],
+    ['post malformed percent host', createPost, { content: 'Post', category: 'geral', image_url: 'https://%' }],
+    ['post credential URL', createPost, { content: 'Post', category: 'geral', image_url: 'https://user@example.test/image.png' }],
+    ['post port URL', createPost, { content: 'Post', category: 'geral', image_url: 'https://example.test:443/image.png' }],
+    ['post single-label host', createPost, { content: 'Post', category: 'geral', image_url: 'https://localhost/image.png' }],
+    ['post uppercase scheme', createPost, { content: 'Post', category: 'geral', image_url: 'HTTPS://images.example.test/image.png' }],
     ['post raw length', createPost, { content: ` ${'p'.repeat(5000)} `, category: 'geral' }],
     ['comment UUID', createComment, { post_id: 'bad', content: 'Comment' }],
     ['comment parent UUID', createComment, { post_id: RESOURCE_ID, parent_comment_id: 'bad', content: 'Comment' }],
@@ -225,6 +241,7 @@ describe('strict community input validation', () => {
     ['reaction operation UUID', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like', operation_id: 'bad' }],
     ['reaction missing operation UUID', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like' }],
     ['reaction unknown fields', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like', operation_id: OPERATION_ID, user_id: MEMBER_ID }],
+    ['reaction actor injection', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like', operation_id: OPERATION_ID, actor_id: MEMBER_ID }],
     ['message UUID', createMessage, { channel_id: 'bad', content: 'Message' }],
     ['message unknown fields', createMessage, { channel_id: RESOURCE_ID, content: 'Message', user_id: MEMBER_ID }],
     ['message raw length', createMessage, { channel_id: RESOURCE_ID, content: ` ${'m'.repeat(1000)} ` }],
@@ -234,6 +251,7 @@ describe('strict community input validation', () => {
     expect(response.status).toBe(400)
     expect(queryCalls.some((call) => ['insert', 'update', 'delete'].includes(call.method))).toBe(false)
     expect(mocks.rpc).not.toHaveBeenCalled()
+    expect(mocks.adminRpc).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -250,6 +268,7 @@ describe('strict community input validation', () => {
     expect(response.status).toBe(400)
     expect(queryCalls.some((call) => ['insert', 'update', 'delete'].includes(call.method))).toBe(false)
     expect(mocks.rpc).not.toHaveBeenCalled()
+    expect(mocks.adminRpc).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -333,7 +352,7 @@ describe('community data boundaries', () => {
 })
 
 describe('atomic reaction toggle', () => {
-  it('uses one RPC operation whose parameters contain no caller-supplied identity', async () => {
+  it('uses the trusted service RPC with only the server-derived actor identity', async () => {
     const response = await toggleReaction(request('/api/community/reactions', 'POST', {
       post_id: RESOURCE_ID,
       reaction_type: 'love',
@@ -341,16 +360,18 @@ describe('atomic reaction toggle', () => {
     }))
 
     expect(response.status).toBe(201)
-    expect(mocks.rpc).toHaveBeenCalledWith('toggle_community_reaction', {
+    expect(mocks.adminRpc).toHaveBeenCalledWith('toggle_community_reaction', {
+      p_actor_id: MEMBER_ID,
       p_post_id: RESOURCE_ID,
       p_reaction_type: 'love',
       p_operation_id: OPERATION_ID,
     })
+    expect(mocks.rpc).not.toHaveBeenCalled()
     expect(mocks.from).not.toHaveBeenCalledWith('community_reactions')
   })
 
   it('returns the removed result from the atomic operation', async () => {
-    mocks.rpc.mockResolvedValue({ data: { removed: true, reaction: null }, error: null })
+    mocks.adminRpc.mockResolvedValue({ data: { removed: true, reaction: null }, error: null })
 
     const response = await toggleReaction(request('/api/community/reactions', 'POST', {
       post_id: RESOURCE_ID,
@@ -363,7 +384,7 @@ describe('atomic reaction toggle', () => {
   })
 
   it('keeps database errors generic', async () => {
-    mocks.rpc.mockResolvedValue({ data: null, error: { message: 'sensitive database detail' } })
+    mocks.adminRpc.mockResolvedValue({ data: null, error: { message: 'sensitive database detail' } })
 
     const response = await toggleReaction(request('/api/community/reactions', 'POST', {
       post_id: RESOURCE_ID,

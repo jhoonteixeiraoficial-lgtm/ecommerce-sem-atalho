@@ -99,10 +99,9 @@ const cleanup = `
 `
 
 const toggle = `
-  select set_config('request.jwt.claim.role', 'authenticated', false);
-  select set_config('request.jwt.claim.sub', '${userId}', false);
-  set role authenticated;
-  select public.toggle_community_reaction('${postId}', 'fire', '${operationId}')::text;
+  select set_config('request.jwt.claim.role', 'service_role', false);
+  set role service_role;
+  select public.toggle_community_reaction('${userId}', '${postId}', 'fire', '${operationId}')::text;
 `
 
 try {
