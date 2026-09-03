@@ -1,4 +1,22 @@
-select plan(23);
+select plan(28);
+
+create or replace function pg_temp.assert_42501(statements text[])
+returns void
+language plpgsql
+as $$
+declare
+  statement text;
+begin
+  foreach statement in array statements loop
+    begin
+      execute statement;
+      raise exception 'statement unexpectedly succeeded: %', statement;
+    exception
+      when sqlstate '42501' then null;
+    end;
+  end loop;
+end;
+$$;
 
 delete from public.admin_audit_log
 where actor_user_id between '00000000-0000-0000-0000-000000000201'
@@ -44,6 +62,34 @@ select ok(
   ),
   'service role can execute the admin action RPC'
 );
+
+select ok(
+  has_table_privilege('service_role', 'public.user_roles', 'SELECT')
+    and has_table_privilege('service_role', 'public.account_status', 'SELECT')
+    and has_table_privilege('service_role', 'public.admin_audit_log', 'SELECT'),
+  'service role retains read-only access to canonical and audit records'
+);
+
+set role service_role;
+
+select lives_ok(
+  $test$
+    select pg_temp.assert_42501(array[
+      'insert into public.user_roles (user_id, role) values (''00000000-0000-0000-0000-000000000202'', ''member'')',
+      'update public.user_roles set role = ''member'' where user_id = ''00000000-0000-0000-0000-000000000202''',
+      'delete from public.user_roles where user_id = ''00000000-0000-0000-0000-000000000202''',
+      'insert into public.account_status (user_id, status) values (''00000000-0000-0000-0000-000000000202'', ''active'')',
+      'update public.account_status set status = ''banned'' where user_id = ''00000000-0000-0000-0000-000000000202''',
+      'delete from public.account_status where user_id = ''00000000-0000-0000-0000-000000000202''',
+      'insert into public.admin_audit_log (actor_user_id, action) values (''00000000-0000-0000-0000-000000000201'', ''direct.write'')',
+      'update public.admin_audit_log set action = ''direct.write'' where actor_user_id = ''00000000-0000-0000-0000-000000000201''',
+      'delete from public.admin_audit_log where actor_user_id = ''00000000-0000-0000-0000-000000000201'''
+    ])
+  $test$,
+  'service role cannot directly insert, update, or delete protected records'
+);
+
+reset role;
 
 select ok(
   not has_function_privilege(
@@ -212,9 +258,49 @@ select is(
   'suspension stores canonical status and trimmed reason'
 );
 
+reset role;
+
 update public.account_status
 set suspended_until = statement_timestamp() + interval '1 day'
 where user_id = '00000000-0000-0000-0000-000000000202';
+
+set role service_role;
+
+select lives_ok(
+  $$
+    select public.admin_user_action(
+      '00000000-0000-0000-0000-000000000201',
+      '00000000-0000-0000-0000-000000000202',
+      'set_status',
+      null,
+      'banned',
+      'Escalated terms violation'
+    )
+  $$,
+  'banning a suspended account succeeds'
+);
+
+select is(
+  (
+    select status::text || ':' || coalesce(suspended_until::text, 'null')
+    from public.account_status
+    where user_id = '00000000-0000-0000-0000-000000000202'
+  ),
+  'banned:null',
+  'ban clears the prior suspension date'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.admin_audit_log
+    where actor_user_id = '00000000-0000-0000-0000-000000000201'
+      and target_user_id = '00000000-0000-0000-0000-000000000202'
+      and action = 'user.banned'
+  ),
+  1,
+  'suspended-to-banned action appends exactly one ban audit record'
+);
 
 select lives_ok(
   $$
@@ -317,8 +403,11 @@ select ok(
       and locktype = 'advisory'
       and mode = 'ExclusiveLock'
       and granted
+      and classid = 194964823::oid
+      and objid = 1::oid
+      and objsubid = 2
   ),
-  'admin action holds its serialization lock until transaction end'
+  'admin action holds advisory transaction lock (194964823, 1) until transaction end'
 );
 
 commit;
@@ -338,7 +427,7 @@ select throws_ok(
   $$,
   'P0001',
   'Admin user action rejected',
-  'serialized cross-demotion revalidates and rejects the demoted actor'
+  'a later cross-demotion revalidates and rejects the demoted actor'
 );
 
 reset role;
@@ -356,7 +445,7 @@ select is(
       and states.status = 'active'
   ),
   1,
-  'serialized cross-demotions preserve one active admin'
+  'sequential cross-demotions preserve one active admin'
 );
 
 select is(
@@ -369,7 +458,7 @@ select is(
     )
   ),
   1,
-  'only the committed serialized demotion writes an audit record'
+  'only the committed sequential demotion writes an audit record'
 );
 
 delete from public.admin_audit_log

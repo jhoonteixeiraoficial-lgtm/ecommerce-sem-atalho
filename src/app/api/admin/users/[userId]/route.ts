@@ -37,17 +37,24 @@ export async function PATCH(
 
   const admin = createAdminClient()
   const data = parsed.data
-  const { error } = await admin.rpc('admin_user_action', {
-    p_actor_user_id: authUser.id,
-    p_target_user_id: userId,
-    p_action: data.action,
-    p_role: data.action === 'set_role' ? data.role : null,
-    p_status: data.action === 'set_status' ? data.status : null,
-    p_reason: data.action === 'set_status' ? data.reason ?? null : null,
-  })
+  let error: { code?: string } | null
+  try {
+    const result = await admin.rpc('admin_user_action', {
+      p_actor_user_id: authUser.id,
+      p_target_user_id: userId,
+      p_action: data.action,
+      p_role: data.action === 'set_role' ? data.role : null,
+      p_status: data.action === 'set_status' ? data.status : null,
+      p_reason: data.action === 'set_status' ? data.reason ?? null : null,
+    })
+    error = result.error
+  } catch {
+    return NextResponse.json({ error: 'Unable to update user' }, { status: 500 })
+  }
 
   if (error) {
-    return NextResponse.json({ error: 'Unable to update user' }, { status: 400 })
+    const status = error.code === 'P0001' ? 400 : 500
+    return NextResponse.json({ error: 'Unable to update user' }, { status })
   }
 
   return NextResponse.json({ success: true })

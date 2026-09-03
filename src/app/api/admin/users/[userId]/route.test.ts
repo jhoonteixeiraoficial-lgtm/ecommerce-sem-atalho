@@ -106,7 +106,15 @@ describe('PATCH', () => {
   })
 
   it('delegates self-modification rejection to the transactional RPC', async () => {
-    mocks.rpc.mockResolvedValue({ data: null, error: { message: 'self action rejected' } })
+    mocks.rpc.mockResolvedValue({
+      data: null,
+      error: {
+        code: 'P0001',
+        details: null,
+        hint: null,
+        message: 'Admin user action rejected',
+      },
+    })
 
     const response = await PATCH(
       new Request('https://example.test/api/admin/users/actor-1', {
@@ -121,8 +129,16 @@ describe('PATCH', () => {
     expect(mocks.rpc).toHaveBeenCalledTimes(1)
   })
 
-  it('does not expose database errors', async () => {
-    mocks.rpc.mockResolvedValue({ data: null, error: { message: 'sensitive database detail' } })
+  it('maps unexpected resolved database errors to a generic 500 response', async () => {
+    mocks.rpc.mockResolvedValue({
+      data: null,
+      error: {
+        code: '23505',
+        details: 'sensitive constraint detail',
+        hint: null,
+        message: 'duplicate key value violates unique constraint',
+      },
+    })
 
     const response = await PATCH(
       new Request('https://example.test/api/admin/users/target-1', {
@@ -132,7 +148,23 @@ describe('PATCH', () => {
       { params: Promise.resolve({ userId: 'target-1' }) },
     )
 
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(500)
+    await expect(response.json()).resolves.toEqual({ error: 'Unable to update user' })
+    expect(mocks.rpc).toHaveBeenCalledTimes(1)
+  })
+
+  it('maps thrown infrastructure errors to a generic 500 response', async () => {
+    mocks.rpc.mockRejectedValue(new Error('database connection failed'))
+
+    const response = await PATCH(
+      new Request('https://example.test/api/admin/users/target-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'set_role', role: 'admin' }),
+      }),
+      { params: Promise.resolve({ userId: 'target-1' }) },
+    )
+
+    expect(response.status).toBe(500)
     await expect(response.json()).resolves.toEqual({ error: 'Unable to update user' })
     expect(mocks.rpc).toHaveBeenCalledTimes(1)
   })

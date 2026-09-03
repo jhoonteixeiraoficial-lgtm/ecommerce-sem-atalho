@@ -138,27 +138,16 @@ reset role;
 set local role service_role;
 select lives_ok(
   $test$
-    do $$
-    begin
-      update public.user_roles
-      set role = role
-      where user_id = '00000000-0000-0000-0000-000000000101';
-
-      if not found then
-        raise exception 'service role update did not reach user_roles';
-      end if;
-
-      update public.account_status
-      set reason = reason
-      where user_id = '00000000-0000-0000-0000-000000000101';
-
-      if not found then
-        raise exception 'service role update did not reach account_status';
-      end if;
-    end
-    $$
+    select pg_temp.assert_42501(array[
+      'insert into public.user_roles (user_id, role) values (''00000000-0000-0000-0000-000000000101'', ''member'')',
+      'update public.user_roles set role = role where user_id = ''00000000-0000-0000-0000-000000000101''',
+      'delete from public.user_roles where user_id = ''00000000-0000-0000-0000-000000000101''',
+      'insert into public.account_status (user_id, status) values (''00000000-0000-0000-0000-000000000101'', ''active'')',
+      'update public.account_status set reason = reason where user_id = ''00000000-0000-0000-0000-000000000101''',
+      'delete from public.account_status where user_id = ''00000000-0000-0000-0000-000000000101'''
+    ])
   $test$,
-  'service role can maintain canonical role and status records'
+  'service role cannot directly mutate canonical role and status records'
 );
 reset role;
 
