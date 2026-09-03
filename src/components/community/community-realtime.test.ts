@@ -264,4 +264,17 @@ describe('community realtime synchronization', () => {
 
     expect(refresh).toHaveBeenCalledTimes(2)
   })
+
+  it('does not restart fallback polling after its lifecycle is cancelled', () => {
+    vi.useFakeTimers()
+    const refresh = vi.fn()
+    const recovery = realtimeModule.createRealtimeRecovery(refresh, 1000)
+
+    recovery.failed()
+    recovery.cancel()
+    recovery.failed()
+    vi.advanceTimersByTime(5000)
+
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
 })

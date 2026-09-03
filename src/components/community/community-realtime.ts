@@ -208,6 +208,7 @@ export function createChannelComposer() {
 
 export function createRealtimeRecovery(refresh: () => void, intervalMs: number) {
   let polling: ReturnType<typeof setInterval> | null = null
+  let disposed = false
 
   const stop = () => {
     if (polling) clearInterval(polling)
@@ -216,12 +217,15 @@ export function createRealtimeRecovery(refresh: () => void, intervalMs: number) 
 
   return {
     failed() {
-      if (polling) return
+      if (disposed || polling) return
       refresh()
       polling = setInterval(refresh, intervalMs)
     },
     recovered: stop,
-    cancel: stop,
+    cancel() {
+      disposed = true
+      stop()
+    },
   }
 }
 

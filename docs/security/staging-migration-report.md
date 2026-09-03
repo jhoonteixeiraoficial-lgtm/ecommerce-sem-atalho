@@ -83,3 +83,15 @@ Not performed in this local run. The rollback script (`supabase/rollbacks/010_se
 2. Staging project creation and linking
 3. `supabase db push --project-ref <staging-ref>`
 4. Production owner seed after confirming Auth user exists
+
+## H3D Round 2 - Feed Realtime Lifecycle
+
+**Date:** 2026-09-03
+
+- Added a lifecycle regression proving cancelled fallback recovery cannot restart polling.
+- Guarded Feed realtime status/change callbacks and recovery refreshes with the active sync generation.
+- Focused Vitest: 11/11 passed.
+- Full Vitest: 231/231 passed across 15 files.
+- Typecheck: passed with zero errors.
+- Focused ESLint: zero errors; three existing `no-img-element` warnings in `Feed.tsx`.
+- Production build: passed; 40 routes generated.

@@ -98,6 +98,7 @@ export default function Feed() {
   const [activeCategory] = useState({ value: selectedCategory });
   const [locallySubmittedPosts] = useState(() => new Set<string>());
   const [expandedPostIds] = useState(() => new Set<string>());
+  const [feedGenerations] = useState(createSyncGeneration);
   const [commentSnapshots] = useState(() => createKeyedSnapshotCoordinator<Comment[]>({
     load: async (postId, signal) => {
       const response = await fetch(`/api/community/comments?post_id=${postId}`, { signal });
@@ -140,6 +141,7 @@ export default function Feed() {
 
   useEffect(() => {
     const category = selectedCategory;
+    const run = feedGenerations.begin();
     const snapshots = createSnapshotCoordinator<Post[]>({
       load: async (signal) => {
         const params = new URLSearchParams({ limit: '50' });
@@ -169,10 +171,12 @@ export default function Feed() {
 
     const refresh = createRefreshScheduler(() => void snapshots.refresh(), 250);
     const refreshExpandedComments = () => {
+      if (!run.isCurrent()) return;
       for (const postId of expandedPostIds) void commentSnapshots.refresh(postId);
     };
     const commentRefresh = createRefreshScheduler(refreshExpandedComments, 250);
     const recovery = createRealtimeRecovery(() => {
+      if (!run.isCurrent()) return;
       void snapshots.refresh();
       refreshExpandedComments();
     }, 15000);
@@ -193,11 +197,18 @@ export default function Feed() {
           schema: 'public',
           table: 'community_posts'
         },
-        changes.contentChanged
+        () => {
+          if (run.isCurrent()) changes.contentChanged();
+        }
       )
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_comments' }, changes.commentChanged)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_reactions' }, changes.contentChanged)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_comments' }, () => {
+        if (run.isCurrent()) changes.commentChanged();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_reactions' }, () => {
+        if (run.isCurrent()) changes.contentChanged();
+      })
       .subscribe((status) => {
+        if (!run.isCurrent()) return;
         if (status === 'SUBSCRIBED') {
           recovery.recovered();
           setRealtimeError(null);
@@ -210,6 +221,7 @@ export default function Feed() {
       });
 
     return () => {
+      feedGenerations.cancel();
       snapshots.cancel();
       refresh.cancel();
       commentRefresh.cancel();
@@ -222,6 +234,7 @@ export default function Feed() {
     supabase,
     locallySubmittedPosts,
     expandedPostIds,
+    feedGenerations,
     commentSnapshots,
     refreshVersion,
   ]);
