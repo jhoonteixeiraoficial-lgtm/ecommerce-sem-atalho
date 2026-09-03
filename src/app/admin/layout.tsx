@@ -7,19 +7,18 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode
 }) {
-  const serverClient = await createClient()
-  const {
-    data: { user },
-  } = await serverClient.auth.getUser()
-
-  const guards = createServerGuards(user)
-
   try {
+    const serverClient = await createClient()
+    const {
+      data: { user },
+    } = await serverClient.auth.getUser()
+    const guards = createServerGuards(user)
     await guards.requireAdmin()
   } catch (e: unknown) {
     const status = (e && typeof e === 'object' && 'status' in e) ? (e as { status: number }).status : 500
     if (status === 401) redirect('/login')
-    redirect('/membros/dashboard')
+    if (status === 403) redirect('/membros/dashboard')
+    redirect('/erro-de-acesso')
   }
 
   return (

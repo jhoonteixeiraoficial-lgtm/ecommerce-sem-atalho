@@ -18,7 +18,7 @@ const PUBLIC_PATHS = ['/login', '/cadastro', '/onboarding', '/banido', '/politic
 const SUBSCRIPTION_BYPASS = ['/membros/perfil', '/membros/suporte', '/membros/assinatura-necessaria']
 
 function isProtectedPath(pathname: string): boolean {
-  return pathname.startsWith('/membros/') || pathname.startsWith('/admin')
+  return pathname.startsWith('/membros/') || pathname.startsWith('/admin') || pathname.startsWith('/api/admin/')
 }
 
 export function decideRouteAccess(input: RouteDecisionInput): { redirect: string | null } {

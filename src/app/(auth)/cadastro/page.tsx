@@ -5,13 +5,12 @@ import { ArrowRight } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
+import { runBrowserAuthOperation } from '@/lib/supabase/client'
 
 export default function CadastroPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
-  const [supabase] = useState(() => createClient())
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -48,19 +47,27 @@ export default function CadastroPage() {
       return
     }
 
-    const { error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName,
-          phone: phone,
+    const { result, error: availabilityError } = await runBrowserAuthOperation(
+      (supabase) => supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName,
+            phone: phone,
+          },
         },
-      },
-    })
+      }),
+    )
 
-    if (authError) {
-      if (authError.message.includes('already registered')) {
+    if (availabilityError) {
+      setError(availabilityError)
+      setLoading(false)
+      return
+    }
+
+    if (result?.error) {
+      if (result.error.message.includes('already registered')) {
         setError('Este e-mail já está cadastrado.')
       } else {
         setError('Erro ao criar conta. Tente novamente.')

@@ -4,13 +4,12 @@ import { useState } from 'react'
 import { ArrowRight, Mail, Lock, Eye, EyeOff } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
+import { runBrowserAuthOperation } from '@/lib/supabase/client'
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [supabase] = useState(() => createClient())
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -21,12 +20,17 @@ export default function LoginPage() {
     const email = (form.elements.namedItem('email') as HTMLInputElement).value
     const password = (form.elements.namedItem('password') as HTMLInputElement).value
 
-    const { error: authError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
+    const { result, error: availabilityError } = await runBrowserAuthOperation(
+      (supabase) => supabase.auth.signInWithPassword({ email, password }),
+    )
 
-    if (authError) {
+    if (availabilityError) {
+      setError(availabilityError)
+      setLoading(false)
+      return
+    }
+
+    if (result?.error) {
       setError('E-mail ou senha incorretos.')
       setLoading(false)
       return

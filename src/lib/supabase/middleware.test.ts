@@ -132,6 +132,15 @@ describe('updateSession without Supabase public configuration', () => {
     expect(response.status).toBe(503)
   })
 
+  it('returns 503 for a protected admin API route', async () => {
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    const response = await updateSession(new NextRequest('https://example.test/api/admin/users'))
+
+    expect(response.status).toBe(503)
+  })
+
   it('keeps a public auth route available', async () => {
     delete process.env.NEXT_PUBLIC_SUPABASE_URL
     delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
