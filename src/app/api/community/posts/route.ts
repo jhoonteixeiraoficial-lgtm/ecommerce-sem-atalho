@@ -1,260 +1,195 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { checkRateLimit, sanitizeInput } from '@/lib/security';
+import { NextResponse } from 'next/server'
+import { z } from 'zod'
+import { sanitizeInput } from '@/lib/security'
+import {
+  enforceCommunityRateLimit,
+  invalidInput,
+  readJson,
+  requireCommunityUser,
+  searchParams,
+} from '../helpers'
 
-export async function GET(request: NextRequest) {
-  // Rate limiting: 60 requests per minute per user
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`posts-get-${ip}`, 60, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
+const categories = [
+  'geral',
+  'iniciantes',
+  'produtos',
+  'fornecedores',
+  'anuncios',
+  'mercado-ads',
+  'resultados',
+  'duvidas',
+  'ia',
+] as const
+const contentSchema = z.string().min(1).max(5000).refine((value) => value.trim().length > 0)
+const imageUrlSchema = z.string().max(2048).refine((value) => {
+  try {
+    const protocol = new URL(value).protocol
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
   }
+})
+const paginationSchema = z.string().regex(/^[1-9]\d*$/).transform(Number)
+const getPostsSchema = z.object({
+  category: z.enum(['all', ...categories]).optional(),
+  page: paginationSchema.default('1'),
+  limit: paginationSchema.refine((value) => value <= 100).default('20'),
+}).strict()
+const createPostSchema = z.object({
+  content: contentSchema,
+  category: z.enum(categories),
+  image_url: imageUrlSchema.optional(),
+}).strict()
+const updatePostSchema = z.object({
+  id: z.string().uuid(),
+  content: contentSchema,
+}).strict()
+const deletePostSchema = z.object({ id: z.string().uuid() }).strict()
 
-  const supabase = await createClient();
+const POST_COLUMNS = 'id, user_id, content, category, image_url, is_pinned, is_edited, edited_at, created_at, community_comments(count), community_reactions(count)'
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { searchParams } = new URL(request.url);
-  const category = searchParams.get('category');
-  const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
-  const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '20')));
-  const offset = (page - 1) * limit;
-
-  let query = supabase
-    .from('community_posts')
-    .select(`
-      *,
-      community_comments (count),
-      community_reactions (count)
-    `)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  // Validate and sanitize category
-  const validCategories = ['all', 'geral', 'iniciantes', 'produtos', 'fornecedores', 'anuncios', 'mercado-ads', 'resultados', 'duvidas', 'ia'];
-  if (category && validCategories.includes(category) && category !== 'all') {
-    query = query.eq('category', category);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    return NextResponse.json({ error: 'Failed to fetch posts' }, { status: 500 });
-  }
-
-  const userIds = [...new Set((data || []).map((post) => post.user_id))];
-  const { data: profiles, error: profilesError } = userIds.length
-    ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', userIds)
-    : { data: [], error: null };
-
-  if (profilesError) {
-    return NextResponse.json({ error: 'Failed to fetch post authors' }, { status: 500 });
-  }
-
-  const profilesById = new Map((profiles || []).map((profile) => [profile.id, profile]));
-  const posts = (data || []).map((post) => ({
-    ...post,
-    profiles: profilesById.get(post.user_id) || { full_name: 'Usuário', avatar_url: '' }
-  }));
-
-  return NextResponse.json({ posts });
+function sanitizedContent(content: string) {
+  const sanitized = sanitizeInput(content)
+  return sanitized.length > 0 ? sanitized : null
 }
 
-export async function POST(request: NextRequest) {
-  // Rate limiting: 10 requests per minute per user for creating posts
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`posts-post-${ip}`, 10, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
+export async function GET(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
+
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'posts', 'get', 60)
+  if (limited) return limited
+
+  const parsed = getPostsSchema.safeParse(searchParams(request))
+  if (!parsed.success) return invalidInput()
+
+  const offset = (parsed.data.page - 1) * parsed.data.limit
+  let query = supabase
+    .from('community_posts')
+    .select(POST_COLUMNS)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + parsed.data.limit - 1)
+
+  if (parsed.data.category && parsed.data.category !== 'all') {
+    query = query.eq('category', parsed.data.category)
   }
 
-  const supabase = await createClient();
+  const { data, error } = await query
+  if (error) return NextResponse.json({ error: 'Failed to fetch posts' }, { status: 500 })
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const userIds = [...new Set((data || []).map((post) => post.user_id))]
+  const { data: profiles, error: profilesError } = userIds.length
+    ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', userIds)
+    : { data: [], error: null }
+
+  if (profilesError) {
+    return NextResponse.json({ error: 'Failed to fetch post authors' }, { status: 500 })
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
-  }
+  const profilesById = new Map((profiles || []).map((profile) => [profile.id, profile]))
+  const posts = (data || []).map((post) => ({
+    ...post,
+    profiles: profilesById.get(post.user_id) || { full_name: 'Usuário', avatar_url: '' },
+  }))
 
-  const { content, category, image_url } = body;
+  return NextResponse.json({ posts })
+}
 
-  if (!content || content.trim().length === 0) {
-    return NextResponse.json({ error: 'Content is required' }, { status: 400 });
-  }
+export async function POST(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
 
-  // Sanitize content
-  const sanitizedContent = sanitizeInput(content);
-  
-  if (sanitizedContent.length > 5000) {
-    return NextResponse.json({ error: 'Content too long (max 5000 characters)' }, { status: 400 });
-  }
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'posts', 'post', 10)
+  if (limited) return limited
 
-  // Validate category
-  const validCategories = ['geral', 'iniciantes', 'produtos', 'fornecedores', 'anuncios', 'mercado-ads', 'resultados', 'duvidas', 'ia'];
-  const sanitizedCategory = validCategories.includes(category) ? category : 'geral';
+  const json = await readJson(request)
+  if (json.response) return json.response
+  const parsed = createPostSchema.safeParse(json.body)
+  if (!parsed.success) return invalidInput()
 
-  // Validate image_url if provided
-  let sanitizedImageUrl = '';
-  if (image_url && typeof image_url === 'string') {
-    try {
-      const url = new URL(image_url);
-      if (['http:', 'https:'].includes(url.protocol)) {
-        sanitizedImageUrl = url.toString();
-      }
-    } catch {
-      // Invalid URL, ignore
-    }
-  }
+  const content = sanitizedContent(parsed.data.content)
+  if (!content) return invalidInput()
 
   const { data, error } = await supabase
     .from('community_posts')
     .insert({
-      user_id: user.id,
-      content: sanitizedContent,
-      category: sanitizedCategory,
-      image_url: sanitizedImageUrl
+      user_id: authorizedUser.id,
+      content,
+      category: parsed.data.category,
+      image_url: parsed.data.image_url ?? '',
     })
-    .select('*')
-    .single();
+    .select(POST_COLUMNS)
+    .single()
 
-  if (error) {
-    return NextResponse.json({ error: 'Failed to create post' }, { status: 500 });
-  }
+  if (error) return NextResponse.json({ error: 'Failed to create post' }, { status: 500 })
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('full_name, avatar_url')
-    .eq('id', user.id)
-    .single();
+    .select('id, full_name, avatar_url')
+    .eq('id', authorizedUser.id)
+    .single()
 
   return NextResponse.json({
     post: {
       ...data,
       profiles: profile || { full_name: 'Usuário', avatar_url: '' },
       community_comments: [{ count: 0 }],
-      community_reactions: [{ count: 0 }]
-    }
-  }, { status: 201 });
+      community_reactions: [{ count: 0 }],
+    },
+  }, { status: 201 })
 }
 
-export async function PUT(request: NextRequest) {
-  // Rate limiting: 20 requests per minute per user for updating posts
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`posts-put-${ip}`, 20, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
-  }
+export async function PUT(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
 
-  const supabase = await createClient();
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'posts', 'put', 20)
+  if (limited) return limited
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const json = await readJson(request)
+  if (json.response) return json.response
+  const parsed = updatePostSchema.safeParse(json.body)
+  if (!parsed.success) return invalidInput()
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
-  }
-
-  const { id, content } = body;
-
-  if (!id || !content) {
-    return NextResponse.json({ error: 'ID and content are required' }, { status: 400 });
-  }
-
-  // Validate ID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(id)) {
-    return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
-  }
-
-  // Sanitize content
-  const sanitizedContent = sanitizeInput(content);
-  
-  if (sanitizedContent.length > 5000) {
-    return NextResponse.json({ error: 'Content too long (max 5000 characters)' }, { status: 400 });
-  }
+  const content = sanitizedContent(parsed.data.content)
+  if (!content) return invalidInput()
 
   const { data, error } = await supabase
     .from('community_posts')
-    .update({ content: sanitizedContent })
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .select()
-    .single();
+    .update({ content })
+    .eq('id', parsed.data.id)
+    .eq('user_id', authorizedUser.id)
+    .select(POST_COLUMNS)
+    .maybeSingle()
 
-  if (error) {
-    return NextResponse.json({ error: 'Failed to update post' }, { status: 500 });
-  }
-
-  return NextResponse.json({ post: data });
+  if (error) return NextResponse.json({ error: 'Failed to update post' }, { status: 500 })
+  if (!data) return NextResponse.json({ error: 'Post not found' }, { status: 404 })
+  return NextResponse.json({ post: data })
 }
 
-export async function DELETE(request: NextRequest) {
-  // Rate limiting: 20 requests per minute per user for deleting posts
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`posts-delete-${ip}`, 20, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
-  }
+export async function DELETE(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
 
-  const supabase = await createClient();
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'posts', 'delete', 20)
+  if (limited) return limited
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const parsed = deletePostSchema.safeParse(searchParams(request))
+  if (!parsed.success) return invalidInput()
 
-  const { searchParams } = new URL(request.url);
-  const id = searchParams.get('id');
-
-  if (!id) {
-    return NextResponse.json({ error: 'ID is required' }, { status: 400 });
-  }
-
-  // Validate ID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(id)) {
-    return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
-  }
-
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('community_posts')
     .delete()
-    .eq('id', id)
-    .eq('user_id', user.id);
+    .eq('id', parsed.data.id)
+    .eq('user_id', authorizedUser.id)
+    .select('id')
+    .maybeSingle()
 
-  if (error) {
-    return NextResponse.json({ error: 'Failed to delete post' }, { status: 500 });
-  }
-
-  return NextResponse.json({ success: true });
+  if (error) return NextResponse.json({ error: 'Failed to delete post' }, { status: 500 })
+  if (!data) return NextResponse.json({ error: 'Post not found' }, { status: 404 })
+  return NextResponse.json({ success: true })
 }

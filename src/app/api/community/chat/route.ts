@@ -1,252 +1,182 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { checkRateLimit, sanitizeInput } from '@/lib/security';
+import { NextResponse } from 'next/server'
+import { z } from 'zod'
+import { sanitizeInput } from '@/lib/security'
+import {
+  enforceCommunityRateLimit,
+  invalidInput,
+  readJson,
+  requireCommunityUser,
+  searchParams,
+} from '../helpers'
 
-export async function GET(request: NextRequest) {
-  // Rate limiting: 100 requests per minute per user
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`chat-get-${ip}`, 100, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
-  }
+const contentSchema = z.string().min(1).max(1000).refine((value) => value.trim().length > 0)
+const paginationSchema = z.string().regex(/^[1-9]\d*$/).transform(Number)
+const getChatSchema = z.object({
+  channel_id: z.string().uuid().optional(),
+  page: paginationSchema.default('1'),
+  limit: paginationSchema.refine((value) => value <= 100).default('50'),
+}).strict().refine(
+  (value) => value.channel_id !== undefined || (value.page === 1 && value.limit === 50),
+  { message: 'Pagination requires a channel' },
+)
+const createMessageSchema = z.object({
+  channel_id: z.string().uuid(),
+  content: contentSchema,
+}).strict()
+const updateMessageSchema = z.object({
+  id: z.string().uuid(),
+  content: contentSchema,
+}).strict()
+const deleteMessageSchema = z.object({ id: z.string().uuid() }).strict()
+const CHANNEL_COLUMNS = 'id, name, description, slug, icon, is_active, created_at'
+const MESSAGE_COLUMNS = 'id, channel_id, user_id, content, is_edited, edited_at, created_at'
 
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { searchParams } = new URL(request.url);
-  const channelId = searchParams.get('channel_id');
-
-  if (!channelId) {
-    const { data: channels, error: channelsError } = await supabase
-      .from('chat_channels')
-      .select('*')
-      .eq('is_active', true)
-      .order('name');
-
-    if (channelsError) {
-      return NextResponse.json({ error: 'Failed to fetch channels' }, { status: 500 });
-    }
-
-    return NextResponse.json({ channels });
-  }
-
-  // Validate channel_id format (should be UUID)
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(channelId)) {
-    return NextResponse.json({ error: 'Invalid channel ID format' }, { status: 400 });
-  }
-
-  const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
-  const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '50')));
-  const offset = (page - 1) * limit;
-
-  const { data, error } = await supabase
-    .from('chat_messages')
-    .select('*')
-    .eq('channel_id', channelId)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (error) {
-    return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });
-  }
-
-  const userIds = [...new Set((data || []).map((message) => message.user_id))];
-  const { data: profiles, error: profilesError } = userIds.length
-    ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', userIds)
-    : { data: [], error: null };
-
-  if (profilesError) {
-    return NextResponse.json({ error: 'Failed to fetch message authors' }, { status: 500 });
-  }
-
-  const profilesById = new Map((profiles || []).map((profile) => [profile.id, profile]));
-  const messages = (data || []).reverse().map((message) => ({
-    ...message,
-    profiles: profilesById.get(message.user_id) || { full_name: 'Usuário', avatar_url: '' }
-  }));
-
-  return NextResponse.json({ messages });
+function sanitizedContent(content: string) {
+  const sanitized = sanitizeInput(content)
+  return sanitized.length > 0 ? sanitized : null
 }
 
-export async function POST(request: NextRequest) {
-  // Rate limiting: 30 requests per minute per user for creating messages
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`chat-post-${ip}`, 30, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
+export async function GET(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
+
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'chat', 'get', 100)
+  if (limited) return limited
+
+  const parsed = getChatSchema.safeParse(searchParams(request))
+  if (!parsed.success) return invalidInput()
+
+  if (!parsed.data.channel_id) {
+    const { data: channels, error } = await supabase
+      .from('chat_channels')
+      .select(CHANNEL_COLUMNS)
+      .eq('is_active', true)
+      .order('name')
+
+    if (error) return NextResponse.json({ error: 'Failed to fetch channels' }, { status: 500 })
+    return NextResponse.json({ channels })
   }
 
-  const supabase = await createClient();
+  const offset = (parsed.data.page - 1) * parsed.data.limit
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .select(MESSAGE_COLUMNS)
+    .eq('channel_id', parsed.data.channel_id)
+    .order('created_at', { ascending: false })
+    .range(offset, offset + parsed.data.limit - 1)
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (error) return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 })
+
+  const userIds = [...new Set((data || []).map((message) => message.user_id))]
+  const { data: profiles, error: profilesError } = userIds.length
+    ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', userIds)
+    : { data: [], error: null }
+
+  if (profilesError) {
+    return NextResponse.json({ error: 'Failed to fetch message authors' }, { status: 500 })
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
-  }
+  const profilesById = new Map((profiles || []).map((profile) => [profile.id, profile]))
+  const messages = (data || []).reverse().map((message) => ({
+    ...message,
+    profiles: profilesById.get(message.user_id) || { full_name: 'Usuário', avatar_url: '' },
+  }))
 
-  const { channel_id, content } = body;
+  return NextResponse.json({ messages })
+}
 
-  if (!channel_id || !content || content.trim().length === 0) {
-    return NextResponse.json({ error: 'Channel ID and content are required' }, { status: 400 });
-  }
+export async function POST(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
 
-  // Validate channel_id format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(channel_id)) {
-    return NextResponse.json({ error: 'Invalid channel ID format' }, { status: 400 });
-  }
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'chat', 'post', 30)
+  if (limited) return limited
 
-  // Sanitize content
-  const sanitizedContent = sanitizeInput(content);
-  
-  if (sanitizedContent.length > 1000) {
-    return NextResponse.json({ error: 'Message too long (max 1000 characters)' }, { status: 400 });
-  }
+  const json = await readJson(request)
+  if (json.response) return json.response
+  const parsed = createMessageSchema.safeParse(json.body)
+  if (!parsed.success) return invalidInput()
+
+  const content = sanitizedContent(parsed.data.content)
+  if (!content) return invalidInput()
 
   const { data, error } = await supabase
     .from('chat_messages')
     .insert({
-      channel_id,
-      user_id: user.id,
-      content: sanitizedContent
+      channel_id: parsed.data.channel_id,
+      user_id: authorizedUser.id,
+      content,
     })
-    .select('*')
-    .single();
+    .select(MESSAGE_COLUMNS)
+    .single()
 
-  if (error) {
-    return NextResponse.json({ error: 'Failed to create message' }, { status: 500 });
-  }
+  if (error) return NextResponse.json({ error: 'Failed to create message' }, { status: 500 })
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('full_name, avatar_url')
-    .eq('id', user.id)
-    .single();
+    .select('id, full_name, avatar_url')
+    .eq('id', authorizedUser.id)
+    .single()
 
   return NextResponse.json({
     message: {
       ...data,
-      profiles: profile || { full_name: 'Usuário', avatar_url: '' }
-    }
-  }, { status: 201 });
+      profiles: profile || { full_name: 'Usuário', avatar_url: '' },
+    },
+  }, { status: 201 })
 }
 
-export async function PUT(request: NextRequest) {
-  // Rate limiting: 20 requests per minute per user for updating messages
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`chat-put-${ip}`, 20, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
-  }
+export async function PUT(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
 
-  const supabase = await createClient();
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'chat', 'put', 20)
+  if (limited) return limited
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const json = await readJson(request)
+  if (json.response) return json.response
+  const parsed = updateMessageSchema.safeParse(json.body)
+  if (!parsed.success) return invalidInput()
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
-  }
-
-  const { id, content } = body;
-
-  if (!id || !content) {
-    return NextResponse.json({ error: 'ID and content are required' }, { status: 400 });
-  }
-
-  // Validate ID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(id)) {
-    return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
-  }
-
-  // Sanitize content
-  const sanitizedContent = sanitizeInput(content);
+  const content = sanitizedContent(parsed.data.content)
+  if (!content) return invalidInput()
 
   const { data, error } = await supabase
     .from('chat_messages')
-    .update({ content: sanitizedContent })
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .select()
-    .single();
+    .update({ content })
+    .eq('id', parsed.data.id)
+    .eq('user_id', authorizedUser.id)
+    .select(MESSAGE_COLUMNS)
+    .maybeSingle()
 
-  if (error) {
-    return NextResponse.json({ error: 'Failed to update message' }, { status: 500 });
-  }
-
-  return NextResponse.json({ message: data });
+  if (error) return NextResponse.json({ error: 'Failed to update message' }, { status: 500 })
+  if (!data) return NextResponse.json({ error: 'Message not found' }, { status: 404 })
+  return NextResponse.json({ message: data })
 }
 
-export async function DELETE(request: NextRequest) {
-  // Rate limiting: 20 requests per minute per user for deleting messages
-  const ip = request.headers.get('x-forwarded-for') || 'unknown';
-  const rateLimitResult = checkRateLimit(`chat-delete-${ip}`, 20, 60000);
-  
-  if (!rateLimitResult.allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests' },
-      { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
-    );
-  }
+export async function DELETE(request: Request) {
+  const context = await requireCommunityUser()
+  if (context.response) return context.response
+  const { authorizedUser, supabase } = context
 
-  const supabase = await createClient();
+  const limited = enforceCommunityRateLimit(authorizedUser.id, 'chat', 'delete', 20)
+  if (limited) return limited
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const parsed = deleteMessageSchema.safeParse(searchParams(request))
+  if (!parsed.success) return invalidInput()
 
-  const { searchParams } = new URL(request.url);
-  const id = searchParams.get('id');
-
-  if (!id) {
-    return NextResponse.json({ error: 'ID is required' }, { status: 400 });
-  }
-
-  // Validate ID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(id)) {
-    return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
-  }
-
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('chat_messages')
     .delete()
-    .eq('id', id)
-    .eq('user_id', user.id);
+    .eq('id', parsed.data.id)
+    .eq('user_id', authorizedUser.id)
+    .select('id')
+    .maybeSingle()
 
-  if (error) {
-    return NextResponse.json({ error: 'Failed to delete message' }, { status: 500 });
-  }
-
-  return NextResponse.json({ success: true });
+  if (error) return NextResponse.json({ error: 'Failed to delete message' }, { status: 500 })
+  if (!data) return NextResponse.json({ error: 'Message not found' }, { status: 404 })
+  return NextResponse.json({ success: true })
 }
