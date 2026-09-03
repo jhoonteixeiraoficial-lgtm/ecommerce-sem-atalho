@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="goldGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#b8943d"/>
+      <stop offset="50%" stop-color="#c8a44e"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- CONCEPT 1: Abstract Path Mark -->
+  <path d="M 65 335 C 95 298 118 278 148 255 C 178 232 188 215 200 195 C 212 175 232 155 255 140 C 278 125 305 105 335 65"
+        stroke="url(#goldGrad)" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <circle cx="65" cy="335" r="16" fill="#c8a44e" opacity="0.2"/>
+  <circle cx="65" cy="335" r="8" fill="#c8a44e"/>
+  <circle cx="148" cy="255" r="18" fill="#c8a44e" opacity="0.17"/>
+  <circle cx="148" cy="255" r="9" fill="#c8a44e" opacity="0.9"/>
+  <circle cx="200" cy="195" r="20" fill="#c8a44e" opacity="0.15"/>
+  <circle cx="200" cy="195" r="10" fill="#c8a44e"/>
+  <circle cx="255" cy="140" r="22" fill="#c8a44e" opacity="0.13"/>
+  <circle cx="255" cy="140" r="11" fill="#c8a44e" opacity="0.9"/>
+  <circle cx="335" cy="65" r="28" fill="#c8a44e" opacity="0.08" filter="url(#glow)"/>
+  <circle cx="335" cy="65" r="16" fill="#c8a44e" opacity="0.25"/>
+  <circle cx="335" cy="65" r="8" fill="#e8c96e"/>
+  <polygon points="335,28 358,65 335,53 312,65" fill="#c8a44e"/>
+  <circle cx="105" cy="295" r="3.5" fill="#c8a44e" opacity="0.4"/>
+  <circle cx="175" cy="225" r="3.5" fill="#c8a44e" opacity="0.45"/>
+  <circle cx="228" cy="168" r="3.5" fill="#c8a44e" opacity="0.5"/>
+  <circle cx="295" cy="102" r="3.5" fill="#c8a44e" opacity="0.55"/>
+</svg>

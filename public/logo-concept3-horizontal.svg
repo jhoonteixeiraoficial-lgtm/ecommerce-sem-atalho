@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 650 120" width="650" height="120">
+  <defs>
+    <linearGradient id="pathGrad3H" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#b8943d"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  <!-- CONCEPT 3 HORIZONTAL -->
+  <g transform="translate(8,6) scale(0.58)">
+    <path d="M 18 185 C 42 152 60 130 85 105 C 105 85 120 62 138 42 C 155 22 175 6 200 0"
+          stroke="url(#pathGrad3H)" stroke-width="4" fill="none" stroke-linecap="round"/>
+    <circle cx="18" cy="185" r="11" fill="#c8a44e" opacity="0.25"/>
+    <circle cx="18" cy="185" r="5.5" fill="#c8a44e"/>
+    <circle cx="85" cy="105" r="13" fill="#c8a44e" opacity="0.2"/>
+    <circle cx="85" cy="105" r="6.5" fill="#c8a44e" opacity="0.88"/>
+    <circle cx="138" cy="42" r="15" fill="#c8a44e" opacity="0.16"/>
+    <circle cx="138" cy="42" r="7.5" fill="#c8a44e"/>
+    <circle cx="200" cy="0" r="17" fill="#c8a44e" opacity="0.12"/>
+    <circle cx="200" cy="0" r="9" fill="#c8a44e" opacity="0.45"/>
+    <circle cx="200" cy="0" r="4.5" fill="#e8c96e"/>
+    <polygon points="200,-16 212,0 200,-5 188,0" fill="#c8a44e"/>
+    <circle cx="50" cy="145" r="2.8" fill="#c8a44e" opacity="0.35"/>
+    <circle cx="112" cy="72" r="2.8" fill="#c8a44e" opacity="0.4"/>
+    <circle cx="170" cy="18" r="2.8" fill="#c8a44e" opacity="0.45"/>
+  </g>
+  <g transform="translate(140,12)">
+    <text x="0" y="42" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+          font-size="38" font-weight="300" fill="#ffffff" letter-spacing="1">E-commerce</text>
+    <text x="0" y="92" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+          font-size="38" font-weight="300" fill="#ffffff" letter-spacing="1">Sem</text>
+    <g transform="translate(96,54)">
+      <path d="M 0 38 L 16 0 L 32 38" stroke="#c8a44e" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="6" y1="25" x2="26" y2="25" stroke="#c8a44e" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="16" cy="-3" r="2.5" fill="#e8c96e"/>
+    </g>
+    <text x="132" y="92" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+          font-size="38" font-weight="300" fill="#ffffff" letter-spacing="1">talho</text>
+  </g>
+</svg>

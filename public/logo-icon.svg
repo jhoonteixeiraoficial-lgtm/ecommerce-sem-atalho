@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b8943d"/>
+      <stop offset="50%" stop-color="#c8a44e"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Icon: Stylized "S" arrow in rounded square -->
+  
+  <!-- Background -->
+  <rect x="2" y="2" width="60" height="60" rx="12" ry="12" fill="#0c0c0c"/>
+  
+  <!-- Stylized "S" -->
+  <g transform="translate(12,8)">
+    <path d="M 20 0 C 32 0 40 8 40 18 C 40 28 32 34 22 34" 
+          stroke="url(#gold)" stroke-width="6" fill="none" stroke-linecap="round"/>
+    <path d="M 26 34 C 16 34 8 42 8 52 C 8 62 16 70 26 70" 
+          stroke="url(#gold)" stroke-width="6" fill="none" stroke-linecap="round"/>
+    <polygon points="26,70 20,62 32,62" fill="url(#gold)"/>
+  </g>
+</svg>

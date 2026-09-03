@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 80" width="520" height="80">
+  <defs>
+    <linearGradient id="goldA2H" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c8a44e"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  <!-- CONCEPT 2 HORIZONTAL: Single line -->
+  <text x="15" y="52" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="38" font-weight="300" fill="#ffffff" letter-spacing="1">E-commerce Sem</text>
+  <g transform="translate(340,10)">
+    <path d="M 0 42 L 17 0 L 34 42" stroke="url(#goldA2H)" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="7" y1="28" x2="27" y2="28" stroke="#c8a44e" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="17" cy="-3" r="3" fill="#e8c96e"/>
+  </g>
+  <text x="380" y="52" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="38" font-weight="300" fill="#ffffff" letter-spacing="1">talho</text>
+</svg>

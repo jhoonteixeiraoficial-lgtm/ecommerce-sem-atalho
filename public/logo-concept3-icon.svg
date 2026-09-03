@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="pathGrad3I" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#b8943d"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  <!-- CONCEPT 3 ICON -->
+  <circle cx="64" cy="64" r="58" fill="none" stroke="#c8a44e" stroke-width="1.5" opacity="0.1"/>
+  <path d="M 16 112 C 28 95 40 82 55 68 C 65 58 75 45 82 36 C 90 26 100 14 115 4"
+        stroke="url(#pathGrad3I)" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <circle cx="16" cy="112" r="8" fill="#c8a44e" opacity="0.28"/>
+  <circle cx="16" cy="112" r="4" fill="#c8a44e"/>
+  <circle cx="55" cy="68" r="9.5" fill="#c8a44e" opacity="0.22"/>
+  <circle cx="55" cy="68" r="4.8" fill="#c8a44e" opacity="0.88"/>
+  <circle cx="82" cy="36" r="11" fill="#c8a44e" opacity="0.18"/>
+  <circle cx="82" cy="36" r="5.5" fill="#c8a44e"/>
+  <circle cx="115" cy="4" r="13" fill="#c8a44e" opacity="0.14"/>
+  <circle cx="115" cy="4" r="6.5" fill="#c8a44e" opacity="0.5"/>
+  <circle cx="115" cy="4" r="3.2" fill="#e8c96e"/>
+  <polygon points="115,-8 124,4 115,0 106,4" fill="#c8a44e"/>
+  <circle cx="35" cy="90" r="2" fill="#c8a44e" opacity="0.35"/>
+  <circle cx="68" cy="52" r="2" fill="#c8a44e" opacity="0.4"/>
+  <circle cx="100" cy="18" r="2" fill="#c8a44e" opacity="0.45"/>
+</svg>

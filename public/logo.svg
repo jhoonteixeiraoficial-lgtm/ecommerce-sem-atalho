@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 140" width="400" height="140">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b8943d"/>
+      <stop offset="50%" stop-color="#c8a44e"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Logo: Stylized "S" arrow + wordmark -->
+  
+  <!-- Stylized "S" made of two curved arrows -->
+  <g transform="translate(10,20)">
+    <!-- Top curve -->
+    <path d="M 45 0 C 70 0 85 15 85 35 C 85 55 70 65 50 65 L 50 65" 
+          stroke="url(#gold)" stroke-width="8" fill="none" stroke-linecap="round"/>
+    <!-- Bottom curve -->
+    <path d="M 55 65 C 35 65 20 80 20 100 C 20 120 35 130 55 130" 
+          stroke="url(#gold)" stroke-width="8" fill="none" stroke-linecap="round"/>
+    <!-- Arrow at end -->
+    <polygon points="55,130 45,120 65,120" fill="url(#gold)"/>
+  </g>
+  
+  <!-- Wordmark -->
+  <g transform="translate(130,25)">
+    <text x="0" y="38" font-family="'Inter','Helvetica Neue',Arial,sans-serif" 
+          font-size="28" font-weight="400" fill="#ffffff" letter-spacing="3">e-commerce</text>
+    
+    <text x="0" y="80" font-family="'Inter','Helvetica Neue',Arial,sans-serif" 
+          font-size="36" font-weight="800" fill="url(#gold)" letter-spacing="4">SEM ATALHO</text>
+  </g>
+</svg>

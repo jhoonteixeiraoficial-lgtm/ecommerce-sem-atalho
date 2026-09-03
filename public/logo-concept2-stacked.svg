@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 140" width="400" height="140">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c8a44e"/>
+      <stop offset="100%" stop-color="#d4b05a"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Concept 2: Stacked Clean (PRIMARY) -->
+  <!-- "ECOMMERCE" massive white + "SEM ATALHO" gold below -->
+  
+  <text x="0" y="58" font-family="'Inter','Helvetica Neue',Arial,sans-serif" 
+        font-size="56" font-weight="800" fill="#ffffff" letter-spacing="8">ECOMMERCE</text>
+  
+  <text x="0" y="110" font-family="'Inter','Helvetica Neue',Arial,sans-serif" 
+        font-size="42" font-weight="700" fill="url(#gold)" letter-spacing="12">SEM ATALHO</text>
+</svg>

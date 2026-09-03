@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="goldA2I" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#b8943d"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  <!-- CONCEPT 2 ICON: Custom "A" as standalone mark -->
+  <circle cx="100" cy="100" r="90" fill="none" stroke="#c8a44e" stroke-width="2" opacity="0.12"/>
+  <g transform="translate(52,22)">
+    <path d="M 0 156 L 48 8 L 96 156" stroke="url(#goldA2I)" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="18" y1="105" x2="78" y2="105" stroke="#c8a44e" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="48" cy="2" r="7" fill="#e8c96e"/>
+    <polygon points="48,-18 62,8 48,0 34,8" fill="#c8a44e" opacity="0.85"/>
+  </g>
+</svg>

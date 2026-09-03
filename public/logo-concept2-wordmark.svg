@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" width="600" height="200">
+  <defs>
+    <linearGradient id="goldAccent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c8a44e"/>
+      <stop offset="100%" stop-color="#e8c96e"/>
+    </linearGradient>
+  </defs>
+  <!-- CONCEPT 2: Wordmark with Custom Letterforms -->
+  <text x="30" y="82" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="56" font-weight="300" fill="#ffffff" letter-spacing="2">E-commerce</text>
+  <text x="30" y="152" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="56" font-weight="300" fill="#ffffff" letter-spacing="2">Sem</text>
+  <g transform="translate(188,108)">
+    <path d="M 0 44 L 21 0 L 42 44" stroke="url(#goldAccent)" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="9" y1="30" x2="33" y2="30" stroke="#c8a44e" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="21" cy="-4" r="4" fill="#e8c96e"/>
+  </g>
+  <text x="235" y="152" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="56" font-weight="300" fill="#ffffff" letter-spacing="2">talho</text>
+  <line x1="30" y1="170" x2="570" y2="170" stroke="#c8a44e" stroke-width="1.2" opacity="0.35"/>
+</svg>
