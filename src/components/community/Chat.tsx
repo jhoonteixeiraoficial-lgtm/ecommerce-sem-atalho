@@ -6,7 +6,10 @@ import { Send, Hash, MessageCircle, ArrowLeft, RefreshCw } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import {
+  createChannelComposer,
   createRefreshScheduler,
+  createRealtimeRecovery,
+  createSnapshotCoordinator,
   createSyncGeneration,
   mergeChronological,
 } from './community-realtime';
@@ -46,16 +49,16 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [, setComposerVersion] = useState(0);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [drafts] = useState(() => new Map<string, string>());
+  const [composer] = useState(createChannelComposer);
   const [syncGenerations] = useState(createSyncGeneration);
-  const [sendGenerations] = useState(createSyncGeneration);
   const [supabase] = useState(() => createClient());
+  const channelSending = selectedChannel ? composer.isSending(selectedChannel.id) : false;
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -105,37 +108,27 @@ export default function Chat() {
 
     const channelId = selectedChannel.id;
     const run = syncGenerations.begin();
-    let polling: ReturnType<typeof setInterval> | null = null;
-    let eventRevision = 0;
-
-    const fetchMessages = async () => {
-      const revisionAtStart = eventRevision;
-      try {
+    const snapshots = createSnapshotCoordinator<Message[]>({
+      load: async (signal) => {
         const response = await fetch(`/api/community/chat?channel_id=${channelId}&limit=100`, {
-          signal: run.signal,
+          signal,
         });
         const result = await response.json();
-        if (!run.isCurrent()) return;
-        if (!response.ok) {
-          setError(result.error || 'Erro ao carregar mensagens');
-        } else {
-          setMessages((current) => eventRevision === revisionAtStart
-            ? mergeChronological([], result.messages || [])
-            : mergeChronological(current, result.messages || []));
-        }
-      } catch (fetchError) {
-        if (!run.isCurrent() || (fetchError instanceof DOMException && fetchError.name === 'AbortError')) return;
+        if (!response.ok) throw new Error(result.error || 'Erro ao carregar mensagens');
+        return result.messages || [];
+      },
+      apply: (snapshot) => {
+        setMessages(mergeChronological([], snapshot));
+        setLoading(false);
+      },
+      onError: () => {
         setError('Erro de conexão ao carregar mensagens');
-      } finally {
-        if (run.isCurrent()) setLoading(false);
-      }
-    };
+        setLoading(false);
+      },
+    });
 
-    const refresh = createRefreshScheduler(() => void fetchMessages(), 250);
-    const enableFallback = () => {
-      void fetchMessages();
-      polling ??= setInterval(() => void fetchMessages(), 15000);
-    };
+    const refresh = createRefreshScheduler(() => void snapshots.refresh(), 250);
+    const recovery = createRealtimeRecovery(() => void snapshots.refresh(), 15000);
 
     const channel = supabase
       .channel(`chat:${channelId}`)
@@ -149,9 +142,9 @@ export default function Chat() {
         },
         async (payload: { eventType: string; new: Record<string, unknown> }) => {
           if (!run.isCurrent()) return;
-          eventRevision += 1;
+          snapshots.invalidate();
+          refresh.request();
           if (payload.eventType !== 'INSERT') {
-            refresh.request();
             return;
           }
 
@@ -180,33 +173,34 @@ export default function Chat() {
       .subscribe((status) => {
         if (!run.isCurrent()) return;
         if (status === 'SUBSCRIBED') {
+          recovery.recovered();
           setRealtimeError(null);
-          void fetchMessages();
+          void snapshots.refresh();
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           setRealtimeError('Atualizações em tempo real indisponíveis. Atualização automática ativada.');
-          enableFallback();
+          recovery.failed();
         }
       });
 
     return () => {
       syncGenerations.cancel();
+      snapshots.cancel();
       refresh.cancel();
-      if (polling) clearInterval(polling);
+      recovery.cancel();
       supabase.removeChannel(channel);
     };
   }, [selectedChannel, supabase, syncGenerations, refreshVersion]);
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !selectedChannel || sending) return;
+    if (!newMessage.trim() || !selectedChannel || channelSending) return;
 
-    setSending(true);
     setError(null);
     const content = newMessage.trim();
     const channelId = selectedChannel.id;
-    const sendRun = sendGenerations.begin();
-    drafts.delete(channelId);
-    setNewMessage('');
+    const operation = composer.beginSend(channelId, content);
+    setComposerVersion((version) => version + 1);
+    setNewMessage(composer.getDraft(channelId));
 
     try {
       const response = await fetch('/api/community/chat', {
@@ -221,26 +215,25 @@ export default function Chat() {
       if (!response.ok) {
         const errorData = await response.json();
         console.error('Chat error:', errorData.error);
-        drafts.set(channelId, content);
-        if (sendRun.isCurrent()) {
+        if (composer.fail(operation) && composer.isActive(channelId)) {
           setError(errorData.error || 'Erro ao enviar mensagem');
-          setNewMessage(content);
+          setNewMessage(composer.getDraft(channelId));
         }
       } else {
         const result = await response.json();
-        if (result.message && sendRun.isCurrent()) {
+        if (composer.succeed(operation) && result.message && composer.isActive(channelId)) {
           setMessages((current) => mergeChronological(current, [result.message]));
         }
       }
     } catch (err) {
       console.error('Chat error:', err);
-      drafts.set(channelId, content);
-      if (sendRun.isCurrent()) {
+      if (composer.fail(operation) && composer.isActive(channelId)) {
         setError('Erro de conexão ao enviar mensagem');
-        setNewMessage(content);
+        setNewMessage(composer.getDraft(channelId));
       }
+    } finally {
+      setComposerVersion((version) => version + 1);
     }
-    setSending(false);
   };
 
   const getInitials = (name: string) => {
@@ -284,13 +277,13 @@ export default function Chat() {
             <button
               key={channel.id}
               onClick={() => {
-                sendGenerations.cancel();
+                composer.setActiveChannel(channel.id);
                 setMessages([]);
                 setLoading(true);
                 setError(null);
                 setRealtimeError(null);
                 setSelectedChannel(channel);
-                setNewMessage(drafts.get(channel.id) || '');
+                setNewMessage(composer.getDraft(channel.id));
               }}
               className="w-full p-3 rounded-lg hover:bg-surface-raised transition-colors flex items-center gap-3 text-left"
             >
@@ -317,8 +310,8 @@ export default function Chat() {
       <div className="p-4 border-b border-border-subtle flex items-center gap-3">
         <button
           onClick={() => {
-            sendGenerations.cancel();
-            drafts.set(selectedChannel.id, newMessage);
+            composer.setDraft(selectedChannel.id, newMessage);
+            composer.setActiveChannel(null);
             setSelectedChannel(null);
             setNewMessage('');
           }}
@@ -425,16 +418,16 @@ export default function Chat() {
             value={newMessage}
             onChange={(e) => {
               setNewMessage(e.target.value);
-              drafts.set(selectedChannel.id, e.target.value);
+              composer.setDraft(selectedChannel.id, e.target.value);
             }}
             placeholder="Digite sua mensagem..."
             maxLength={1000}
-            disabled={sending}
+            disabled={channelSending}
             className="flex-1 bg-surface border border-border-subtle rounded-xl px-4 py-3 text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors disabled:opacity-50"
           />
           <button
             type="submit"
-            disabled={!newMessage.trim() || sending}
+            disabled={!newMessage.trim() || channelSending}
             className="px-4 py-3 bg-accent hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors"
           >
             <Send className="w-5 h-5 text-white" />

@@ -44,6 +44,20 @@ try {
     'db',
     'supabase/migration-tests/013_database_security_boundaries.test.sql',
   ])
+  runSupabase([
+    'db',
+    'reset',
+    '--version',
+    '016',
+    '--sql-paths',
+    './migration-tests/017_community_profiles.fixture.sql',
+  ])
+  runSupabase(['migration', 'up', '--local'])
+  runSupabase([
+    'test',
+    'db',
+    'supabase/migration-tests/017_community_profiles.test.sql',
+  ])
 } catch (error) {
   failed = true
   console.error(error instanceof Error ? error.message : error)

@@ -11,7 +11,11 @@ import {
   type ReactionOperationTracker,
 } from './reaction-operation';
 import {
+  createFeedChangeCoordinator,
+  createKeyedSnapshotCoordinator,
   createRefreshScheduler,
+  createRealtimeRecovery,
+  createSnapshotCoordinator,
   createSyncGeneration,
   normalizeFeedPosts,
 } from './community-realtime';
@@ -93,7 +97,23 @@ export default function Feed() {
   const [supabase] = useState(() => createClient());
   const [activeCategory] = useState({ value: selectedCategory });
   const [locallySubmittedPosts] = useState(() => new Set<string>());
-  const [feedGenerations] = useState(createSyncGeneration);
+  const [expandedPostIds] = useState(() => new Set<string>());
+  const [commentSnapshots] = useState(() => createKeyedSnapshotCoordinator<Comment[]>({
+    load: async (postId, signal) => {
+      const response = await fetch(`/api/community/comments?post_id=${postId}`, { signal });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Erro ao carregar comentários');
+      return result.comments || [];
+    },
+    apply: (postId, snapshot) => {
+      setComments((current) => ({ ...current, [postId]: snapshot }));
+    },
+    onError: (_postId, error) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        console.error('Fetch comments error:', error);
+      }
+    },
+  }));
   const [reactionGenerations] = useState(createSyncGeneration);
   const reactionOperations = useRef<ReactionOperationTracker | null>(null);
   reactionOperations.current ??= createReactionOperationTracker();
@@ -120,57 +140,49 @@ export default function Feed() {
 
   useEffect(() => {
     const category = selectedCategory;
-    const run = feedGenerations.begin();
-    let polling: ReturnType<typeof setInterval> | null = null;
-    let requestInFlight = false;
-    let requestQueued = false;
-
-    const fetchPosts = async () => {
-      if (requestInFlight) {
-        requestQueued = true;
-        return;
-      }
-      requestInFlight = true;
-
-      try {
+    const snapshots = createSnapshotCoordinator<Post[]>({
+      load: async (signal) => {
         const params = new URLSearchParams({ limit: '50' });
         if (category !== 'all') params.set('category', category);
-        const response = await fetch(`/api/community/posts?${params}`, { signal: run.signal });
+        const response = await fetch(`/api/community/posts?${params}`, { signal });
         const result = await response.json();
-        if (!run.isCurrent()) return;
-
-        if (!response.ok) {
-          setError(result.error || 'Erro ao carregar publicações');
-        } else {
-          const snapshot = normalizeFeedPosts<Post>(result.posts || [], category);
-          const snapshotIds = new Set(snapshot.map((post) => post.id));
-          setPosts((current) => {
-            const retainedLocal = current.filter((post) => (
-              locallySubmittedPosts.has(post.id) && !snapshotIds.has(post.id)
-            ));
-            for (const id of snapshotIds) locallySubmittedPosts.delete(id);
-            return normalizeFeedPosts([...retainedLocal, ...snapshot], category);
-          });
-        }
-      } catch (fetchError) {
-        if (!run.isCurrent() || (fetchError instanceof DOMException && fetchError.name === 'AbortError')) return;
+        if (!response.ok) throw new Error(result.error || 'Erro ao carregar publicações');
+        return result.posts || [];
+      },
+      apply: (postsSnapshot) => {
+        const snapshot = normalizeFeedPosts<Post>(postsSnapshot, category);
+        const snapshotIds = new Set(snapshot.map((post) => post.id));
+        setPosts((current) => {
+          const retainedLocal = current.filter((post) => (
+            locallySubmittedPosts.has(post.id) && !snapshotIds.has(post.id)
+          ));
+          for (const id of snapshotIds) locallySubmittedPosts.delete(id);
+          return normalizeFeedPosts([...retainedLocal, ...snapshot], category);
+        });
+        setLoading(false);
+      },
+      onError: () => {
         setError('Erro de conexão ao carregar publicações');
-      } finally {
-        requestInFlight = false;
-        if (run.isCurrent()) setLoading(false);
-        if (requestQueued && run.isCurrent()) {
-          requestQueued = false;
-          void fetchPosts();
-        }
-      }
-    };
+        setLoading(false);
+      },
+    });
 
-    const refresh = createRefreshScheduler(() => void fetchPosts(), 250);
-    const handleChange = () => refresh.request();
-    const enableFallback = () => {
-      void fetchPosts();
-      polling ??= setInterval(() => void fetchPosts(), 15000);
+    const refresh = createRefreshScheduler(() => void snapshots.refresh(), 250);
+    const refreshExpandedComments = () => {
+      for (const postId of expandedPostIds) void commentSnapshots.refresh(postId);
     };
+    const commentRefresh = createRefreshScheduler(refreshExpandedComments, 250);
+    const recovery = createRealtimeRecovery(() => {
+      void snapshots.refresh();
+      refreshExpandedComments();
+    }, 15000);
+    const changes = createFeedChangeCoordinator({
+      invalidatePosts: snapshots.invalidate,
+      requestPosts: refresh.request,
+      expandedPostIds: () => expandedPostIds,
+      invalidateComments: commentSnapshots.invalidate,
+      requestComments: commentRefresh.request,
+    });
 
     const channel = supabase
       .channel('community-posts')
@@ -181,28 +193,38 @@ export default function Feed() {
           schema: 'public',
           table: 'community_posts'
         },
-        handleChange
+        changes.contentChanged
       )
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_comments' }, handleChange)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_reactions' }, handleChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_comments' }, changes.commentChanged)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_reactions' }, changes.contentChanged)
       .subscribe((status) => {
-        if (!run.isCurrent()) return;
         if (status === 'SUBSCRIBED') {
+          recovery.recovered();
           setRealtimeError(null);
-          void fetchPosts();
+          void snapshots.refresh();
+          refreshExpandedComments();
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           setRealtimeError('Atualizações em tempo real indisponíveis. Atualização automática ativada.');
-          enableFallback();
+          recovery.failed();
         }
       });
 
     return () => {
-      feedGenerations.cancel();
+      snapshots.cancel();
       refresh.cancel();
-      if (polling) clearInterval(polling);
+      commentRefresh.cancel();
+      commentSnapshots.cancel();
+      recovery.cancel();
       supabase.removeChannel(channel);
     };
-  }, [selectedCategory, supabase, feedGenerations, locallySubmittedPosts, refreshVersion]);
+  }, [
+    selectedCategory,
+    supabase,
+    locallySubmittedPosts,
+    expandedPostIds,
+    commentSnapshots,
+    refreshVersion,
+  ]);
 
   useEffect(() => {
     if (posts.length === 0) {
@@ -397,25 +419,16 @@ export default function Feed() {
     }
   };
 
-  const fetchComments = async (postId: string) => {
-    try {
-      const response = await fetch(`/api/community/comments?post_id=${postId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setComments(prev => ({ ...prev, [postId]: data.comments || [] }));
-      }
-    } catch (err) {
-      console.error('Fetch comments error:', err);
-    }
-  };
-
   const toggleComments = async (postId: string) => {
     if (expandedComments.includes(postId)) {
+      expandedPostIds.delete(postId);
+      commentSnapshots.cancel(postId);
       setExpandedComments(prev => prev.filter(id => id !== postId));
     } else {
+      expandedPostIds.add(postId);
       setExpandedComments(prev => [...prev, postId]);
       if (!comments[postId]) {
-        await fetchComments(postId);
+        await commentSnapshots.refresh(postId);
       }
     }
   };
@@ -598,6 +611,8 @@ export default function Feed() {
               setLoading(true);
               setError(null);
               setRealtimeError(null);
+              expandedPostIds.clear();
+              commentSnapshots.cancel();
               setExpandedComments([]);
               setComments({});
               setPosts((current) => normalizeFeedPosts(current, cat.id));
