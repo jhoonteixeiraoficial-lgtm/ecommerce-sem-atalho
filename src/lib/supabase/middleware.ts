@@ -2,6 +2,7 @@ import { createServerClient } from '@supabase/ssr'
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 import { resolveAccess } from '@/lib/auth/access'
+import { loadAuthorization } from '@/lib/auth/authorization'
 import type { AppRole, AccountState } from '@/lib/auth/types'
 
 export interface RouteDecisionInput {
@@ -15,6 +16,10 @@ export interface RouteDecisionInput {
 
 const PUBLIC_PATHS = ['/login', '/cadastro', '/onboarding', '/banido', '/politicas', '/politicas/privacidade', '/politicas/termos', '/vsl', '/']
 const SUBSCRIPTION_BYPASS = ['/membros/perfil', '/membros/suporte', '/membros/assinatura-necessaria']
+
+function isProtectedPath(pathname: string): boolean {
+  return pathname.startsWith('/membros/') || pathname.startsWith('/admin')
+}
 
 export function decideRouteAccess(input: RouteDecisionInput): { redirect: string | null } {
   const { pathname } = input
@@ -40,8 +45,12 @@ export function decideRouteAccess(input: RouteDecisionInput): { redirect: string
     return { redirect: null }
   }
 
-  const role = input.role ?? 'member'
-  const status = input.status ?? 'active'
+  if (!input.role || !input.status) {
+    return { redirect: '/erro-de-acesso' }
+  }
+
+  const role = input.role
+  const status = input.status
   const access = resolveAccess({ role, status, accessUntil: input.hasMemberAccess ? '2099-01-01T00:00:00Z' : null })
 
   if (status === 'banned') {
@@ -83,6 +92,9 @@ export async function updateSession(request: NextRequest) {
   })
 
   if (!isSupabaseConfigured()) {
+    if (isProtectedPath(request.nextUrl.pathname)) {
+      return NextResponse.json({ error: 'Authorization service unavailable' }, { status: 503 })
+    }
     return supabaseResponse
   }
 
@@ -139,34 +151,11 @@ export async function updateSession(request: NextRequest) {
         { auth: { autoRefreshToken: false, persistSession: false } }
       )
 
-      const { data: roleRow } = await adminSupabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .single()
-
-      const { data: statusRow } = await adminSupabase
-        .from('account_status')
-        .select('status')
-        .eq('user_id', user.id)
-        .single()
-
-      const role = (roleRow?.role ?? 'member') as AppRole
-      const status = (statusRow?.status ?? 'active') as AccountState
-
-      let hasMemberAccess = role === 'admin'
-      if (!hasMemberAccess) {
-        const { data: sub } = await adminSupabase
-          .from('subscriptions')
-          .select('current_period_end')
-          .eq('user_id', user.id)
-          .eq('status', 'active')
-          .not('current_period_end', 'is', null)
-          .gte('current_period_end', new Date().toISOString())
-          .limit(1)
-          .maybeSingle()
-        hasMemberAccess = !!sub
-      }
+      const authorization = await loadAuthorization(adminSupabase, user.id)
+      const role = authorization.role
+      const status = authorization.status
+      const access = resolveAccess(authorization)
+      const hasMemberAccess = access.canUseMemberArea
 
       const decision = decideRouteAccess({
         pathname,
@@ -185,11 +174,8 @@ export async function updateSession(request: NextRequest) {
     }
   } catch {
     const { pathname } = request.nextUrl
-    if (pathname.startsWith('/admin') || pathname.startsWith('/membros/')) {
-      const url = request.nextUrl.clone()
-      url.pathname = '/login'
-      url.searchParams.set('redirect', pathname)
-      return NextResponse.redirect(url)
+    if (isProtectedPath(pathname)) {
+      return NextResponse.json({ error: 'Authorization service unavailable' }, { status: 503 })
     }
   }
 

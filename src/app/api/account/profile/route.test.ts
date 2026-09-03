@@ -1,5 +1,51 @@
-import { describe, expect, it } from 'vitest'
-import { profileUpdateSchema } from './route'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mocks = vi.hoisted(() => ({
+  getUser: vi.fn(),
+  createAdminClient: vi.fn(),
+}))
+
+vi.mock('server-only', () => ({}))
+
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: async () => ({ auth: { getUser: mocks.getUser } }),
+}))
+
+vi.mock('@/lib/supabase/admin', () => ({
+  createAdminClient: mocks.createAdminClient,
+}))
+
+import { PATCH, profileUpdateSchema } from './route'
+
+function adminClient() {
+  return {
+    from(table: string) {
+      const query = {
+        select: () => query,
+        update: () => query,
+        eq: () => query,
+        not: () => query,
+        order: () => query,
+        limit: () => query,
+        single: async () => ({
+          data: table === 'user_roles' ? { role: 'member' } : { status: 'active' },
+          error: null,
+        }),
+        maybeSingle: async () => ({
+          data: { current_period_end: '2099-01-01T00:00:00Z' },
+          error: null,
+        }),
+        then: (resolve: (result: { error: null }) => unknown) => resolve({ error: null }),
+      }
+      return query
+    },
+  }
+}
+
+beforeEach(() => {
+  mocks.getUser.mockResolvedValue({ data: { user: { id: 'member-1', email: 'member@test.local' } } })
+  mocks.createAdminClient.mockReturnValue(adminClient())
+})
 
 describe('profileUpdateSchema', () => {
   it('accepts valid profile data', () => {
@@ -32,5 +78,17 @@ describe('profileUpdateSchema', () => {
 
   it('rejects extra fields', () => {
     expect(profileUpdateSchema.safeParse({ fullName: 'João', phone: '', unknown: 'field' }).success).toBe(false)
+  })
+})
+
+describe('PATCH', () => {
+  it('allows an active paid member to update their profile', async () => {
+    const response = await PATCH(new Request('https://example.test/api/account/profile', {
+      method: 'PATCH',
+      body: JSON.stringify({ fullName: 'Paid Member', phone: '+5511999999999' }),
+    }))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ success: true })
   })
 })

@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
-import { createGuards } from '@/lib/auth/guards'
+import { createServerGuards } from '@/lib/auth/server-guards'
 import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
 
 export default async function AdminLayout({
   children,
@@ -13,31 +12,7 @@ export default async function AdminLayout({
     data: { user },
   } = await serverClient.auth.getUser()
 
-  const guards = createGuards({
-    getAuthUser: async () => {
-      if (!user) return null
-      return { id: user.id, email: user.email ?? null }
-    },
-    getAuthorization: async () => {
-      if (!user) throw new Error('No authenticated user')
-      const admin = createAdminClient()
-      const { data: roleRow } = await admin
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .single()
-      const { data: statusRow } = await admin
-        .from('account_status')
-        .select('status')
-        .eq('user_id', user.id)
-        .single()
-      return {
-        role: (roleRow?.role ?? 'member') as 'member' | 'admin',
-        status: (statusRow?.status ?? 'active') as 'active' | 'suspended' | 'banned',
-        accessUntil: null,
-      }
-    },
-  })
+  const guards = createServerGuards(user)
 
   try {
     await guards.requireAdmin()

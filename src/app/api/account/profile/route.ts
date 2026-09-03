@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { NextResponse } from 'next/server'
-import { createGuards } from '@/lib/auth/guards'
+import { createServerGuards } from '@/lib/auth/server-guards'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export const profileUpdateSchema = z.object({
@@ -26,31 +26,7 @@ export async function PATCH(request: Request) {
   const serverClient = await createClient()
   const { data: { user } } = await serverClient.auth.getUser()
 
-  const guards = createGuards({
-    getAuthUser: async () => {
-      if (!user) return null
-      return { id: user.id, email: user.email ?? null }
-    },
-    getAuthorization: async () => {
-      if (!user) throw new Error('No authenticated user')
-      const admin = createAdminClient()
-      const { data: roleRow } = await admin
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .single()
-      const { data: statusRow } = await admin
-        .from('account_status')
-        .select('status')
-        .eq('user_id', user.id)
-        .single()
-      return {
-        role: (roleRow?.role ?? 'member') as 'member' | 'admin',
-        status: (statusRow?.status ?? 'active') as 'active' | 'suspended' | 'banned',
-        accessUntil: null,
-      }
-    },
-  })
+  const guards = createServerGuards(user)
 
   let authUser
   try {

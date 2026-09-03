@@ -14,7 +14,8 @@ export function resolveAccess(input: AccessInput): AccessResult {
   }
 
   const now = new Date(input.now ?? new Date().toISOString())
-  if (!input.accessUntil || new Date(input.accessUntil) <= now) {
+  const accessUntil = input.accessUntil ? new Date(input.accessUntil) : null
+  if (!accessUntil || Number.isNaN(accessUntil.getTime()) || accessUntil <= now) {
     return { canUseMemberArea: false, canUseAdminArea: false, reason: 'expired' }
   }
 

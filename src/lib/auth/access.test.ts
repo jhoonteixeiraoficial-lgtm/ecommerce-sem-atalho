@@ -35,4 +35,17 @@ describe('resolveAccess', () => {
       now: '2026-09-02T00:00:00.000Z',
     }).reason).toBe('expired')
   })
+
+  it('blocks a member whose paid-through date is malformed', () => {
+    expect(resolveAccess({
+      role: 'member',
+      status: 'active',
+      accessUntil: 'not-a-date',
+      now: '2026-09-02T00:00:00.000Z',
+    })).toEqual({
+      canUseMemberArea: false,
+      canUseAdminArea: false,
+      reason: 'expired',
+    })
+  })
 })

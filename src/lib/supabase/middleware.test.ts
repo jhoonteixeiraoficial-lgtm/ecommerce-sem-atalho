@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { decideRouteAccess, type RouteDecisionInput } from './middleware'
+import { afterEach, describe, expect, it } from 'vitest'
+import { NextRequest } from 'next/server'
+import { decideRouteAccess, updateSession, type RouteDecisionInput } from './middleware'
 
 function input(overrides: Partial<RouteDecisionInput> = {}): RouteDecisionInput {
   return {
@@ -102,5 +103,42 @@ describe('decideRouteAccess', () => {
     expect(decideRouteAccess(input({ pathname: '/admin', role: 'admin', status: 'suspended', isAdmin: true }))).toEqual({
       redirect: '/membros/dashboard',
     })
+  })
+
+  it('fails closed when a protected request lacks canonical authorization rows', () => {
+    expect(decideRouteAccess(input({ role: undefined, status: undefined }))).toEqual({
+      redirect: '/erro-de-acesso',
+    })
+  })
+})
+
+describe('updateSession without Supabase public configuration', () => {
+  const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  afterEach(() => {
+    if (originalUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl
+    if (originalKey === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey
+  })
+
+  it('returns 503 for a protected member route', async () => {
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    const response = await updateSession(new NextRequest('https://example.test/membros/dashboard'))
+
+    expect(response.status).toBe(503)
+  })
+
+  it('keeps a public auth route available', async () => {
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    const response = await updateSession(new NextRequest('https://example.test/login'))
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-middleware-next')).toBe('1')
   })
 })
