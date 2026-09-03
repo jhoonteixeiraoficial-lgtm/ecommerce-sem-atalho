@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { sanitizeInput } from '@/lib/security'
 import {
+  boundedIntegerParam,
   enforceCommunityRateLimit,
   invalidInput,
   readJson,
@@ -10,11 +11,10 @@ import {
 } from '../helpers'
 
 const contentSchema = z.string().min(1).max(1000).refine((value) => value.trim().length > 0)
-const paginationSchema = z.string().regex(/^[1-9]\d*$/).transform(Number)
 const getChatSchema = z.object({
   channel_id: z.string().uuid().optional(),
-  page: paginationSchema.default('1'),
-  limit: paginationSchema.refine((value) => value <= 100).default('50'),
+  page: boundedIntegerParam(10_000).default('1'),
+  limit: boundedIntegerParam(100).default('50'),
 }).strict().refine(
   (value) => value.channel_id !== undefined || (value.page === 1 && value.limit === 50),
   { message: 'Pagination requires a channel' },

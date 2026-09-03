@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { sanitizeInput } from '@/lib/security'
 import {
+  boundedIntegerParam,
   enforceCommunityRateLimit,
   invalidInput,
   readJson,
@@ -21,19 +22,28 @@ const categories = [
   'ia',
 ] as const
 const contentSchema = z.string().min(1).max(5000).refine((value) => value.trim().length > 0)
-const imageUrlSchema = z.string().max(2048).refine((value) => {
+const imageUrlSchema = z.string().transform((value, context) => {
+  if (value.length > 2048 || /\s/u.test(value)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid image URL' })
+    return z.NEVER
+  }
+
   try {
-    const protocol = new URL(value).protocol
-    return protocol === 'http:' || protocol === 'https:'
+    const normalized = new URL(value)
+    if (normalized.protocol !== 'https:' || normalized.toString().length > 2048) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid image URL' })
+      return z.NEVER
+    }
+    return normalized.toString()
   } catch {
-    return false
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid image URL' })
+    return z.NEVER
   }
 })
-const paginationSchema = z.string().regex(/^[1-9]\d*$/).transform(Number)
 const getPostsSchema = z.object({
   category: z.enum(['all', ...categories]).optional(),
-  page: paginationSchema.default('1'),
-  limit: paginationSchema.refine((value) => value <= 100).default('20'),
+  page: boundedIntegerParam(10_000).default('1'),
+  limit: boundedIntegerParam(100).default('20'),
 }).strict()
 const createPostSchema = z.object({
   content: contentSchema,

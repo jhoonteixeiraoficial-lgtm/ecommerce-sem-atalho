@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { z } from 'zod'
 import { createServerGuards } from '@/lib/auth/server-guards'
 import { checkRateLimit } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
@@ -63,4 +64,11 @@ export function searchParams(request: Request) {
 
 export function invalidInput() {
   return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+}
+
+export function boundedIntegerParam(max: number) {
+  return z.string()
+    .regex(/^[1-9]\d*$/)
+    .transform(Number)
+    .refine((value) => Number.isSafeInteger(value) && value <= max)
 }

@@ -304,13 +304,16 @@ export default function Feed() {
       return;
     }
 
+    const operationId = crypto.randomUUID();
+
     try {
       const response = await fetch('/api/community/reactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           post_id: postId,
-          reaction_type: reactionType
+          reaction_type: reactionType,
+          operation_id: operationId
         })
       });
 

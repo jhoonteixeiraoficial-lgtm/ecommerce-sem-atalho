@@ -15,10 +15,21 @@ function runSupabase(args) {
   }
 }
 
+function runNode(script) {
+  const result = spawnSync(process.execPath, [script], {
+    cwd: process.cwd(),
+    stdio: 'inherit',
+  })
+
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`${script} exited with status ${result.status}`)
+}
+
 let failed = false
 
 try {
   runSupabase(['test', 'db'])
+  runNode('scripts/test-reaction-concurrency.mjs')
   runSupabase([
     'db',
     'reset',

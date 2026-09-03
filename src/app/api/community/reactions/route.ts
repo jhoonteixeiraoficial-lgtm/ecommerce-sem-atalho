@@ -12,6 +12,7 @@ const getReactionsSchema = z.object({ post_id: z.string().uuid() }).strict()
 const toggleReactionSchema = z.object({
   post_id: z.string().uuid(),
   reaction_type: z.enum(['like', 'love', 'fire', 'clap']),
+  operation_id: z.string().uuid(),
 }).strict()
 const REACTION_COLUMNS = 'id, post_id, user_id, reaction_type, created_at'
 
@@ -31,6 +32,7 @@ export async function POST(request: Request) {
   const { data, error } = await supabase.rpc('toggle_community_reaction', {
     p_post_id: parsed.data.post_id,
     p_reaction_type: parsed.data.reaction_type,
+    p_operation_id: parsed.data.operation_id,
   })
 
   if (error || !data || typeof data !== 'object' || !('removed' in data)) {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const MEMBER_ID = '00000000-0000-4000-8000-000000000001'
 const RESOURCE_ID = '00000000-0000-4000-8000-000000000002'
+const OPERATION_ID = '00000000-0000-4000-8000-000000000003'
 
 const mocks = vi.hoisted(() => ({
   getUser: vi.fn(),
@@ -93,6 +94,14 @@ function request(path: string, method = 'GET', body?: unknown) {
   })
 }
 
+function rawRequest(path: string, method: string, body: string) {
+  return new Request(`https://example.test${path}`, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body,
+  })
+}
+
 function findCall(table: string, method: string) {
   return queryCalls.find((call) => call.table === table && call.method === method)
 }
@@ -130,35 +139,30 @@ describe('canonical community authorization', () => {
     ['comments PUT', () => updateComment(request('/api/community/comments', 'PUT', { id: RESOURCE_ID, content: 'Comment' }))],
     ['comments DELETE', () => deleteComment(request(`/api/community/comments?id=${RESOURCE_ID}`, 'DELETE'))],
     ['reactions GET', () => getReactions(request(`/api/community/reactions?post_id=${RESOURCE_ID}`))],
-    ['reactions POST', () => toggleReaction(request('/api/community/reactions', 'POST', { post_id: RESOURCE_ID, reaction_type: 'like' }))],
+    ['reactions POST', () => toggleReaction(request('/api/community/reactions', 'POST', { post_id: RESOURCE_ID, reaction_type: 'like', operation_id: OPERATION_ID }))],
     ['chat GET', () => getChat(request('/api/community/chat'))],
     ['chat POST', () => createMessage(request('/api/community/chat', 'POST', { channel_id: RESOURCE_ID, content: 'Message' }))],
     ['chat PUT', () => updateMessage(request('/api/community/chat', 'PUT', { id: RESOURCE_ID, content: 'Message' }))],
     ['chat DELETE', () => deleteMessage(request(`/api/community/chat?id=${RESOURCE_ID}`, 'DELETE'))],
   ] as const
 
-  it.each(handlers)('rejects %s when canonical member authorization fails', async (_name, invoke) => {
-    mocks.requireUser.mockRejectedValue({ status: 403, message: 'sensitive detail' })
-
-    const response = await invoke()
-
-    expect(response.status).toBe(403)
-    await expect(response.json()).resolves.toEqual({ error: 'Forbidden' })
-    expect(mocks.from).not.toHaveBeenCalled()
-    expect(mocks.rpc).not.toHaveBeenCalled()
-  })
-
-  it.each([
+  const authorizationFailures = [
     [401, 'Unauthorized'],
     [403, 'Forbidden'],
     [503, 'Service unavailable'],
-  ])('returns a generic %s response without authorization details', async (status, message) => {
+  ] as const
+
+  it.each(handlers.flatMap(([name, invoke]) => authorizationFailures.map(
+    ([status, message]) => [name, status, message, invoke] as const,
+  )))('rejects %s with generic %s authorization handling', async (_name, status, message, invoke) => {
     mocks.requireUser.mockRejectedValue({ status, message: 'sensitive detail' })
 
-    const response = await getPosts(request('/api/community/posts'))
+    const response = await invoke()
 
     expect(response.status).toBe(status)
     await expect(response.json()).resolves.toEqual({ error: message })
+    expect(mocks.from).not.toHaveBeenCalled()
+    expect(mocks.rpc).not.toHaveBeenCalled()
   })
 
   it('passes auth lookup failures into the canonical guard', async () => {
@@ -185,6 +189,7 @@ describe('canonical community authorization', () => {
 describe('strict community input validation', () => {
   it.each([
     ['posts pagination', () => getPosts(request('/api/community/posts?page=1.5'))],
+    ['posts extreme page', () => getPosts(request('/api/community/posts?page=9007199254740992'))],
     ['posts limit', () => getPosts(request('/api/community/posts?limit=101'))],
     ['posts category', () => getPosts(request('/api/community/posts?category=private'))],
     ['posts unknown query', () => getPosts(request('/api/community/posts?debug=true'))],
@@ -192,6 +197,7 @@ describe('strict community input validation', () => {
     ['comments unknown query', () => getComments(request(`/api/community/comments?post_id=${RESOURCE_ID}&debug=true`))],
     ['reactions UUID', () => getReactions(request('/api/community/reactions?post_id=bad'))],
     ['chat pagination', () => getChat(request(`/api/community/chat?channel_id=${RESOURCE_ID}&page=zero`))],
+    ['chat extreme page', () => getChat(request(`/api/community/chat?channel_id=${RESOURCE_ID}&page=9007199254740992`))],
     ['chat unknown query', () => getChat(request('/api/community/chat?debug=true'))],
   ])('rejects invalid %s before reading data', async (_case, invoke) => {
     const response = await invoke()
@@ -205,19 +211,41 @@ describe('strict community input validation', () => {
     ['post non-string content', createPost, { content: 123, category: 'geral' }],
     ['post category', createPost, { content: 'Post', category: 'private' }],
     ['post URL', createPost, { content: 'Post', category: 'geral', image_url: 'javascript:alert(1)' }],
+    ['post HTTP URL', createPost, { content: 'Post', category: 'geral', image_url: 'http://images.example.test/post.png' }],
+    ['post padded URL', createPost, { content: 'Post', category: 'geral', image_url: ' https://images.example.test/post.png ' }],
+    ['post interior-space URL', createPost, { content: 'Post', category: 'geral', image_url: 'https://images.example.test/post image.png' }],
+    ['post URL length', createPost, { content: 'Post', category: 'geral', image_url: `https://images.example.test/${'x'.repeat(2049)}` }],
     ['post malformed URL', createPost, { content: 'Post', category: 'geral', image_url: 'not a url' }],
     ['post raw length', createPost, { content: ` ${'p'.repeat(5000)} `, category: 'geral' }],
     ['comment UUID', createComment, { post_id: 'bad', content: 'Comment' }],
     ['comment parent UUID', createComment, { post_id: RESOURCE_ID, parent_comment_id: 'bad', content: 'Comment' }],
     ['comment unknown fields', createComment, { post_id: RESOURCE_ID, content: 'Comment', user_id: MEMBER_ID }],
     ['comment raw length', createComment, { post_id: RESOURCE_ID, content: ` ${'c'.repeat(2000)} ` }],
-    ['reaction type', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'angry' }],
-    ['reaction unknown fields', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like', user_id: MEMBER_ID }],
+    ['reaction type', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'angry', operation_id: OPERATION_ID }],
+    ['reaction operation UUID', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like', operation_id: 'bad' }],
+    ['reaction missing operation UUID', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like' }],
+    ['reaction unknown fields', toggleReaction, { post_id: RESOURCE_ID, reaction_type: 'like', operation_id: OPERATION_ID, user_id: MEMBER_ID }],
     ['message UUID', createMessage, { channel_id: 'bad', content: 'Message' }],
     ['message unknown fields', createMessage, { channel_id: RESOURCE_ID, content: 'Message', user_id: MEMBER_ID }],
     ['message raw length', createMessage, { channel_id: RESOURCE_ID, content: ` ${'m'.repeat(1000)} ` }],
   ])('rejects invalid %s before writing', async (_case, handler, body) => {
     const response = await handler(request('/api/community/resource', 'POST', body))
+
+    expect(response.status).toBe(400)
+    expect(queryCalls.some((call) => ['insert', 'update', 'delete'].includes(call.method))).toBe(false)
+    expect(mocks.rpc).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['post create', createPost, 'POST'],
+    ['post update', updatePost, 'PUT'],
+    ['comment create', createComment, 'POST'],
+    ['comment update', updateComment, 'PUT'],
+    ['reaction toggle', toggleReaction, 'POST'],
+    ['message create', createMessage, 'POST'],
+    ['message update', updateMessage, 'PUT'],
+  ])('rejects malformed raw JSON for %s without writing', async (_case, handler, method) => {
+    const response = await handler(rawRequest('/api/community/resource', method, '{'))
 
     expect(response.status).toBe(400)
     expect(queryCalls.some((call) => ['insert', 'update', 'delete'].includes(call.method))).toBe(false)
@@ -309,12 +337,14 @@ describe('atomic reaction toggle', () => {
     const response = await toggleReaction(request('/api/community/reactions', 'POST', {
       post_id: RESOURCE_ID,
       reaction_type: 'love',
+      operation_id: OPERATION_ID,
     }))
 
     expect(response.status).toBe(201)
     expect(mocks.rpc).toHaveBeenCalledWith('toggle_community_reaction', {
       p_post_id: RESOURCE_ID,
       p_reaction_type: 'love',
+      p_operation_id: OPERATION_ID,
     })
     expect(mocks.from).not.toHaveBeenCalledWith('community_reactions')
   })
@@ -325,6 +355,7 @@ describe('atomic reaction toggle', () => {
     const response = await toggleReaction(request('/api/community/reactions', 'POST', {
       post_id: RESOURCE_ID,
       reaction_type: 'like',
+      operation_id: OPERATION_ID,
     }))
 
     expect(response.status).toBe(200)
@@ -337,6 +368,7 @@ describe('atomic reaction toggle', () => {
     const response = await toggleReaction(request('/api/community/reactions', 'POST', {
       post_id: RESOURCE_ID,
       reaction_type: 'like',
+      operation_id: OPERATION_ID,
     }))
 
     expect(response.status).toBe(500)
