@@ -7,7 +7,10 @@ import { createAdminClient } from '@/lib/supabase/admin'
 const liveIdSchema = z.string().uuid()
 const scheduledAtSchema = z.string().datetime({ offset: true })
 const durationSchema = z.number().int().min(1).max(480)
-const replayUrlSchema = z.union([z.string().url(), z.literal('')])
+const replayUrlSchema = z.union([
+  z.string().url().refine((value) => value.toLowerCase().startsWith('https://')),
+  z.literal(''),
+])
 
 const createLiveSchema = z.object({
   title: z.string().trim().min(1),
@@ -51,10 +54,18 @@ async function requireCanonicalAdmin() {
     await createServerGuards(user, error).requireAdmin()
     return null
   } catch (error: unknown) {
-    const status = error && typeof error === 'object' && 'status' in error
+    const errorStatus = error && typeof error === 'object' && 'status' in error
       ? (error as { status: number }).status
       : 500
-    return NextResponse.json({ error: 'Forbidden' }, { status })
+    const status = errorStatus === 401 || errorStatus === 403 || errorStatus === 503
+      ? errorStatus
+      : 500
+    const message = status === 401
+      ? 'Unauthorized'
+      : status === 403
+        ? 'Forbidden'
+        : 'Service unavailable'
+    return NextResponse.json({ error: message }, { status })
   }
 }
 
@@ -164,7 +175,24 @@ export async function PUT(request: Request) {
 
   const { id, ...updates } = parsed.data
   try {
-    const { data: live, error } = await createAdminClient()
+    const admin = createAdminClient()
+    if (updates.is_live === true) {
+      const { data: credentials, error: credentialsError } = await admin
+        .from('live_credentials')
+        .select(CREDENTIAL_COLUMNS)
+        .eq('live_id', id)
+        .maybeSingle()
+
+      if (credentialsError) {
+        return NextResponse.json({ error: 'Failed to update live' }, { status: 500 })
+      }
+
+      if (!credentials?.rtmp_url?.trim() || !credentials.stream_key?.trim()) {
+        return NextResponse.json({ error: 'Streaming setup required' }, { status: 409 })
+      }
+    }
+
+    const { data: live, error } = await admin
       .from('lives')
       .update(updates)
       .eq('id', id)

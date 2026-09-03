@@ -26,6 +26,12 @@ async function loadAdminLives() {
   return data.lives
 }
 
+class LiveApiError extends Error {
+  constructor(public status: number) {
+    super('Live API request failed')
+  }
+}
+
 export default function AdminLivesPage() {
   const [lives, setLives] = useState<Live[]>([])
   const [loading, setLoading] = useState(true)
@@ -70,7 +76,7 @@ export default function AdminLivesPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    if (!response.ok) throw new Error('Unable to save live')
+    if (!response.ok) throw new LiveApiError(response.status)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -123,11 +129,20 @@ export default function AdminLivesPage() {
   }
 
   const handleStartLive = async (live: Live) => {
+    if (!live.rtmp_url || !live.stream_key) {
+      setShowStreamModal(live)
+      return
+    }
+
     try {
       await mutateLive('PUT', { id: live.id, is_live: true })
       const refreshedLives = await fetchLives()
       setShowStreamModal(refreshedLives.find(item => item.id === live.id) ?? live)
-    } catch {
+    } catch (requestError) {
+      if (requestError instanceof LiveApiError && requestError.status === 409) {
+        setShowStreamModal({ ...live, rtmp_url: '', stream_key: '' })
+        return
+      }
       setError('Erro ao iniciar live')
     }
   }

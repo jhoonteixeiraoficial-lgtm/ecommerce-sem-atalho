@@ -4,12 +4,15 @@ const LIVE_ID = '00000000-0000-4000-8000-000000000001'
 
 const mocks = vi.hoisted(() => ({
   getUser: vi.fn(),
+  createServerGuards: vi.fn(),
   requireAdmin: vi.fn(),
   createAdminClient: vi.fn(),
   serverFrom: vi.fn(),
   adminFrom: vi.fn(),
   liveOrder: vi.fn(),
   credentialIn: vi.fn(),
+  credentialEq: vi.fn(),
+  credentialMaybeSingle: vi.fn(),
   insertSingle: vi.fn(),
   updateSingle: vi.fn(),
   deleteEq: vi.fn(),
@@ -28,7 +31,7 @@ vi.mock('@/lib/supabase/server', () => ({
 }))
 
 vi.mock('@/lib/auth/server-guards', () => ({
-  createServerGuards: () => ({ requireAdmin: mocks.requireAdmin }),
+  createServerGuards: mocks.createServerGuards,
 }))
 
 vi.mock('@/lib/supabase/admin', () => ({
@@ -53,7 +56,10 @@ function adminLiveQuery() {
 
 function adminCredentialQuery() {
   return {
-    select: vi.fn(() => ({ in: mocks.credentialIn })),
+    select: vi.fn(() => ({
+      in: mocks.credentialIn,
+      eq: mocks.credentialEq,
+    })),
   }
 }
 
@@ -70,6 +76,7 @@ beforeEach(() => {
     status: 'active',
     accessUntil: null,
   })
+  mocks.createServerGuards.mockReturnValue({ requireAdmin: mocks.requireAdmin })
   mocks.createAdminClient.mockReturnValue({ from: mocks.adminFrom })
   mocks.adminFrom.mockImplementation((table: string) => {
     if (table === 'lives') return adminLiveQuery()
@@ -90,6 +97,11 @@ beforeEach(() => {
 
   mocks.liveOrder.mockResolvedValue({ data: [], error: null })
   mocks.credentialIn.mockResolvedValue({ data: [], error: null })
+  mocks.credentialEq.mockReturnValue({ maybeSingle: mocks.credentialMaybeSingle })
+  mocks.credentialMaybeSingle.mockResolvedValue({
+    data: { rtmp_url: 'rtmp://placeholder.invalid/live', stream_key: 'placeholder-stream-key' },
+    error: null,
+  })
   mocks.insertSingle.mockResolvedValue({ data: { id: LIVE_ID }, error: null })
   mocks.updateSingle.mockResolvedValue({ data: { id: LIVE_ID }, error: null })
   mocks.deleteEq.mockResolvedValue({ error: null })
@@ -123,7 +135,38 @@ describe('admin lives runtime authorization', () => {
 
     expect(response.status).toBe(403)
     await expect(response.json()).resolves.toEqual({ error: 'Forbidden' })
+    expect(mocks.createAdminClient).not.toHaveBeenCalled()
     expect(mocks.adminFrom).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [401, 'Unauthorized'],
+    [403, 'Forbidden'],
+    [503, 'Service unavailable'],
+  ])('returns the generic %s authorization response without internal details', async (status, message) => {
+    mocks.requireAdmin.mockRejectedValue({ status, message: 'sensitive authorization detail' })
+
+    const response = await GET(new Request('https://example.test/api/admin/lives'))
+
+    expect(response.status).toBe(status)
+    await expect(response.json()).resolves.toEqual({ error: message })
+  })
+
+  it('passes the authenticated user and auth lookup error to the canonical guards', async () => {
+    const user = { id: 'admin-user', email: 'admin@example.test' }
+    const authError = { message: 'placeholder auth lookup error' }
+    mocks.getUser.mockResolvedValue({ data: { user }, error: authError })
+
+    await GET(new Request('https://example.test/api/admin/lives'))
+
+    expect(mocks.createServerGuards).toHaveBeenCalledWith(user, authError)
+  })
+
+  it('constructs the service-role client only after canonical authorization succeeds', async () => {
+    await GET(new Request('https://example.test/api/admin/lives'))
+
+    expect(mocks.requireAdmin.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.createAdminClient.mock.invocationCallOrder[0])
   })
 })
 
@@ -227,14 +270,56 @@ describe('PUT', () => {
   it('updates only the validated metadata fields', async () => {
     const response = await PUT(new Request('https://example.test/api/admin/lives', {
       method: 'PUT',
-      body: JSON.stringify({ id: LIVE_ID, is_live: true, replay_url: 'https://video.example.test/watch/1' }),
+      body: JSON.stringify({ id: LIVE_ID, replay_url: 'https://video.example.test/watch/1' }),
     }))
 
     expect(response.status).toBe(200)
     expect(mocks.update).toHaveBeenCalledWith({
-      is_live: true,
       replay_url: 'https://video.example.test/watch/1',
     })
+  })
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/html,unsafe',
+    'ftp://video.example.test/replay',
+    'http://video.example.test/replay',
+  ])('rejects the non-HTTPS replay URL %s before writing', async (replayUrl) => {
+    const response = await PUT(new Request('https://example.test/api/admin/lives', {
+      method: 'PUT',
+      body: JSON.stringify({ id: LIVE_ID, replay_url: replayUrl }),
+    }))
+
+    expect(response.status).toBe(400)
+    expect(mocks.update).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['no credential row', null],
+    ['no ingest URL', { rtmp_url: '', stream_key: 'placeholder-stream-key' }],
+    ['no stream key', { rtmp_url: 'rtmp://placeholder.invalid/live', stream_key: '  ' }],
+  ])('does not publish a live with %s', async (_case, credentials) => {
+    mocks.credentialMaybeSingle.mockResolvedValue({ data: credentials, error: null })
+
+    const response = await PUT(new Request('https://example.test/api/admin/lives', {
+      method: 'PUT',
+      body: JSON.stringify({ id: LIVE_ID, is_live: true }),
+    }))
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({ error: 'Streaming setup required' })
+    expect(mocks.update).not.toHaveBeenCalled()
+  })
+
+  it('publishes a live when both server-stored credentials exist', async () => {
+    const response = await PUT(new Request('https://example.test/api/admin/lives', {
+      method: 'PUT',
+      body: JSON.stringify({ id: LIVE_ID, is_live: true }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.credentialEq).toHaveBeenCalledWith('live_id', LIVE_ID)
+    expect(mocks.update).toHaveBeenCalledWith({ is_live: true })
   })
 
   it.each([
