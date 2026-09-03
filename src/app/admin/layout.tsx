@@ -11,8 +11,9 @@ export default async function AdminLayout({
     const serverClient = await createClient()
     const {
       data: { user },
+      error,
     } = await serverClient.auth.getUser()
-    const guards = createServerGuards(user)
+    const guards = createServerGuards(user, error)
     await guards.requireAdmin()
   } catch (e: unknown) {
     const status = (e && typeof e === 'object' && 'status' in e) ? (e as { status: number }).status : 500
