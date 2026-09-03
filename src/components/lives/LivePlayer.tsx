@@ -11,24 +11,27 @@ interface LivePlayerProps {
   replayUrl?: string
 }
 
+function calculateTimeLeft(targetDate: string) {
+  const difference = new Date(targetDate).getTime() - Date.now()
+  if (difference <= 0) return { days: 0, hours: 0, minutes: 0, seconds: 0 }
+  return {
+    days: Math.floor(difference / (1000 * 60 * 60 * 24)),
+    hours: Math.floor((difference / (1000 * 60 * 60)) % 24),
+    minutes: Math.floor((difference / 1000 / 60) % 60),
+    seconds: Math.floor((difference / 1000) % 60),
+  }
+}
+
 function CountdownTimer({ targetDate }: { targetDate: string }) {
   const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 })
 
   useEffect(() => {
-    const calculateTimeLeft = () => {
-      const difference = new Date(targetDate).getTime() - Date.now()
-      if (difference <= 0) return { days: 0, hours: 0, minutes: 0, seconds: 0 }
-      return {
-        days: Math.floor(difference / (1000 * 60 * 60 * 24)),
-        hours: Math.floor((difference / (1000 * 60 * 60)) % 24),
-        minutes: Math.floor((difference / 1000 / 60) % 60),
-        seconds: Math.floor((difference / 1000) % 60),
-      }
+    const initialTimer = setTimeout(() => setTimeLeft(calculateTimeLeft(targetDate)), 0)
+    const timer = setInterval(() => setTimeLeft(calculateTimeLeft(targetDate)), 1000)
+    return () => {
+      clearTimeout(initialTimer)
+      clearInterval(timer)
     }
-
-    setTimeLeft(calculateTimeLeft())
-    const timer = setInterval(() => setTimeLeft(calculateTimeLeft()), 1000)
-    return () => clearInterval(timer)
   }, [targetDate])
 
   const pad = (n: number) => String(n).padStart(2, '0')

@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 
@@ -52,7 +52,12 @@ export async function POST(request: Request) {
   }
 }
 
-async function processWebhook(body: any, supabaseAdmin: any) {
+interface MercadoPagoWebhook {
+  type?: unknown
+  data?: { id?: unknown }
+}
+
+async function processWebhook(body: MercadoPagoWebhook, supabaseAdmin: SupabaseClient) {
   const { type, data } = body
 
   // Mercado Pago envia notificações de pagamento

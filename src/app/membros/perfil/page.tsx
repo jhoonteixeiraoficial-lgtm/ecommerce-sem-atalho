@@ -7,12 +7,23 @@ import Input from '@/components/ui/Input'
 import { createClient } from '@/lib/supabase/client'
 import { User as SupabaseUser } from '@supabase/supabase-js'
 
+interface Profile {
+  full_name: string | null
+  phone: string | null
+}
+
+interface Subscription {
+  plan: string
+  status: string
+  current_period_end: string | null
+}
+
 export default function PerfilPage() {
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
   const [user, setUser] = useState<SupabaseUser | null>(null)
-  const [profile, setProfile] = useState<any>(null)
-  const [subscription, setSubscription] = useState<any>(null)
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [fullName, setFullName] = useState('')
   const [phone, setPhone] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -20,10 +31,6 @@ export default function PerfilPage() {
   const [passwordError, setPasswordError] = useState('')
   const [passwordSuccess, setPasswordSuccess] = useState(false)
   const [supabase] = useState(() => createClient())
-
-  useEffect(() => {
-    fetchData()
-  }, [])
 
   const fetchData = async () => {
     const { data: { user: authUser } } = await supabase.auth.getUser()
@@ -49,6 +56,12 @@ export default function PerfilPage() {
       setSubscription(subData)
     }
   }
+
+  useEffect(() => {
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchData()
+  }, [])
 
   const handleSave = async () => {
     if (!user || saving) return

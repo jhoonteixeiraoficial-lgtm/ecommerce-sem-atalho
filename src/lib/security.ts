@@ -5,7 +5,7 @@ export function sanitizeInput(input: string): string {
   if (typeof input !== 'string') return '';
   
   // Remove HTML tags
-  let sanitized = input.replace(/<[^>]*>/g, '');
+  const sanitized = input.replace(/<[^>]*>/g, '');
   
   // Trim and limit length
   return sanitized.trim().substring(0, 10000);
@@ -58,33 +58,34 @@ export function checkRateLimit(
 }
 
 // Validate and sanitize API inputs
-export function validateApiInput(body: any, requiredFields: string[]): {
+export function validateApiInput(body: unknown, requiredFields: string[]): {
   valid: boolean;
   error?: string;
-  sanitized?: any;
+  sanitized?: Record<string, unknown>;
 } {
   if (!body || typeof body !== 'object') {
     return { valid: false, error: 'Invalid request body' };
   }
   
-  const sanitized: any = {};
+  const input = body as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
   
   for (const field of requiredFields) {
-    if (!(field in body)) {
+    if (!(field in input)) {
       return { valid: false, error: `Missing required field: ${field}` };
     }
     
-    const value = body[field];
+    const value = input[field];
     
     if (typeof value === 'string') {
       sanitized[field] = sanitizeInput(value);
       
       // Additional validation for specific fields
-      if (field === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized[field])) {
+      if (field === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized[field] as string)) {
         return { valid: false, error: 'Invalid email format' };
       }
       
-      if (field === 'content' && sanitized[field].length === 0) {
+      if (field === 'content' && (sanitized[field] as string).length === 0) {
         return { valid: false, error: `${field} cannot be empty` };
       }
     } else if (typeof value === 'number') {
@@ -112,9 +113,9 @@ export function validateApiInput(body: any, requiredFields: string[]): {
 export function createErrorResponse(
   message: string,
   status: number = 400,
-  details?: any
+  details?: unknown
 ): NextResponse {
-  const response: any = { error: message };
+  const response: Record<string, unknown> = { error: message };
   
   // Only include details in development
   if (process.env.NODE_ENV === 'development' && details) {
@@ -126,7 +127,7 @@ export function createErrorResponse(
 
 // Create standardized success response
 export function createSuccessResponse(
-  data: any,
+  data: unknown,
   status: number = 200
 ): NextResponse {
   return NextResponse.json(data, { status });

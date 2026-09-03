@@ -95,6 +95,8 @@ export default function AdminLessons() {
   }
 
   useEffect(() => {
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData()
   }, [])
 

@@ -34,10 +34,6 @@ export default function AdminUsersPage() {
   const router = useRouter()
   const [supabase] = useState(() => createClient())
 
-  useEffect(() => {
-    checkAdminAndFetch()
-  }, [])
-
   const checkAdminAndFetch = async () => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { router.push('/login'); return }
@@ -53,6 +49,12 @@ export default function AdminUsersPage() {
     }
     setLoading(false)
   }
+
+  useEffect(() => {
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    checkAdminAndFetch()
+  }, [])
 
   const handleRoleChange = async (userId: string, newRole: string) => {
     const res = await fetch(`/api/admin/users/${userId}`, {

@@ -32,10 +32,6 @@ export default function AdminCommunityPage() {
   const router = useRouter()
   const [supabase] = useState(() => createClient())
 
-  useEffect(() => {
-    checkAdminAndFetch()
-  }, [])
-
   const checkAdminAndFetch = async () => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { router.push('/login'); return }
@@ -63,6 +59,12 @@ export default function AdminCommunityPage() {
     }
     setLoading(false)
   }
+
+  useEffect(() => {
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    checkAdminAndFetch()
+  }, [])
 
   const handleDeletePost = async (postId: string) => {
     const { error } = await supabase

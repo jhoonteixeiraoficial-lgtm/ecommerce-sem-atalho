@@ -18,7 +18,7 @@ import {
   ChevronRight,
   X,
 } from 'lucide-react'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useEffectEvent } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 const menuItems = [
@@ -43,8 +43,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [supabase] = useState(() => createClient())
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
+  const closeForNavigation = useEffectEvent(onClose)
 
   const handleLogout = useCallback(async () => {
     await supabase.auth.signOut()
@@ -52,7 +51,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   }, [supabase])
 
   useEffect(() => {
-    onCloseRef.current()
+    closeForNavigation()
   }, [pathname])
 
   return (
