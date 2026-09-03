@@ -165,7 +165,10 @@ create policy "notifications_delete_own"
 -- still enforces each constraint for inserts and updates after this migration.
 alter table public.community_posts
   add constraint community_posts_content_check
-    check (pg_catalog.char_length(pg_catalog.btrim(content)) between 1 and 5000)
+    check (
+      pg_catalog.char_length(content) <= 5000
+      and content ~ '[^[:space:]]'
+    )
     not valid,
   add constraint community_posts_category_check
     check (category is not null and category in (
@@ -183,10 +186,16 @@ alter table public.community_posts
 
 alter table public.community_comments
   add constraint community_comments_content_check
-    check (pg_catalog.char_length(pg_catalog.btrim(content)) between 1 and 2000)
+    check (
+      pg_catalog.char_length(content) <= 2000
+      and content ~ '[^[:space:]]'
+    )
     not valid;
 
 alter table public.chat_messages
   add constraint chat_messages_content_check
-    check (pg_catalog.char_length(pg_catalog.btrim(content)) between 1 and 1000)
+    check (
+      pg_catalog.char_length(content) <= 1000
+      and content ~ '[^[:space:]]'
+    )
     not valid;

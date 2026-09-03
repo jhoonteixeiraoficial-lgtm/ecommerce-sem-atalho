@@ -9,7 +9,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:db": "supabase test db",
+    "test:db": "node scripts/test-database.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
