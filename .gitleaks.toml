@@ -5,3 +5,4 @@ useDefault = true
 
 [allowlist]
 paths = ['''\.env\.example$''']
+regexes = ['''d8c3528e-471e-4835-85a6-c9effb38fdf2''']
