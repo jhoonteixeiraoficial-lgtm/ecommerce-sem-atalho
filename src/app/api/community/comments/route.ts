@@ -4,6 +4,7 @@ import { sanitizeInput } from '@/lib/security'
 import {
   enforceCommunityRateLimit,
   invalidInput,
+  publicCommunityProfile,
   readJson,
   requireCommunityUser,
   searchParams,
@@ -49,7 +50,7 @@ export async function GET(request: Request) {
 
   const userIds = [...new Set((data || []).map((comment) => comment.user_id))]
   const { data: profiles, error: profilesError } = userIds.length
-    ? await supabase.from('profiles').select('id, full_name, avatar_url').in('id', userIds)
+    ? await supabase.from('community_profiles').select('id, full_name, avatar_url').in('id', userIds)
     : { data: [], error: null }
 
   if (profilesError) {
@@ -59,7 +60,7 @@ export async function GET(request: Request) {
   const profilesById = new Map((profiles || []).map((profile) => [profile.id, profile]))
   const comments = (data || []).map((comment) => ({
     ...comment,
-    profiles: profilesById.get(comment.user_id) || { full_name: 'Usuário', avatar_url: '' },
+    profiles: publicCommunityProfile(profilesById.get(comment.user_id)),
   }))
 
   return NextResponse.json({ comments })
@@ -95,7 +96,7 @@ export async function POST(request: Request) {
   if (error) return NextResponse.json({ error: 'Failed to create comment' }, { status: 500 })
 
   const { data: profile } = await supabase
-    .from('profiles')
+    .from('community_profiles')
     .select('id, full_name, avatar_url')
     .eq('id', authorizedUser.id)
     .single()
@@ -103,7 +104,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     comment: {
       ...data,
-      profiles: profile || { full_name: 'Usuário', avatar_url: '' },
+      profiles: publicCommunityProfile(profile),
     },
   }, { status: 201 })
 }

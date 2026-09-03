@@ -2,9 +2,14 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Send, Hash, MessageCircle, Users, ArrowLeft } from 'lucide-react';
+import { Send, Hash, MessageCircle, ArrowLeft, RefreshCw } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import {
+  createRefreshScheduler,
+  createSyncGeneration,
+  mergeChronological,
+} from './community-realtime';
 
 interface Channel {
   id: string;
@@ -44,7 +49,12 @@ export default function Chat() {
   const [sending, setSending] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [drafts] = useState(() => new Map<string, string>());
+  const [syncGenerations] = useState(createSyncGeneration);
+  const [sendGenerations] = useState(createSyncGeneration);
   const [supabase] = useState(() => createClient());
 
   const scrollToBottom = useCallback(() => {
@@ -56,7 +66,7 @@ export default function Chat() {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data: profile } = await supabase
-          .from('profiles')
+          .from('community_profiles')
           .select('id, full_name, avatar_url')
           .eq('id', user.id)
           .single();
@@ -69,6 +79,10 @@ export default function Chat() {
 
     getUser();
   }, [supabase]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
 
   useEffect(() => {
     const fetchChannels = async () => {
@@ -89,42 +103,65 @@ export default function Chat() {
   useEffect(() => {
     if (!selectedChannel) return;
 
+    const channelId = selectedChannel.id;
+    const run = syncGenerations.begin();
+    let polling: ReturnType<typeof setInterval> | null = null;
+    let eventRevision = 0;
+
     const fetchMessages = async () => {
-      setLoading(true);
-      setError(null);
+      const revisionAtStart = eventRevision;
       try {
-        const response = await fetch(`/api/community/chat?channel_id=${selectedChannel.id}&limit=100`);
+        const response = await fetch(`/api/community/chat?channel_id=${channelId}&limit=100`, {
+          signal: run.signal,
+        });
         const result = await response.json();
+        if (!run.isCurrent()) return;
         if (!response.ok) {
           setError(result.error || 'Erro ao carregar mensagens');
         } else {
-          setMessages(result.messages || []);
+          setMessages((current) => eventRevision === revisionAtStart
+            ? mergeChronological([], result.messages || [])
+            : mergeChronological(current, result.messages || []));
         }
-        setTimeout(scrollToBottom, 100);
-      } catch {
+      } catch (fetchError) {
+        if (!run.isCurrent() || (fetchError instanceof DOMException && fetchError.name === 'AbortError')) return;
         setError('Erro de conexão ao carregar mensagens');
+      } finally {
+        if (run.isCurrent()) setLoading(false);
       }
-      setLoading(false);
     };
 
-    fetchMessages();
+    const refresh = createRefreshScheduler(() => void fetchMessages(), 250);
+    const enableFallback = () => {
+      void fetchMessages();
+      polling ??= setInterval(() => void fetchMessages(), 15000);
+    };
 
     const channel = supabase
-      .channel(`chat:${selectedChannel.id}`)
+      .channel(`chat:${channelId}`)
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*',
           schema: 'public',
           table: 'chat_messages',
-          filter: `channel_id=eq.${selectedChannel.id}`
+          filter: `channel_id=eq.${channelId}`
         },
-        async (payload: { new: Record<string, unknown> }) => {
+        async (payload: { eventType: string; new: Record<string, unknown> }) => {
+          if (!run.isCurrent()) return;
+          eventRevision += 1;
+          if (payload.eventType !== 'INSERT') {
+            refresh.request();
+            return;
+          }
+
           const { data: profile } = await supabase
-            .from('profiles')
+            .from('community_profiles')
             .select('full_name, avatar_url')
             .eq('id', payload.new.user_id)
             .single();
+
+          if (!run.isCurrent() || payload.new.channel_id !== channelId) return;
 
           const newMessage: Message = {
             id: payload.new.id as string,
@@ -137,18 +174,27 @@ export default function Chat() {
             profiles: profile || { full_name: 'Usuário', avatar_url: '' }
           };
 
-          setMessages(prev => prev.some((message) => message.id === newMessage.id)
-            ? prev
-            : [...prev, newMessage]);
-          setTimeout(scrollToBottom, 100);
+          setMessages((current) => mergeChronological(current, [newMessage]));
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (!run.isCurrent()) return;
+        if (status === 'SUBSCRIBED') {
+          setRealtimeError(null);
+          void fetchMessages();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setRealtimeError('Atualizações em tempo real indisponíveis. Atualização automática ativada.');
+          enableFallback();
+        }
+      });
 
     return () => {
+      syncGenerations.cancel();
+      refresh.cancel();
+      if (polling) clearInterval(polling);
       supabase.removeChannel(channel);
     };
-  }, [selectedChannel, supabase, scrollToBottom]);
+  }, [selectedChannel, supabase, syncGenerations, refreshVersion]);
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -157,6 +203,9 @@ export default function Chat() {
     setSending(true);
     setError(null);
     const content = newMessage.trim();
+    const channelId = selectedChannel.id;
+    const sendRun = sendGenerations.begin();
+    drafts.delete(channelId);
     setNewMessage('');
 
     try {
@@ -164,7 +213,7 @@ export default function Chat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          channel_id: selectedChannel.id,
+          channel_id: channelId,
           content: content
         })
       });
@@ -172,21 +221,24 @@ export default function Chat() {
       if (!response.ok) {
         const errorData = await response.json();
         console.error('Chat error:', errorData.error);
-        setError(errorData.error || 'Erro ao enviar mensagem');
-        setNewMessage(content);
+        drafts.set(channelId, content);
+        if (sendRun.isCurrent()) {
+          setError(errorData.error || 'Erro ao enviar mensagem');
+          setNewMessage(content);
+        }
       } else {
         const result = await response.json();
-        if (result.message) {
-          setMessages(prev => prev.some((message) => message.id === result.message.id)
-            ? prev
-            : [...prev, result.message]);
-          setTimeout(scrollToBottom, 100);
+        if (result.message && sendRun.isCurrent()) {
+          setMessages((current) => mergeChronological(current, [result.message]));
         }
       }
     } catch (err) {
       console.error('Chat error:', err);
-      setError('Erro de conexão ao enviar mensagem');
-      setNewMessage(content);
+      drafts.set(channelId, content);
+      if (sendRun.isCurrent()) {
+        setError('Erro de conexão ao enviar mensagem');
+        setNewMessage(content);
+      }
     }
     setSending(false);
   };
@@ -231,7 +283,15 @@ export default function Chat() {
           {channels.map((channel) => (
             <button
               key={channel.id}
-              onClick={() => setSelectedChannel(channel)}
+              onClick={() => {
+                sendGenerations.cancel();
+                setMessages([]);
+                setLoading(true);
+                setError(null);
+                setRealtimeError(null);
+                setSelectedChannel(channel);
+                setNewMessage(drafts.get(channel.id) || '');
+              }}
               className="w-full p-3 rounded-lg hover:bg-surface-raised transition-colors flex items-center gap-3 text-left"
             >
               <div className="w-10 h-10 rounded-lg bg-surface-raised border border-border-subtle flex items-center justify-center text-accent">
@@ -256,7 +316,12 @@ export default function Chat() {
     <div className="h-full flex flex-col">
       <div className="p-4 border-b border-border-subtle flex items-center gap-3">
         <button
-          onClick={() => setSelectedChannel(null)}
+          onClick={() => {
+            sendGenerations.cancel();
+            drafts.set(selectedChannel.id, newMessage);
+            setSelectedChannel(null);
+            setNewMessage('');
+          }}
           className="p-2.5 rounded-lg hover:bg-surface-raised transition-colors text-text-secondary min-w-[44px] min-h-[44px] flex items-center justify-center"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -335,12 +400,33 @@ export default function Chat() {
         </div>
       )}
 
+      {realtimeError && (
+        <div className="mx-4 mb-2 flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-300">
+          <span>{realtimeError}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              setRealtimeError(null);
+              setRefreshVersion((version) => version + 1);
+            }}
+            className="flex items-center gap-1 underline"
+          >
+            <RefreshCw className="h-3 w-3" />
+            Atualizar
+          </button>
+        </div>
+      )}
+
       <form onSubmit={sendMessage} className="p-4 border-t border-border-subtle">
         <div className="flex gap-2">
           <input
             type="text"
             value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
+            onChange={(e) => {
+              setNewMessage(e.target.value);
+              drafts.set(selectedChannel.id, e.target.value);
+            }}
             placeholder="Digite sua mensagem..."
             maxLength={1000}
             disabled={sending}

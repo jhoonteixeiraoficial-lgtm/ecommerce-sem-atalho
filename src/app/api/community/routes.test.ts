@@ -293,8 +293,11 @@ describe('strict community input validation', () => {
 })
 
 describe('community data boundaries', () => {
-  it('uses explicit public columns for posts, reactions, channels, messages, and profiles', async () => {
+  it('uses only canonical public profiles for every community author response', async () => {
+    tableResults.set('community_posts', { data: [{ user_id: MEMBER_ID }], error: null })
+    tableResults.set('community_comments', { data: [{ user_id: MEMBER_ID }], error: null })
     await getPosts(request('/api/community/posts'))
+    await getComments(request(`/api/community/comments?post_id=${RESOURCE_ID}`))
     await getReactions(request(`/api/community/reactions?post_id=${RESOURCE_ID}`))
     await getChat(request('/api/community/chat'))
     tableResults.set('chat_messages', { data: [{ user_id: MEMBER_ID }], error: null })
@@ -303,9 +306,35 @@ describe('community data boundaries', () => {
     const selections = queryCalls.filter((call) => call.method === 'select')
     expect(selections.length).toBeGreaterThan(0)
     expect(selections.every((call) => typeof call.args[0] === 'string' && !call.args[0].includes('*'))).toBe(true)
-    expect(selections.filter((call) => call.table === 'profiles').every(
+    expect(selections.filter((call) => call.table === 'community_profiles').every(
       (call) => call.args[0] === 'id, full_name, avatar_url',
     )).toBe(true)
+    expect(selections.filter((call) => call.table === 'community_profiles')).toHaveLength(3)
+    expect(queryCalls.some((call) => call.table === 'profiles')).toBe(false)
+  })
+
+  it('strips unexpected private profile fields from community responses', async () => {
+    tableResults.set('community_posts', { data: [{ id: RESOURCE_ID, user_id: MEMBER_ID }], error: null })
+    tableResults.set('community_profiles', {
+      data: [{
+        id: MEMBER_ID,
+        full_name: 'Member',
+        avatar_url: 'https://images.example.test/member.png',
+        email: 'private@example.test',
+        phone: '+55 11 99999-9999',
+        role: 'admin',
+        is_banned: true,
+      }],
+      error: null,
+    })
+
+    const response = await getPosts(request('/api/community/posts'))
+    const body = await response.json()
+
+    expect(body.posts[0].profiles).toEqual({
+      full_name: 'Member',
+      avatar_url: 'https://images.example.test/member.png',
+    })
   })
 
   it.each([

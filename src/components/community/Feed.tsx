@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Heart, MessageCircle, Send, MoreVertical, Edit2, Trash2, X, Check } from 'lucide-react';
+import { Heart, MessageCircle, Send, Edit2, Trash2, RefreshCw } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import {
@@ -10,6 +10,11 @@ import {
   createReactionOperationTracker,
   type ReactionOperationTracker,
 } from './reaction-operation';
+import {
+  createRefreshScheduler,
+  createSyncGeneration,
+  normalizeFeedPosts,
+} from './community-realtime';
 
 interface Post {
   id: string;
@@ -83,38 +88,23 @@ export default function Feed() {
   const [editContent, setEditContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [supabase] = useState(() => createClient());
+  const [activeCategory] = useState({ value: selectedCategory });
+  const [locallySubmittedPosts] = useState(() => new Set<string>());
+  const [feedGenerations] = useState(createSyncGeneration);
+  const [reactionGenerations] = useState(createSyncGeneration);
   const reactionOperations = useRef<ReactionOperationTracker | null>(null);
   reactionOperations.current ??= createReactionOperationTracker();
   const reactionOperationTracker = reactionOperations.current;
-
-  const fetchPosts = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const params = new URLSearchParams({ limit: '50' });
-      if (selectedCategory !== 'all') params.set('category', selectedCategory);
-      const response = await fetch(`/api/community/posts?${params}`);
-      const result = await response.json();
-
-      if (!response.ok) {
-        setError(result.error || 'Erro ao carregar publicações');
-      } else {
-        setPosts(result.posts || []);
-      }
-    } catch {
-      setError('Erro de conexão ao carregar publicações');
-    }
-    setLoading(false);
-  }, [selectedCategory]);
 
   useEffect(() => {
     const getUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data: profile } = await supabase
-          .from('profiles')
+          .from('community_profiles')
           .select('id, full_name, avatar_url')
           .eq('id', user.id)
           .single();
@@ -129,55 +119,98 @@ export default function Feed() {
   }, [supabase]);
 
   useEffect(() => {
-    fetchPosts();
-  }, [fetchPosts]);
+    const category = selectedCategory;
+    const run = feedGenerations.begin();
+    let polling: ReturnType<typeof setInterval> | null = null;
+    let requestInFlight = false;
+    let requestQueued = false;
 
-  useEffect(() => {
+    const fetchPosts = async () => {
+      if (requestInFlight) {
+        requestQueued = true;
+        return;
+      }
+      requestInFlight = true;
+
+      try {
+        const params = new URLSearchParams({ limit: '50' });
+        if (category !== 'all') params.set('category', category);
+        const response = await fetch(`/api/community/posts?${params}`, { signal: run.signal });
+        const result = await response.json();
+        if (!run.isCurrent()) return;
+
+        if (!response.ok) {
+          setError(result.error || 'Erro ao carregar publicações');
+        } else {
+          const snapshot = normalizeFeedPosts<Post>(result.posts || [], category);
+          const snapshotIds = new Set(snapshot.map((post) => post.id));
+          setPosts((current) => {
+            const retainedLocal = current.filter((post) => (
+              locallySubmittedPosts.has(post.id) && !snapshotIds.has(post.id)
+            ));
+            for (const id of snapshotIds) locallySubmittedPosts.delete(id);
+            return normalizeFeedPosts([...retainedLocal, ...snapshot], category);
+          });
+        }
+      } catch (fetchError) {
+        if (!run.isCurrent() || (fetchError instanceof DOMException && fetchError.name === 'AbortError')) return;
+        setError('Erro de conexão ao carregar publicações');
+      } finally {
+        requestInFlight = false;
+        if (run.isCurrent()) setLoading(false);
+        if (requestQueued && run.isCurrent()) {
+          requestQueued = false;
+          void fetchPosts();
+        }
+      }
+    };
+
+    const refresh = createRefreshScheduler(() => void fetchPosts(), 250);
+    const handleChange = () => refresh.request();
+    const enableFallback = () => {
+      void fetchPosts();
+      polling ??= setInterval(() => void fetchPosts(), 15000);
+    };
+
     const channel = supabase
       .channel('community-posts')
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*',
           schema: 'public',
           table: 'community_posts'
         },
-        async (payload: { new: Record<string, unknown> }) => {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('full_name, avatar_url')
-            .eq('id', payload.new.user_id)
-            .single();
-
-          const newPost = {
-            id: payload.new.id as string,
-            user_id: payload.new.user_id as string,
-            content: payload.new.content as string,
-            category: payload.new.category as string,
-            image_url: payload.new.image_url as string,
-            is_pinned: payload.new.is_pinned as boolean,
-            is_edited: payload.new.is_edited as boolean,
-            edited_at: payload.new.edited_at as string | null,
-            created_at: payload.new.created_at as string,
-            profiles: profile || { full_name: 'Usuário', avatar_url: '' },
-            community_comments: [{ count: 0 }],
-            community_reactions: [{ count: 0 }]
-          };
-
-          setPosts(prev => prev.some((post) => post.id === newPost.id)
-            ? prev
-            : [newPost as Post, ...prev]);
-        }
+        handleChange
       )
-      .subscribe();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_comments' }, handleChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_reactions' }, handleChange)
+      .subscribe((status) => {
+        if (!run.isCurrent()) return;
+        if (status === 'SUBSCRIBED') {
+          setRealtimeError(null);
+          void fetchPosts();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setRealtimeError('Atualizações em tempo real indisponíveis. Atualização automática ativada.');
+          enableFallback();
+        }
+      });
 
     return () => {
+      feedGenerations.cancel();
+      refresh.cancel();
+      if (polling) clearInterval(polling);
       supabase.removeChannel(channel);
     };
-  }, [supabase]);
+  }, [selectedCategory, supabase, feedGenerations, locallySubmittedPosts, refreshVersion]);
 
   useEffect(() => {
-    if (posts.length === 0) return;
+    if (posts.length === 0) {
+      reactionGenerations.cancel();
+      return;
+    }
+
+    const run = reactionGenerations.begin();
 
     const fetchReactions = async () => {
       const postIds = posts.map(p => p.id);
@@ -185,7 +218,10 @@ export default function Feed() {
       const { data } = await supabase
         .from('community_reactions')
         .select('post_id, reaction_type, user_id')
-        .in('post_id', postIds);
+        .in('post_id', postIds)
+        .abortSignal(run.signal);
+
+      if (!run.isCurrent()) return;
 
       const reactionsMap: Record<string, Reactions> = {};
 
@@ -211,8 +247,9 @@ export default function Feed() {
       setReactions(reactionsMap);
     };
 
-    fetchReactions();
-  }, [posts, currentUser, supabase]);
+    void fetchReactions();
+    return () => reactionGenerations.cancel();
+  }, [posts, currentUser, supabase, reactionGenerations]);
 
   const createPost = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -239,9 +276,11 @@ export default function Feed() {
       } else {
         const result = await response.json();
         if (result.post) {
-          setPosts(prev => prev.some((post) => post.id === result.post.id)
-            ? prev
-            : [result.post, ...prev]);
+          locallySubmittedPosts.add(result.post.id);
+          setPosts((current) => normalizeFeedPosts(
+            [...current, result.post],
+            activeCategory.value,
+          ));
         }
         setNewPost('');
         setPostCategory('geral');
@@ -532,11 +571,38 @@ export default function Feed() {
         </div>
       )}
 
+      {realtimeError && (
+        <div className="mx-4 my-2 flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-300">
+          <span>{realtimeError}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              setRealtimeError(null);
+              setRefreshVersion((version) => version + 1);
+            }}
+            className="flex items-center gap-1 underline"
+          >
+            <RefreshCw className="h-3 w-3" />
+            Atualizar
+          </button>
+        </div>
+      )}
+
       <div className="p-2 border-b border-border-subtle overflow-x-auto flex gap-2">
         {categories.map((cat) => (
           <button
             key={cat.id}
-            onClick={() => setSelectedCategory(cat.id)}
+            onClick={() => {
+              activeCategory.value = cat.id;
+              setLoading(true);
+              setError(null);
+              setRealtimeError(null);
+              setExpandedComments([]);
+              setComments({});
+              setPosts((current) => normalizeFeedPosts(current, cat.id));
+              setSelectedCategory(cat.id);
+            }}
             className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
               selectedCategory === cat.id
                 ? 'bg-accent text-white'

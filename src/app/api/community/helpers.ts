@@ -66,6 +66,18 @@ export function invalidInput() {
   return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
 }
 
+export function publicCommunityProfile(profile: unknown) {
+  if (!profile || typeof profile !== 'object') {
+    return { full_name: 'Usuário', avatar_url: '' }
+  }
+
+  const candidate = profile as { full_name?: unknown; avatar_url?: unknown }
+  return {
+    full_name: typeof candidate.full_name === 'string' ? candidate.full_name : 'Usuário',
+    avatar_url: typeof candidate.avatar_url === 'string' ? candidate.avatar_url : '',
+  }
+}
+
 export function boundedIntegerParam(max: number) {
   return z.string()
     .regex(/^[1-9]\d*$/)
