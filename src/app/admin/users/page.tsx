@@ -42,6 +42,18 @@ export default function AdminUsersPage() {
       const res = await fetch('/api/admin/users')
       if (res.status === 401) { router.push('/login'); return }
       if (res.status === 403) { router.push('/membros/dashboard'); return }
+      if (!res.ok) {
+        let message = 'Erro ao carregar dados'
+        try {
+          const data = await res.json()
+          if (data?.error) message = data.error
+        } catch {
+          // Body wasn't valid JSON; fall back to the generic message.
+        }
+        setError(message)
+        setLoading(false)
+        return
+      }
       const data = await res.json()
       setUsers(data.users || [])
     } catch {

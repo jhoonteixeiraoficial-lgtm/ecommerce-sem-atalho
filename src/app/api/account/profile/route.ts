@@ -9,6 +9,34 @@ export const profileUpdateSchema = z.object({
   avatarUrl: z.string().url().max(2048).optional(),
 }).strict()
 
+export async function GET() {
+  const { createClient } = await import('@/lib/supabase/server')
+  const serverClient = await createClient()
+  const { data: { user } } = await serverClient.auth.getUser()
+
+  const guards = createServerGuards(user)
+
+  let authUser
+  try {
+    authUser = await guards.requireUser()
+  } catch (e: unknown) {
+    const errorStatus = (e && typeof e === 'object' && 'status' in e) ? (e as { status: number }).status : 500
+    const status = errorStatus === 401 || errorStatus === 403 || errorStatus === 503
+      ? errorStatus
+      : 500
+    const message = status === 401
+      ? 'Unauthorized'
+      : status === 403
+        ? 'Forbidden'
+        : status === 503
+          ? 'Service unavailable'
+          : 'Internal server error'
+    return NextResponse.json({ error: message }, { status })
+  }
+
+  return NextResponse.json({ role: authUser.role, status: authUser.status })
+}
+
 export async function PATCH(request: Request) {
   let body: unknown
   try {

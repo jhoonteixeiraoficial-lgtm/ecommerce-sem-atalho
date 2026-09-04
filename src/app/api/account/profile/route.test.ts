@@ -15,7 +15,7 @@ vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: mocks.createAdminClient,
 }))
 
-import { PATCH, profileUpdateSchema } from './route'
+import { GET, PATCH, profileUpdateSchema } from './route'
 
 function adminClient() {
   return {
@@ -90,5 +90,61 @@ describe('PATCH', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ success: true })
+  })
+})
+
+describe('GET', () => {
+  it('returns the authenticated user role and status', async () => {
+    const response = await GET()
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ role: 'member', status: 'active' })
+  })
+
+  it('returns 401 when there is no authenticated user', async () => {
+    mocks.getUser.mockResolvedValue({ data: { user: null } })
+
+    const response = await GET()
+
+    expect(response.status).toBe(401)
+    await expect(response.json()).resolves.toEqual({ error: 'Unauthorized' })
+  })
+
+  it('returns 403 when the account cannot use the member area', async () => {
+    mocks.createAdminClient.mockReturnValue({
+      from(table: string) {
+        const query = {
+          select: () => query,
+          eq: () => query,
+          not: () => query,
+          order: () => query,
+          limit: () => query,
+          single: async () => ({
+            data: table === 'user_roles' ? { role: 'member' } : { status: 'banned' },
+            error: null,
+          }),
+          maybeSingle: async () => ({ data: null, error: null }),
+        }
+        return query
+      },
+    })
+
+    const response = await GET()
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Forbidden' })
+  })
+
+  it('returns 503 when the authorization service is unavailable', async () => {
+    mocks.createAdminClient.mockReturnValue({
+      from() {
+        throw new Error('service unavailable')
+      },
+    })
+
+    const response = await GET()
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({ error: 'Service unavailable' })
   })
 })

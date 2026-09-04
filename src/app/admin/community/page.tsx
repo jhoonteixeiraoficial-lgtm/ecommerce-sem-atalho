@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import { Shield, Trash2, Ban, MessageSquare, User, Calendar } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Card from '@/components/ui/Card'
@@ -14,7 +13,7 @@ interface CommunityPost {
   created_at: string
   image_url: string
   user_id: string
-  profiles: {
+  profile: {
     full_name: string
     email: string
     is_banned: boolean
@@ -30,32 +29,28 @@ export default function AdminCommunityPage() {
   const [banConfirm, setBanConfirm] = useState<{ userId: string; userName: string } | null>(null)
   const [banReason, setBanReason] = useState('')
   const router = useRouter()
-  const [supabase] = useState(() => createClient())
 
   const checkAdminAndFetch = async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { router.push('/login'); return }
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile || profile.role !== 'admin') { router.push('/membros/dashboard'); return }
-
-    const { data, error } = await supabase
-      .from('community_posts')
-      .select(`
-        *,
-        profiles:user_id (full_name, email, is_banned)
-      `)
-      .order('created_at', { ascending: false })
-
-    if (error) {
+    try {
+      const res = await fetch('/api/admin/community')
+      if (res.status === 401) { router.push('/login'); return }
+      if (res.status === 403) { router.push('/membros/dashboard'); return }
+      if (!res.ok) {
+        let message = 'Erro ao carregar posts'
+        try {
+          const data = await res.json()
+          if (data?.error) message = data.error
+        } catch {
+          // Body wasn't valid JSON; fall back to the generic message.
+        }
+        setError(message)
+        setLoading(false)
+        return
+      }
+      const data = await res.json()
+      setPosts((data.posts as CommunityPost[]) || [])
+    } catch {
       setError('Erro ao carregar posts')
-    } else {
-      setPosts((data as CommunityPost[]) || [])
     }
     setLoading(false)
   }
@@ -67,12 +62,9 @@ export default function AdminCommunityPage() {
   }, [])
 
   const handleDeletePost = async (postId: string) => {
-    const { error } = await supabase
-      .from('community_posts')
-      .delete()
-      .eq('id', postId)
+    const res = await fetch(`/api/admin/community?id=${postId}`, { method: 'DELETE' })
 
-    if (!error) {
+    if (res.ok) {
       setPosts(posts.filter(p => p.id !== postId))
       setDeleteConfirm(null)
     }
@@ -81,19 +73,16 @@ export default function AdminCommunityPage() {
   const handleBanUser = async () => {
     if (!banConfirm || !banReason.trim()) return
 
-    const { error } = await supabase
-      .from('profiles')
-      .update({
-        is_banned: true,
-        ban_reason: banReason.trim(),
-        banned_at: new Date().toISOString()
-      })
-      .eq('id', banConfirm.userId)
+    const res = await fetch(`/api/admin/users/${banConfirm.userId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set_status', status: 'banned', reason: banReason.trim() }),
+    })
 
-    if (!error) {
+    if (res.ok) {
       setPosts(posts.map(p =>
         p.user_id === banConfirm.userId
-          ? { ...p, profiles: { ...p.profiles, is_banned: true } }
+          ? { ...p, profile: { ...p.profile, is_banned: true } }
           : p
       ))
       setBanConfirm(null)
@@ -103,8 +92,8 @@ export default function AdminCommunityPage() {
 
   const filteredPosts = posts.filter(post =>
     post.content.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    post.profiles?.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    post.profiles?.email?.toLowerCase().includes(searchTerm.toLowerCase())
+    post.profile?.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    post.profile?.email?.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
   if (loading) {
@@ -141,19 +130,19 @@ export default function AdminCommunityPage() {
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center text-sm font-medium text-accent">
-                  {post.profiles?.full_name?.charAt(0) || '?'}
+                  {post.profile?.full_name?.charAt(0) || '?'}
                 </div>
                 <div>
                   <div className="text-sm font-medium text-text-primary">
-                    {post.profiles?.full_name || 'Sem nome'}
-                    {post.profiles?.is_banned && (
+                    {post.profile?.full_name || 'Sem nome'}
+                    {post.profile?.is_banned && (
                       <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-error/10 text-error">
                         SUSPENSO
                       </span>
                     )}
                   </div>
                   <div className="text-xs text-text-muted flex items-center gap-2">
-                    <span>{post.profiles?.email}</span>
+                    <span>{post.profile?.email}</span>
                     <span>·</span>
                     <Calendar className="w-3 h-3" />
                     <span>{new Date(post.created_at).toLocaleDateString('pt-BR')}</span>
@@ -162,11 +151,11 @@ export default function AdminCommunityPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                {!post.profiles?.is_banned && (
+                {!post.profile?.is_banned && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setBanConfirm({ userId: post.user_id, userName: post.profiles?.full_name || 'Usuário' })}
+                    onClick={() => setBanConfirm({ userId: post.user_id, userName: post.profile?.full_name || 'Usuário' })}
                     className="text-error hover:bg-error/10"
                   >
                     <Ban className="w-3.5 h-3.5" />

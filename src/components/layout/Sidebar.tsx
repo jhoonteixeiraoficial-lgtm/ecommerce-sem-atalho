@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  Shield,
 } from 'lucide-react'
 import { useState, useEffect, useCallback, useEffectEvent } from 'react'
 import { createClient } from '@/lib/supabase/client'
@@ -34,16 +35,20 @@ const menuItems = [
   { icon: User, label: 'Perfil', href: '/membros/perfil' },
 ]
 
+const adminItem = { icon: Shield, label: 'Administração', href: '/admin' }
+
 interface SidebarProps {
   open: boolean
   onClose: () => void
+  isAdmin?: boolean
 }
 
-export default function Sidebar({ open, onClose }: SidebarProps) {
+export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps) {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [supabase] = useState(() => createClient())
   const closeForNavigation = useEffectEvent(onClose)
+  const navItems = isAdmin ? [...menuItems, adminItem] : menuItems
 
   const handleLogout = useCallback(async () => {
     await supabase.auth.signOut()
@@ -83,7 +88,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         <nav className="flex-1 py-3 px-2 space-y-0.5">
-          {menuItems.map((item) => {
+          {navItems.map((item) => {
             const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
             return (
               <Link
@@ -124,7 +129,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         <nav className="flex-1 py-3 px-2 space-y-0.5">
-          {menuItems.map((item) => {
+          {navItems.map((item) => {
             const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
             return (
               <Link

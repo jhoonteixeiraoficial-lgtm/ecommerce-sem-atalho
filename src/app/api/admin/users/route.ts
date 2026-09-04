@@ -31,21 +31,25 @@ export async function GET(request: Request) {
 
   const userIds = (profiles ?? []).map(p => p.id)
 
-  const { data: roles } = await admin
+  const { data: roles, error: rolesError } = await admin
     .from('user_roles')
     .select('user_id, role')
     .in('user_id', userIds)
 
-  const { data: statuses } = await admin
+  const { data: statuses, error: statusesError } = await admin
     .from('account_status')
     .select('user_id, status, reason')
     .in('user_id', userIds)
 
-  const { data: subscriptions } = await admin
+  const { data: subscriptions, error: subscriptionsError } = await admin
     .from('subscriptions')
     .select('user_id, plan, status, current_period_end')
     .in('user_id', userIds)
     .eq('status', 'active')
+
+  if (rolesError || statusesError || subscriptionsError) {
+    return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 })
+  }
 
   const roleMap = new Map((roles ?? []).map(r => [r.user_id, r.role]))
   const statusMap = new Map((statuses ?? []).map(s => [s.user_id, s]))

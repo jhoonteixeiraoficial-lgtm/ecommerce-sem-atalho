@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { createServerGuards } from '@/lib/auth/server-guards'
 import { createClient } from '@/lib/supabase/server'
@@ -25,6 +26,12 @@ export default async function AdminLayout({
   return (
     <div className="min-h-screen bg-bg p-6">
       <div className="max-w-6xl mx-auto">
+        <Link
+          href="/membros/dashboard"
+          className="inline-block mb-4 text-sm text-text-muted hover:text-text-secondary transition-colors"
+        >
+          ← Voltar para área de membros
+        </Link>
         {children}
       </div>
     </div>
