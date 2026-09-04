@@ -80,6 +80,18 @@ describe('adminUserActionSchema', () => {
   it('accepts activation without a reason', () => {
     expect(adminUserActionSchema.safeParse({ action: 'set_status', status: 'active' }).success).toBe(true)
   })
+
+  it('accepts grant_subscription with a valid plan', () => {
+    expect(adminUserActionSchema.safeParse({ action: 'grant_subscription', plan: 'combo' }).success).toBe(true)
+  })
+
+  it('rejects grant_subscription with an invalid plan', () => {
+    expect(adminUserActionSchema.safeParse({ action: 'grant_subscription', plan: 'gold' }).success).toBe(false)
+  })
+
+  it('accepts revoke_subscription', () => {
+    expect(adminUserActionSchema.safeParse({ action: 'revoke_subscription' }).success).toBe(true)
+  })
 })
 
 describe('PATCH', () => {
@@ -151,6 +163,44 @@ describe('PATCH', () => {
     expect(response.status).toBe(500)
     await expect(response.json()).resolves.toEqual({ error: 'Unable to update user' })
     expect(mocks.rpc).toHaveBeenCalledTimes(1)
+  })
+
+  it('grants a subscription via admin_manage_subscription', async () => {
+    const response = await PATCH(
+      new Request('https://example.test/api/admin/users/target-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'grant_subscription', plan: 'combo' }),
+      }),
+      { params: Promise.resolve({ userId: 'target-1' }) },
+    )
+
+    expect(response.status).toBe(200)
+    expect(mocks.rpc).toHaveBeenCalledWith('admin_manage_subscription', {
+      p_actor_user_id: 'actor-1',
+      p_target_user_id: 'target-1',
+      p_action: 'grant',
+      p_plan: 'combo',
+      p_period_days: 365,
+    })
+  })
+
+  it('revokes a subscription via admin_manage_subscription', async () => {
+    const response = await PATCH(
+      new Request('https://example.test/api/admin/users/target-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'revoke_subscription' }),
+      }),
+      { params: Promise.resolve({ userId: 'target-1' }) },
+    )
+
+    expect(response.status).toBe(200)
+    expect(mocks.rpc).toHaveBeenCalledWith('admin_manage_subscription', {
+      p_actor_user_id: 'actor-1',
+      p_target_user_id: 'target-1',
+      p_action: 'revoke',
+      p_plan: null,
+      p_period_days: null,
+    })
   })
 
   it('maps thrown infrastructure errors to a generic 500 response', async () => {

@@ -139,6 +139,26 @@ export default function Feed() {
     getUser();
   }, [supabase]);
 
+  // Mobile browsers (notably iOS Safari) suspend the realtime WebSocket when
+  // the tab/app is backgrounded (lock screen, app switch) without always
+  // firing CHANNEL_ERROR/CLOSED on the channel. Force a full resubscribe and
+  // refetch whenever the page becomes visible/online again so posts/comments
+  // created while backgrounded are not missed.
+  useEffect(() => {
+    const resync = () => setRefreshVersion((version) => version + 1);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') resync();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pageshow', resync);
+    window.addEventListener('online', resync);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pageshow', resync);
+      window.removeEventListener('online', resync);
+    };
+  }, []);
+
   useEffect(() => {
     const category = selectedCategory;
     const run = feedGenerations.begin();

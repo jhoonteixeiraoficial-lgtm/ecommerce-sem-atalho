@@ -95,7 +95,16 @@ export default function DashboardPage() {
         if (profileData) setProfile(profileData)
 
         try {
-          const catalog = await getCatalog()
+          let catalog
+          try {
+            catalog = await getCatalog()
+          } catch (retryErr) {
+            if (retryErr instanceof LearningApiError && retryErr.kind === 'server-error') {
+              catalog = await getCatalog()
+            } else {
+              throw retryErr
+            }
+          }
           const modules = catalog.flatMap((course) => course.modules)
 
           const totals = modules.reduce(

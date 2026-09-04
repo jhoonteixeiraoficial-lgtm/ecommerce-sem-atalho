@@ -31,6 +31,9 @@ export default function AdminUsersPage() {
   const [banConfirm, setBanConfirm] = useState<{ userId: string; userName: string } | null>(null)
   const [banReason, setBanReason] = useState('')
   const [unbanConfirm, setUnbanConfirm] = useState<string | null>(null)
+  const [accessModal, setAccessModal] = useState<{ userId: string; userName: string } | null>(null)
+  const [accessPlan, setAccessPlan] = useState<'comunidade' | 'acertive' | 'combo'>('combo')
+  const [revokeConfirm, setRevokeConfirm] = useState<{ userId: string; userName: string } | null>(null)
   const router = useRouter()
   const [supabase] = useState(() => createClient())
 
@@ -98,6 +101,42 @@ export default function AdminUsersPage() {
       ))
       setBanConfirm(null)
       setBanReason('')
+    }
+  }
+
+  const handleGrantAccess = async () => {
+    if (!accessModal) return
+
+    const res = await fetch(`/api/admin/users/${accessModal.userId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'grant_subscription', plan: accessPlan }),
+    })
+
+    if (res.ok) {
+      setUsers(users.map(u =>
+        u.id === accessModal.userId
+          ? { ...u, subscriptions: [{ plan: accessPlan, status: 'active', current_period_end: new Date(Date.now() + 365 * 86400000).toISOString() }] }
+          : u
+      ))
+      setAccessModal(null)
+    }
+  }
+
+  const handleRevokeAccess = async () => {
+    if (!revokeConfirm) return
+
+    const res = await fetch(`/api/admin/users/${revokeConfirm.userId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'revoke_subscription' }),
+    })
+
+    if (res.ok) {
+      setUsers(users.map(u =>
+        u.id === revokeConfirm.userId ? { ...u, subscriptions: [] } : u
+      ))
+      setRevokeConfirm(null)
     }
   }
 
@@ -205,19 +244,37 @@ export default function AdminUsersPage() {
                 )}
               </div>
 
-              <div className="text-right shrink-0">
+              <div className="text-right shrink-0 flex flex-col items-end gap-1">
                 {user.subscriptions?.length > 0 ? (
-                  <span className={`px-2 py-1 rounded-full text-[10px] font-medium ${
-                    user.subscriptions[0].status === 'active'
-                      ? 'bg-success/10 text-success'
-                      : 'bg-error/10 text-error'
-                  }`}>
-                    {user.subscriptions[0].status} - {user.subscriptions[0].plan}
-                  </span>
+                  <>
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-medium ${
+                      user.subscriptions[0].status === 'active'
+                        ? 'bg-success/10 text-success'
+                        : 'bg-error/10 text-error'
+                    }`}>
+                      {user.subscriptions[0].status} - {user.subscriptions[0].plan}
+                    </span>
+                    {user.subscriptions[0].status === 'active' && (
+                      <button
+                        onClick={() => setRevokeConfirm({ userId: user.id, userName: user.full_name || 'Usuario' })}
+                        className="text-[10px] text-error hover:underline"
+                      >
+                        Revogar acesso
+                      </button>
+                    )}
+                  </>
                 ) : (
-                  <span className="px-2 py-1 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted">
-                    sem assinatura
-                  </span>
+                  <>
+                    <span className="px-2 py-1 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted">
+                      sem assinatura
+                    </span>
+                    <button
+                      onClick={() => { setAccessModal({ userId: user.id, userName: user.full_name || 'Usuario' }); setAccessPlan('combo') }}
+                      className="text-[10px] text-accent hover:underline"
+                    >
+                      Conceder acesso
+                    </button>
+                  </>
                 )}
               </div>
 
@@ -334,6 +391,55 @@ export default function AdminUsersPage() {
               >
                 Suspender
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {accessModal && (
+        <div className="fixed inset-0 bg-bg/80 flex items-center justify-center p-4 z-50">
+          <div className="max-w-sm w-full rounded-xl bg-surface border border-border-subtle p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-medium text-text-primary">Conceder Acesso</h3>
+              <button onClick={() => setAccessModal(null)}>
+                <X className="w-4 h-4 text-text-muted" />
+              </button>
+            </div>
+            <p className="text-sm text-text-muted">
+              Conceder acesso manual (365 dias) para <strong>{accessModal.userName}</strong>.
+            </p>
+            <select
+              value={accessPlan}
+              onChange={(e) => setAccessPlan(e.target.value as typeof accessPlan)}
+              className="w-full bg-surface border border-border-subtle rounded-lg px-3.5 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent"
+            >
+              <option value="comunidade">Comunidade</option>
+              <option value="acertive">Acertive</option>
+              <option value="combo">Combo</option>
+            </select>
+            <div className="flex items-center gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setAccessModal(null)}>Cancelar</Button>
+              <Button variant="primary" onClick={handleGrantAccess}>Conceder</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {revokeConfirm && (
+        <div className="fixed inset-0 bg-bg/80 flex items-center justify-center p-4 z-50">
+          <div className="max-w-sm w-full rounded-xl bg-surface border border-border-subtle p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-medium text-text-primary">Revogar Acesso</h3>
+              <button onClick={() => setRevokeConfirm(null)}>
+                <X className="w-4 h-4 text-text-muted" />
+              </button>
+            </div>
+            <p className="text-sm text-text-muted">
+              Tem certeza que deseja revogar o acesso de <strong>{revokeConfirm.userName}</strong>?
+            </p>
+            <div className="flex items-center gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setRevokeConfirm(null)}>Cancelar</Button>
+              <Button variant="primary" onClick={handleRevokeAccess} className="bg-error hover:bg-error/90">Revogar</Button>
             </div>
           </div>
         </div>

@@ -87,6 +87,26 @@ export default function Chat() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
+  // Mobile browsers (notably iOS Safari) suspend the realtime WebSocket when
+  // the tab/app is backgrounded (lock screen, app switch) without always
+  // firing CHANNEL_ERROR/CLOSED on the channel. Force a full resubscribe and
+  // refetch whenever the page becomes visible/online again so messages sent
+  // while backgrounded are not missed.
+  useEffect(() => {
+    const resync = () => setRefreshVersion((version) => version + 1);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') resync();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pageshow', resync);
+    window.addEventListener('online', resync);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pageshow', resync);
+      window.removeEventListener('online', resync);
+    };
+  }, []);
+
   useEffect(() => {
     const fetchChannels = async () => {
       const { data, error } = await supabase

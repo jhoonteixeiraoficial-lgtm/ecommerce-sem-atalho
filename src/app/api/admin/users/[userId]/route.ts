@@ -39,15 +39,35 @@ export async function PATCH(
   const data = parsed.data
   let error: { code?: string } | null
   try {
-    const result = await admin.rpc('admin_user_action', {
-      p_actor_user_id: authUser.id,
-      p_target_user_id: userId,
-      p_action: data.action,
-      p_role: data.action === 'set_role' ? data.role : null,
-      p_status: data.action === 'set_status' ? data.status : null,
-      p_reason: data.action === 'set_status' ? data.reason ?? null : null,
-    })
-    error = result.error
+    if (data.action === 'grant_subscription') {
+      const result = await admin.rpc('admin_manage_subscription', {
+        p_actor_user_id: authUser.id,
+        p_target_user_id: userId,
+        p_action: 'grant',
+        p_plan: data.plan,
+        p_period_days: data.periodDays ?? 365,
+      })
+      error = result.error
+    } else if (data.action === 'revoke_subscription') {
+      const result = await admin.rpc('admin_manage_subscription', {
+        p_actor_user_id: authUser.id,
+        p_target_user_id: userId,
+        p_action: 'revoke',
+        p_plan: null,
+        p_period_days: null,
+      })
+      error = result.error
+    } else {
+      const result = await admin.rpc('admin_user_action', {
+        p_actor_user_id: authUser.id,
+        p_target_user_id: userId,
+        p_action: data.action,
+        p_role: data.action === 'set_role' ? data.role : null,
+        p_status: data.action === 'set_status' ? data.status : null,
+        p_reason: data.action === 'set_status' ? data.reason ?? null : null,
+      })
+      error = result.error
+    }
   } catch {
     return NextResponse.json({ error: 'Unable to update user' }, { status: 500 })
   }

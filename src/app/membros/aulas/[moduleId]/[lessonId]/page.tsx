@@ -6,6 +6,7 @@ import Button from '@/components/ui/Button'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { getLesson, getModule, updateProgress, LearningApiError } from '@/lib/learning/client'
+import { resolvePlayerUrl } from '@/lib/learning/video'
 import type { LessonDetailDto } from '@/lib/learning/types'
 
 function formatDuration(seconds: number): string {
@@ -146,9 +147,9 @@ export default function AulaPage() {
       {lesson.videoUrl ? (
         <div className="aspect-video rounded-xl overflow-hidden border border-border-subtle">
           <iframe
-            src={lesson.videoUrl}
+            src={resolvePlayerUrl(lesson.videoUrl)}
             className="w-full h-full"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
             allowFullScreen
           />
         </div>

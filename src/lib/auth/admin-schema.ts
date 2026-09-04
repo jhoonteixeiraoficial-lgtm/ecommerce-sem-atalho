@@ -12,6 +12,14 @@ export const adminUserActionSchema = z.union([
     status: z.enum(['suspended', 'banned']),
     reason: z.string().trim().min(3).max(500),
   }).strict(),
+  z.object({
+    action: z.literal('grant_subscription'),
+    plan: z.enum(['comunidade', 'acertive', 'combo']),
+    periodDays: z.number().int().min(1).max(3650).optional(),
+  }).strict(),
+  z.object({
+    action: z.literal('revoke_subscription'),
+  }).strict(),
 ])
 
 export type AdminUserAction = z.infer<typeof adminUserActionSchema>

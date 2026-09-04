@@ -7,6 +7,7 @@ import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Card from '@/components/ui/Card'
 import { createLesson, AdminApiError } from '@/lib/learning/admin-client'
+import { toYouTubeEmbedUrl } from '@/lib/learning/video'
 
 interface Module {
   id: string
@@ -20,6 +21,7 @@ interface VideoUploadProps {
 }
 
 export default function VideoUpload({ modules, onUploadComplete }: VideoUploadProps) {
+  const [source, setSource] = useState<'upload' | 'youtube'>('youtube')
   const [file, setFile] = useState<File | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -27,6 +29,8 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const [videoUrl, setVideoUrl] = useState('')
+  const [youtubeInput, setYoutubeInput] = useState('')
+  const [youtubeError, setYoutubeError] = useState('')
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -175,14 +179,127 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
     setError('')
   }
 
+  const handleValidateYoutube = () => {
+    setYoutubeError('')
+    const embed = toYouTubeEmbedUrl(youtubeInput.trim())
+    if (!embed) {
+      setYoutubeError('URL do YouTube inválida. Cole a URL completa do vídeo (não listado).')
+      return
+    }
+    setVideoUrl(embed)
+    setSuccess(true)
+  }
+
+  const resetYoutube = () => {
+    setYoutubeInput('')
+    setYoutubeError('')
+    setVideoUrl('')
+    setSuccess(false)
+  }
+
+  const metadataForm = (
+    <div className="space-y-3 pt-2 border-t border-border-subtle">
+      <Input
+        label="Título da aula"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Ex: Introdução ao Marketing"
+      />
+      <Input
+        label="Slug"
+        value={slug}
+        onChange={(e) => setSlug(e.target.value)}
+        placeholder="ex: introducao-ao-marketing"
+      />
+      <div>
+        <label className="block text-xs font-medium text-text-secondary mb-1.5">Módulo</label>
+        <select
+          value={moduleId}
+          onChange={(e) => setModuleId(e.target.value)}
+          className="w-full bg-surface border border-border rounded-lg px-3.5 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors"
+        >
+          <option value="">Selecione um módulo</option>
+          {modules.map((m) => (
+            <option key={m.id} value={m.id}>{m.title}</option>
+          ))}
+        </select>
+      </div>
+      <Input
+        label="Descrição"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="Breve descrição da aula"
+      />
+      <Input
+        label="Duração (minutos)"
+        type="number"
+        value={duration}
+        onChange={(e) => setDuration(e.target.value)}
+        placeholder="Ex: 15"
+      />
+      <Button onClick={handleSave} loading={saving} className="w-full">
+        Salvar Aula
+      </Button>
+    </div>
+  )
+
   return (
     <Card className="space-y-4">
       <div className="flex items-center gap-2">
         <Video className="w-5 h-5 text-accent" />
-        <h3 className="text-lg font-semibold text-text-primary">Upload de Vídeo</h3>
+        <h3 className="text-lg font-semibold text-text-primary">Nova Aula</h3>
       </div>
 
-      {!file ? (
+      <div className="flex gap-1.5 p-1 bg-surface-raised rounded-lg w-fit">
+        <button
+          onClick={() => { setSource('youtube'); setFile(null); setVideoUrl(''); setSuccess(false); setError('') }}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            source === 'youtube' ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          YouTube (não listado)
+        </button>
+        <button
+          onClick={() => { setSource('upload'); resetYoutube(); setError('') }}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            source === 'upload' ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          Upload de arquivo
+        </button>
+      </div>
+
+      {source === 'youtube' ? (
+        <div className="space-y-3">
+          {!videoUrl ? (
+            <>
+              <Input
+                label="URL do vídeo no YouTube (não listado)"
+                value={youtubeInput}
+                onChange={(e) => setYoutubeInput(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=..."
+              />
+              {youtubeError && (
+                <div className="flex items-center gap-2 text-error text-sm">
+                  <AlertCircle className="w-4 h-4" />
+                  {youtubeError}
+                </div>
+              )}
+              <Button onClick={handleValidateYoutube} disabled={!youtubeInput.trim()} className="w-full">
+                Validar vídeo
+              </Button>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 text-success text-sm">
+                <CheckCircle className="w-4 h-4" />
+                Vídeo do YouTube validado!
+              </div>
+              {metadataForm}
+            </>
+          )}
+        </div>
+      ) : !file ? (
         <div
           onDragEnter={handleDrag}
           onDragLeave={handleDrag}
@@ -246,51 +363,7 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
             </Button>
           )}
 
-          {videoUrl && (
-            <div className="space-y-3 pt-2 border-t border-border-subtle">
-              <Input
-                label="Título da aula"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Ex: Introdução ao Marketing"
-              />
-              <Input
-                label="Slug"
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
-                placeholder="ex: introducao-ao-marketing"
-              />
-              <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5">Módulo</label>
-                <select
-                  value={moduleId}
-                  onChange={(e) => setModuleId(e.target.value)}
-                  className="w-full bg-surface border border-border rounded-lg px-3.5 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 transition-colors"
-                >
-                  <option value="">Selecione um módulo</option>
-                  {modules.map((m) => (
-                    <option key={m.id} value={m.id}>{m.title}</option>
-                  ))}
-                </select>
-              </div>
-              <Input
-                label="Descrição"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Breve descrição da aula"
-              />
-              <Input
-                label="Duração (minutos)"
-                type="number"
-                value={duration}
-                onChange={(e) => setDuration(e.target.value)}
-                placeholder="Ex: 15"
-              />
-              <Button onClick={handleSave} loading={saving} className="w-full">
-                Salvar Aula
-              </Button>
-            </div>
-          )}
+          {videoUrl && metadataForm}
         </div>
       )}
 

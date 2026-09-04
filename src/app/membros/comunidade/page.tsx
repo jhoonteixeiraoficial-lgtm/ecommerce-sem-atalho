@@ -11,7 +11,7 @@ export default function ComunidadePage() {
   const [activeTab, setActiveTab] = useState<Tab>('feed');
 
   return (
-    <div className="h-[calc(100vh-3.5rem)] flex flex-col">
+    <div className="h-[calc(100dvh-3.5rem)] flex flex-col">
       <div className="p-4 border-b border-border-subtle">
         <div className="flex items-center justify-between">
           <div>
