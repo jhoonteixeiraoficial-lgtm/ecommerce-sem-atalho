@@ -269,17 +269,31 @@ export default function AdminUsersPage() {
               </div>
 
               {unbanConfirm === user.id && (
-                <div className="absolute right-4 bottom-4 flex items-center gap-2 p-3 rounded-lg bg-success/5 border border-success/20">
-                  <span className="text-xs text-success">Desbanir este usuario?</span>
-                  <Button variant="ghost" size="sm" onClick={() => setUnbanConfirm(null)}>Cancelar</Button>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => handleUnbanUser(user.id)}
-                    className="bg-success hover:bg-success/90"
-                  >
-                    Desbanir
-                  </Button>
+                <div className="fixed inset-0 bg-bg/80 flex items-center justify-center p-4 z-50">
+                  <div className="max-w-sm w-full rounded-xl bg-surface border border-border-subtle p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Ban className="w-5 h-5 text-success" />
+                        <h3 className="text-lg font-medium text-text-primary">Desbanir Usuario</h3>
+                      </div>
+                      <button onClick={() => setUnbanConfirm(null)}>
+                        <X className="w-4 h-4 text-text-muted" />
+                      </button>
+                    </div>
+                    <p className="text-sm text-text-muted">
+                      Tem certeza que deseja desbanir <strong>{user.full_name || 'este usuario'}</strong>?
+                    </p>
+                    <div className="flex items-center gap-2 justify-end">
+                      <Button variant="ghost" onClick={() => setUnbanConfirm(null)}>Cancelar</Button>
+                      <Button
+                        variant="primary"
+                        onClick={() => handleUnbanUser(user.id)}
+                        className="bg-success hover:bg-success/90"
+                      >
+                        Desbanir
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

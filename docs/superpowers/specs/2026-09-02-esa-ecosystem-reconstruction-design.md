@@ -176,6 +176,8 @@ The admin experience uses a distinct layout and navigation from the member area.
 
 ## 7. Member Experience
 
+> **2026-09-05 update:** the concrete mobile-first navigation and information architecture for this section (feed-as-home, hamburger + bottom navigation, lessons flow, individual lesson screen, unlisted-YouTube embedded video source) is recorded in `docs/superpowers/specs/2026-09-05-member-area-mobile-ux-direction.md`. That document is the authoritative UX direction for this section going forward; the data-model and authorization boundaries below remain unchanged and binding.
+
 ### 7.1 Dashboard
 
 - Personalized greeting and current membership state.

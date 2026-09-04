@@ -17,6 +17,12 @@ export default function AcertiveEcomPage() {
   const [result, setResult] = useState('')
   const [copied, setCopied] = useState(false)
 
+  const handleCopy = () => {
+    navigator.clipboard.writeText(result)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   const handleGenerate = () => {
     if (!prompt.trim()) return
     setLoading(true)
@@ -32,12 +38,6 @@ export default function AcertiveEcomPage() {
     }, 1500)
   }
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(result)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
   return (
     <div className="space-y-8">
       <div>
@@ -46,6 +46,12 @@ export default function AcertiveEcomPage() {
           Acertive Ecom
         </h1>
         <p className="text-sm text-text-muted mt-1">IA para otimizar seus anúncios no Mercado Livre.</p>
+      </div>
+
+      <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+        <p className="text-sm text-amber-300">
+          <strong>Demostração:</strong> Esta é uma pré-visualização da funcionalidade. A integração com IA será disponibilizada em breve.
+        </p>
       </div>
 
       {/* Generator */}

@@ -33,6 +33,12 @@ interface LastLesson {
   lessonSlug: string
 }
 
+interface NextLive {
+  id: string
+  title: string
+  scheduled_at: string
+}
+
 function toLessonsWithProgress(moduleData: ModuleDetailDto): LessonWithProgress[] {
   const moduleSummary = {
     id: moduleData.id,
@@ -65,6 +71,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastLesson, setLastLesson] = useState<LastLesson | null>(null)
+  const [nextLive, setNextLive] = useState<NextLive | null>(null)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -138,6 +145,21 @@ export default function DashboardPage() {
           } else {
             setError('Não foi possível carregar seu progresso. Tente novamente.')
           }
+        }
+
+        const now = new Date().toISOString()
+        const { data: nextLiveData } = await supabase
+          .from('lives')
+          .select('id, title, scheduled_at')
+          .gt('scheduled_at', now)
+          .eq('is_live', false)
+          .is('replay_url', null)
+          .order('scheduled_at', { ascending: true })
+          .limit(1)
+          .single()
+
+        if (nextLiveData) {
+          setNextLive(nextLiveData)
         }
       }
 
@@ -272,23 +294,38 @@ export default function DashboardPage() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">Próxima Live</div>
-              <h3 className="text-sm font-medium text-text-primary">Estratégias de Precificação</h3>
-              <p className="text-xs text-text-muted mt-1">15/09/2026 às 20:00</p>
-              <div className="mt-3">
-                <Button size="sm" variant="secondary" onClick={() => {
-                  const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:20260915T200000\nDTEND:20260915T213000\nSUMMARY:Estratégias de Precificação - E-commerce Sem Atalho\nDESCRIPTION:Live exclusiva do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
-                  const blob = new Blob([event], { type: 'text/calendar' })
-                  const url = URL.createObjectURL(blob)
-                  const a = document.createElement('a')
-                  a.href = url
-                  a.download = 'live-precificacao.ics'
-                  a.click()
-                  URL.revokeObjectURL(url)
-                }}>
-                  <Calendar className="w-3.5 h-3.5" />
-                  Adicionar ao calendário
-                </Button>
-              </div>
+              {nextLive ? (
+                <>
+                  <h3 className="text-sm font-medium text-text-primary">{nextLive.title}</h3>
+                  <p className="text-xs text-text-muted mt-1">
+                    {new Date(nextLive.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
+                    {new Date(nextLive.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                  <div className="mt-3">
+                    <Button size="sm" variant="secondary" onClick={() => {
+                      const d = new Date(nextLive.scheduled_at)
+                      const pad = (n: number) => String(n).padStart(2, '0')
+                      const dtStart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`
+                      const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextLive.title} - E-commerce Sem Atalho\nDESCRIPTION:Live exclusiva do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
+                      const blob = new Blob([event], { type: 'text/calendar' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = `${nextLive.title.replace(/\s+/g, '-').toLowerCase()}.ics`
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    }}>
+                      <Calendar className="w-3.5 h-3.5" />
+                      Adicionar ao calendário
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-sm font-medium text-text-primary">Nenhuma live agendada</h3>
+                  <p className="text-xs text-text-muted mt-1">Fique atento às novidades</p>
+                </>
+              )}
             </div>
           </div>
         </div>
