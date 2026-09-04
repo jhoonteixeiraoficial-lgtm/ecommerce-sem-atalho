@@ -58,6 +58,20 @@ try {
     'db',
     'supabase/migration-tests/017_community_profiles.test.sql',
   ])
+  runSupabase([
+    'db',
+    'reset',
+    '--version',
+    '017',
+    '--sql-paths',
+    './migration-tests/018_canonical_learning.fixture.sql',
+  ])
+  runSupabase(['migration', 'up', '--local'])
+  runSupabase([
+    'test',
+    'db',
+    'supabase/migration-tests/018_canonical_learning.test.sql',
+  ])
 } catch (error) {
   failed = true
   console.error(error instanceof Error ? error.message : error)
