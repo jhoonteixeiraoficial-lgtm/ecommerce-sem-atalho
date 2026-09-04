@@ -129,7 +129,7 @@ export default function AdminUsersPage() {
         <h1 className="text-2xl font-semibold text-text-primary tracking-tight">Gerenciar Usuarios</h1>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-5 rounded-xl bg-surface border border-border-subtle text-center">
           <Users className="w-5 h-5 text-accent mx-auto mb-2" />
           <div className="text-2xl font-semibold text-text-primary">{users.length}</div>
@@ -166,7 +166,7 @@ export default function AdminUsersPage() {
         </div>
         <div className="divide-y divide-border-subtle">
           {filteredUsers.map((user) => (
-            <div key={user.id} className="p-4 flex items-center gap-4 hover:bg-surface-raised transition-colors">
+            <div key={user.id} className="p-4 flex flex-wrap items-center gap-3 hover:bg-surface-raised transition-colors">
               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${
                 user.is_banned ? 'bg-error/10 text-error' : 'bg-accent/10 text-accent'
               }`}>

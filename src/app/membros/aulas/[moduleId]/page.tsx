@@ -112,7 +112,7 @@ export default function ModuloPage() {
         <p className="text-sm text-text-muted mt-1">{moduleData.description}</p>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <div className="p-4 rounded-xl bg-surface border border-border-subtle text-center">
           <div className="text-lg font-semibold text-text-primary">{completedCount}/{totalLessons}</div>
           <div className="text-[10px] text-text-muted">Aulas</div>
