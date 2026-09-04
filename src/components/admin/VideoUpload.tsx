@@ -105,8 +105,21 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
       return
     }
 
-    const { data } = supabase.storage.from('course-videos').getPublicUrl(filePath)
-    setVideoUrl(data.publicUrl)
+    // `course-videos` is a private bucket (subscriber-only RLS); a "public"
+    // URL is never reachable for it. Mint a long-lived signed URL instead so
+    // the stored transitional videoUrl is actually playable by members.
+    const TEN_YEARS_SECONDS = 10 * 365 * 24 * 60 * 60
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from('course-videos')
+      .createSignedUrl(filePath, TEN_YEARS_SECONDS)
+
+    if (signedError || !signedData?.signedUrl) {
+      setError('Erro ao gerar link do vídeo: ' + (signedError?.message ?? 'desconhecido'))
+      setUploading(false)
+      return
+    }
+
+    setVideoUrl(signedData.signedUrl)
     setProgress(100)
     setUploading(false)
     setSuccess(true)
