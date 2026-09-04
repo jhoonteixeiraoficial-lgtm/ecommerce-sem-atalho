@@ -208,6 +208,16 @@ export default function Feed() {
       requestComments: commentRefresh.request,
     });
 
+    // Mobile carriers/browsers frequently kill an idle WebSocket without ever
+    // firing CHANNEL_ERROR/CLOSED, so the realtime subscription can silently
+    // stop delivering updates while still reporting SUBSCRIBED. A short
+    // unconditional poll guarantees new posts/comments still arrive within a
+    // few seconds on every device, independent of the status callback firing.
+    const pollFallback = setInterval(() => {
+      void snapshots.refresh();
+      refreshExpandedComments();
+    }, 4000);
+
     const channel = supabase
       .channel('community-posts')
       .on(
@@ -247,6 +257,7 @@ export default function Feed() {
       commentRefresh.cancel();
       commentSnapshots.cancel();
       recovery.cancel();
+      clearInterval(pollFallback);
       supabase.removeChannel(channel);
     };
   }, [

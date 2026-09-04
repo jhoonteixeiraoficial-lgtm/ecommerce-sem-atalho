@@ -150,6 +150,14 @@ export default function Chat() {
     const refresh = createRefreshScheduler(() => void snapshots.refresh(), 250);
     const recovery = createRealtimeRecovery(() => void snapshots.refresh(), 15000);
 
+    // Mobile carriers/browsers (iOS Safari, Android Chrome) frequently kill an
+    // idle WebSocket without ever firing CHANNEL_ERROR/CLOSED, so the realtime
+    // subscription can silently stop delivering new messages while still
+    // reporting SUBSCRIBED. A short unconditional poll guarantees messages
+    // still arrive within a few seconds on every device even when the socket
+    // is dead, independent of the realtime status callback ever firing.
+    const pollFallback = setInterval(() => void snapshots.refresh(), 4000);
+
     const channel = supabase
       .channel(`chat:${channelId}`)
       .on(
@@ -207,6 +215,7 @@ export default function Chat() {
       snapshots.cancel();
       refresh.cancel();
       recovery.cancel();
+      clearInterval(pollFallback);
       supabase.removeChannel(channel);
     };
   }, [selectedChannel, supabase, syncGenerations, refreshVersion]);
