@@ -30,6 +30,7 @@ let failed = false
 try {
   runSupabase(['test', 'db'])
   runNode('scripts/test-reaction-concurrency.mjs')
+  runNode('scripts/test-learning-concurrency.mjs')
   runSupabase([
     'db',
     'reset',

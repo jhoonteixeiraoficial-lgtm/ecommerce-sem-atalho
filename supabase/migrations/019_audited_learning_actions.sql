@@ -29,10 +29,17 @@ declare
   target_id uuid;
   target_found boolean;
   current_parent_id uuid;
+  current_course_id uuid;
   current_published boolean;
   desired_published boolean;
   parent_published boolean;
+  course_published boolean;
+  module_published boolean;
 begin
+  -- Share migration 012's protocol so actor changes and privileged actions
+  -- serialize, then acquire content rows from ancestor to descendant.
+  perform pg_catalog.pg_advisory_xact_lock(194964823, 1);
+
   if auth.role() is distinct from 'service_role'
     or p_release_at_set is null
     or p_entity is null
@@ -112,16 +119,32 @@ begin
         p_sort_order, p_is_published, p_release_at
       );
     else
-      select modules.is_published and courses.is_published
-      into parent_published
+      select modules.course_id
+      into current_course_id
       from public.modules
-      join public.courses on courses.id = modules.course_id
-      where modules.id = p_parent_id
-      for update of modules, courses;
+      where modules.id = p_parent_id;
 
       if not found then
         raise exception using errcode = 'P0001', message = 'Learning action rejected';
       end if;
+
+      select courses.is_published
+      into course_published
+      from public.courses
+      where courses.id = current_course_id
+      for update;
+
+      select modules.is_published
+      into module_published
+      from public.modules
+      where modules.id = p_parent_id
+        and modules.course_id = current_course_id
+      for update;
+
+      if not found then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+      parent_published := course_published and module_published;
       if p_is_published and not parent_published then
         raise exception using errcode = 'P0002', message = 'Learning action conflict';
       end if;
@@ -196,22 +219,32 @@ begin
           updated_at = pg_catalog.statement_timestamp()
       where id = target_id;
     elsif p_entity = 'module' then
-      select true, modules.course_id, modules.is_published
-      into target_found, current_parent_id, current_published
+      select modules.course_id
+      into current_parent_id
       from public.modules
-      where modules.id = target_id
-      for update;
+      where modules.id = target_id;
 
-      if not coalesce(target_found, false) then
+      if not found then
         raise exception using errcode = 'P0001', message = 'Learning action rejected';
       end if;
-      desired_published := coalesce(p_is_published, current_published);
 
       select courses.is_published
       into parent_published
       from public.courses
       where courses.id = current_parent_id
       for update;
+
+      select true, modules.is_published
+      into target_found, current_published
+      from public.modules
+      where modules.id = target_id
+        and modules.course_id = current_parent_id
+      for update;
+
+      if not coalesce(target_found, false) then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+      desired_published := coalesce(p_is_published, current_published);
 
       if desired_published and not coalesce(parent_published, false) then
         raise exception using errcode = 'P0002', message = 'Learning action conflict';
@@ -237,23 +270,49 @@ begin
           updated_at = pg_catalog.statement_timestamp()
       where id = target_id;
     else
-      select true, lessons.module_id, lessons.is_published
-      into target_found, current_parent_id, current_published
+      select lessons.module_id
+      into current_parent_id
+      from public.lessons
+      where lessons.id = target_id;
+
+      if not found then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+
+      select modules.course_id
+      into current_course_id
+      from public.modules
+      where modules.id = current_parent_id;
+
+      if not found then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+
+      select courses.is_published
+      into course_published
+      from public.courses
+      where courses.id = current_course_id
+      for update;
+
+      select modules.is_published
+      into module_published
+      from public.modules
+      where modules.id = current_parent_id
+        and modules.course_id = current_course_id
+      for update;
+
+      select true, lessons.is_published
+      into target_found, current_published
       from public.lessons
       where lessons.id = target_id
+        and lessons.module_id = current_parent_id
       for update;
 
       if not coalesce(target_found, false) then
         raise exception using errcode = 'P0001', message = 'Learning action rejected';
       end if;
       desired_published := coalesce(p_is_published, current_published);
-
-      select modules.is_published and courses.is_published
-      into parent_published
-      from public.modules
-      join public.courses on courses.id = modules.course_id
-      where modules.id = current_parent_id
-      for update of modules, courses;
+      parent_published := course_published and module_published;
 
       if desired_published and not coalesce(parent_published, false) then
         raise exception using errcode = 'P0002', message = 'Learning action conflict';
@@ -300,6 +359,20 @@ begin
       if not found then
         raise exception using errcode = 'P0001', message = 'Learning action rejected';
       end if;
+
+      perform 1
+      from public.modules
+      where course_id = target_id
+      order by id
+      for update;
+
+      perform 1
+      from public.lessons
+      join public.modules on modules.id = lessons.module_id
+      where modules.course_id = target_id
+      order by lessons.id
+      for update of lessons;
+
       if exists (select 1 from public.modules where course_id = target_id)
         or exists (
           select 1
@@ -313,10 +386,30 @@ begin
       end if;
       delete from public.courses where id = target_id;
     elsif p_entity = 'module' then
-      perform 1 from public.modules where id = target_id for update;
+      select modules.course_id
+      into current_course_id
+      from public.modules
+      where modules.id = target_id;
+
       if not found then
         raise exception using errcode = 'P0001', message = 'Learning action rejected';
       end if;
+
+      perform 1 from public.courses where id = current_course_id for update;
+      perform 1
+      from public.modules
+      where id = target_id and course_id = current_course_id
+      for update;
+      if not found then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+
+      perform 1
+      from public.lessons
+      where module_id = target_id
+      order by id
+      for update;
+
       if exists (
         select 1
         from public.lesson_progress
@@ -327,10 +420,37 @@ begin
       end if;
       delete from public.modules where id = target_id;
     else
-      perform 1 from public.lessons where id = target_id for update;
+      select lessons.module_id
+      into current_parent_id
+      from public.lessons
+      where lessons.id = target_id;
+
       if not found then
         raise exception using errcode = 'P0001', message = 'Learning action rejected';
       end if;
+
+      select modules.course_id
+      into current_course_id
+      from public.modules
+      where modules.id = current_parent_id;
+
+      if not found then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+
+      perform 1 from public.courses where id = current_course_id for update;
+      perform 1
+      from public.modules
+      where id = current_parent_id and course_id = current_course_id
+      for update;
+      perform 1
+      from public.lessons
+      where id = target_id and module_id = current_parent_id
+      for update;
+      if not found then
+        raise exception using errcode = 'P0001', message = 'Learning action rejected';
+      end if;
+
       if exists (select 1 from public.lesson_progress where lesson_id = target_id) then
         raise exception using errcode = 'P0002', message = 'Learning action conflict';
       end if;
