@@ -6,6 +6,7 @@ import { Upload, Video, X, CheckCircle, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Card from '@/components/ui/Card'
+import { createLesson, AdminApiError } from '@/lib/learning/admin-client'
 
 interface Module {
   id: string
@@ -119,19 +120,23 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
     setSaving(true)
     setError('')
 
-    const { error: insertError } = await supabase.from('lessons').insert({
-      module_id: moduleId,
-      slug,
-      title,
-      description,
-      video_url: videoUrl,
-      duration_minutes: duration ? parseInt(duration) : 0,
-      sort_order: 0,
-      is_published: false,
-    })
-
-    if (insertError) {
-      setError('Erro ao salvar aula: ' + insertError.message)
+    try {
+      await createLesson({
+        moduleId,
+        slug,
+        title,
+        description,
+        videoUrl,
+        durationSeconds: duration ? parseInt(duration) * 60 : 0,
+        sortOrder: 0,
+        isPublished: false,
+        releaseAt: null,
+      })
+    } catch (createError) {
+      const message = createError instanceof AdminApiError
+        ? createError.message
+        : 'Erro desconhecido'
+      setError('Erro ao salvar aula: ' + message)
       setSaving(false)
       return
     }

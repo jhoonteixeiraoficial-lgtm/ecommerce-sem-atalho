@@ -1,13 +1,20 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
 import { BookOpen, Plus, Trash2, Eye, EyeOff, ChevronDown, ChevronRight, Pencil, X, Check } from 'lucide-react'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import VideoUpload from '@/components/admin/VideoUpload'
+import {
+  getAdminLearningTree,
+  createModule,
+  updateModule,
+  deleteModule as deleteModuleRequest,
+  updateLesson,
+  deleteLesson as deleteLessonRequest,
+  AdminApiError,
+} from '@/lib/learning/admin-client'
 
 interface Lesson {
   id: string
@@ -30,9 +37,15 @@ interface Module {
   lessons: Lesson[]
 }
 
+function describeError(error: unknown, fallback: string): string {
+  return error instanceof AdminApiError ? error.message : fallback
+}
+
 export default function AdminLessons() {
   const [modules, setModules] = useState<Module[]>([])
+  const [defaultCourseId, setDefaultCourseId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [showUpload, setShowUpload] = useState(false)
   const [expandedModule, setExpandedModule] = useState<string | null>(null)
   const [editingLesson, setEditingLesson] = useState<string | null>(null)
@@ -41,57 +54,38 @@ export default function AdminLessons() {
   const [newModuleTitle, setNewModuleTitle] = useState('')
   const [newModuleSlug, setNewModuleSlug] = useState('')
   const [showNewModule, setShowNewModule] = useState(false)
-  const router = useRouter()
-  const [supabase] = useState(() => createClient())
 
   const fetchData = async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { router.push('/login'); return }
+    try {
+      const courses = await getAdminLearningTree()
+      const modulesWithLessons: Module[] = courses.flatMap((course) =>
+        course.modules.map((mod) => ({
+          id: mod.id,
+          slug: mod.slug,
+          title: mod.title,
+          description: mod.description,
+          sort_order: mod.sortOrder,
+          is_published: mod.isPublished,
+          lessons: mod.lessons.map((lesson) => ({
+            id: lesson.id,
+            slug: lesson.slug,
+            title: lesson.title,
+            description: lesson.description,
+            video_url: lesson.videoUrl,
+            duration_minutes: Math.round(lesson.durationSeconds / 60),
+            sort_order: lesson.sortOrder,
+            is_published: lesson.isPublished,
+          })),
+        }))
+      )
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile || profile.role !== 'admin') {
-      router.push('/membros/dashboard')
-      return
+      setModules(modulesWithLessons)
+      setDefaultCourseId(courses[0]?.id ?? null)
+    } catch (fetchError) {
+      setError(describeError(fetchError, 'Erro ao carregar aulas'))
+    } finally {
+      setLoading(false)
     }
-
-    const { data: mods } = await supabase
-      .from('modules')
-      .select('*')
-      .order('sort_order')
-
-    const { data: lessons } = await supabase
-      .from('lessons')
-      .select('*')
-      .order('sort_order')
-
-    const modulesWithLessons: Module[] = (mods || []).map((m: Record<string, unknown>) => ({
-      id: m.id as string,
-      slug: m.slug as string,
-      title: m.title as string,
-      description: (m.description as string) || '',
-      sort_order: (m.sort_order as number) || 0,
-      is_published: (m.is_published as boolean) || false,
-      lessons: (lessons || [])
-        .filter((l: Record<string, unknown>) => l.module_id === m.id)
-        .map((l: Record<string, unknown>) => ({
-          id: l.id as string,
-          slug: l.slug as string,
-          title: l.title as string,
-          description: (l.description as string) || '',
-          video_url: (l.video_url as string) || '',
-          duration_minutes: (l.duration_minutes as number) || 0,
-          sort_order: (l.sort_order as number) || 0,
-          is_published: (l.is_published as boolean) || false,
-        })),
-    }))
-
-    setModules(modulesWithLessons)
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -102,12 +96,27 @@ export default function AdminLessons() {
 
   const addModule = async () => {
     if (!newModuleTitle || !newModuleSlug) return
-    await supabase.from('modules').insert({
-      title: newModuleTitle,
-      slug: newModuleSlug,
-      sort_order: modules.length,
-      is_published: false,
-    })
+    if (!defaultCourseId) {
+      setError('Nenhum curso disponível para receber o módulo')
+      return
+    }
+    setError('')
+
+    try {
+      await createModule({
+        courseId: defaultCourseId,
+        title: newModuleTitle,
+        slug: newModuleSlug,
+        description: '',
+        sortOrder: modules.length,
+        isPublished: false,
+        releaseAt: null,
+      })
+    } catch (createError) {
+      setError(describeError(createError, 'Erro ao criar módulo'))
+      return
+    }
+
     setNewModuleTitle('')
     setNewModuleSlug('')
     setShowNewModule(false)
@@ -116,24 +125,48 @@ export default function AdminLessons() {
   }
 
   const toggleModulePublish = async (mod: Module) => {
-    await supabase.from('modules').update({ is_published: !mod.is_published }).eq('id', mod.id)
+    setError('')
+    try {
+      await updateModule(mod.id, { isPublished: !mod.is_published })
+    } catch (updateError) {
+      setError(describeError(updateError, 'Erro ao atualizar módulo'))
+      return
+    }
     await fetchData()
   }
 
   const deleteModule = async (id: string) => {
     if (!confirm('Excluir módulo e todas as aulas?')) return
-    await supabase.from('modules').delete().eq('id', id)
+    setError('')
+    try {
+      await deleteModuleRequest(id)
+    } catch (deleteError) {
+      setError(describeError(deleteError, 'Erro ao excluir módulo'))
+      return
+    }
     await fetchData()
   }
 
   const toggleLessonPublish = async (lesson: Lesson) => {
-    await supabase.from('lessons').update({ is_published: !lesson.is_published }).eq('id', lesson.id)
+    setError('')
+    try {
+      await updateLesson(lesson.id, { isPublished: !lesson.is_published })
+    } catch (updateError) {
+      setError(describeError(updateError, 'Erro ao atualizar aula'))
+      return
+    }
     await fetchData()
   }
 
   const deleteLesson = async (id: string) => {
     if (!confirm('Excluir esta aula?')) return
-    await supabase.from('lessons').delete().eq('id', id)
+    setError('')
+    try {
+      await deleteLessonRequest(id)
+    } catch (deleteError) {
+      setError(describeError(deleteError, 'Erro ao excluir aula'))
+      return
+    }
     await fetchData()
   }
 
@@ -144,7 +177,13 @@ export default function AdminLessons() {
   }
 
   const saveEditLesson = async (id: string) => {
-    await supabase.from('lessons').update({ title: editTitle, description: editDesc }).eq('id', id)
+    setError('')
+    try {
+      await updateLesson(id, { title: editTitle, description: editDesc })
+    } catch (updateError) {
+      setError(describeError(updateError, 'Erro ao salvar aula'))
+      return
+    }
     setEditingLesson(null)
     await fetchData()
   }
@@ -172,6 +211,10 @@ export default function AdminLessons() {
         </div>
       </div>
 
+      {error && (
+        <div className="p-3 rounded-lg bg-error/10 border border-error/20 text-error text-sm">{error}</div>
+      )}
+
       {showNewModule && (
         <Card className="space-y-3">
           <h3 className="text-sm font-medium text-text-primary">Novo Módulo</h3>
@@ -195,7 +238,10 @@ export default function AdminLessons() {
       )}
 
       {showUpload && (
-        <VideoUpload modules={modules.map(({ id, title, slug }) => ({ id, title, slug }))} onUploadComplete={fetchData} />
+        <VideoUpload
+          modules={modules.map(({ id, title, slug }) => ({ id, title, slug }))}
+          onUploadComplete={fetchData}
+        />
       )}
 
       <div className="space-y-3">
