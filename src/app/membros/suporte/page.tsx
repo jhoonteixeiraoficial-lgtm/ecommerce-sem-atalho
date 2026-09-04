@@ -14,25 +14,22 @@ export default function SuportePage() {
 
       <div className="grid sm:grid-cols-2 gap-3">
         {[
-          { icon: MessageCircle, title: 'Chat ao Vivo', desc: 'Fale com nossa equipe.', schedule: 'Seg-Sex: 9h às 18h', cta: 'Iniciar Chat', color: 'text-accent', href: '#', onClick: () => alert('Chat ao vivo indisponível no momento. Tente novamente durante o horário comercial.') },
-          { icon: Mail, title: 'E-mail', desc: 'Envie sua dúvida por e-mail.', schedule: 'suporte@ecommercesematalho.com.br', cta: 'Enviar E-mail', color: 'text-blue-400', href: 'mailto:suporte@ecommercesematalho.com.br' },
-          { icon: Book, title: 'Base de Conhecimento', desc: 'Artigos e tutoriais.', schedule: '', cta: 'Acessar', color: 'text-green-400', href: '#', onClick: () => alert('Base de conhecimento em construção.') },
-          { icon: Video, title: 'Videoaulas de Ajuda', desc: 'Aprenda a usar a plataforma.', schedule: '', cta: 'Acessar', color: 'text-purple-400', href: '/membros/aulas' },
+          { icon: MessageCircle, title: 'Chat ao Vivo', desc: 'Fale com nossa equipe.', schedule: 'Seg-Sex: 9h às 18h', cta: '', color: 'text-accent', href: '', comingSoon: true },
+          { icon: Mail, title: 'E-mail', desc: 'Envie sua dúvida por e-mail.', schedule: 'suporte@ecommercesematalho.com.br', cta: 'Enviar E-mail', color: 'text-blue-400', href: 'mailto:suporte@ecommercesematalho.com.br', comingSoon: false },
+          { icon: Book, title: 'Base de Conhecimento', desc: 'Artigos e tutoriais.', schedule: '', cta: '', color: 'text-green-400', href: '', comingSoon: true },
+          { icon: Video, title: 'Videoaulas de Ajuda', desc: 'Aprenda a usar a plataforma.', schedule: '', cta: 'Acessar', color: 'text-purple-400', href: '/membros/aulas', comingSoon: false },
         ].map((item, i) => (
           <div key={i} className="p-5 rounded-xl bg-surface border border-border-subtle">
             <div className="flex items-start gap-3">
-              <div className="p-2 rounded-lg bg-surface-raised flex-shrink-0">
+              <div className={`p-2 rounded-lg bg-surface-raised flex-shrink-0 ${item.comingSoon ? 'opacity-50' : ''}`}>
                 <item.icon className={`w-4 h-4 ${item.color}`} />
               </div>
               <div>
                 <h3 className="text-sm font-medium text-text-primary">{item.title}</h3>
                 <p className="text-xs text-text-muted mt-1">{item.desc}</p>
                 {item.schedule && <p className="text-[10px] text-text-muted mt-1">{item.schedule}</p>}
-                {item.onClick ? (
-                  <Button size="sm" variant="secondary" className="mt-3" onClick={item.onClick}>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    {item.cta}
-                  </Button>
+                {item.comingSoon ? (
+                  <p className="text-xs text-text-muted mt-3">Em breve</p>
                 ) : (
                   <Link href={item.href}>
                     <Button size="sm" variant="secondary" className="mt-3">
