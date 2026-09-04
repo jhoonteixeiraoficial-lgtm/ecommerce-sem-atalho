@@ -1,79 +1,61 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { BookOpen, Clock, CheckCircle, Play, ArrowLeft, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { BookOpen, Clock, CheckCircle, Play, ArrowLeft, Loader2, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { useParams, useRouter } from 'next/navigation'
+import { getModule, LearningApiError } from '@/lib/learning/client'
+import type { ModuleDetailDto } from '@/lib/learning/types'
 
-interface Lesson {
-  id: string
-  title: string
-  slug: string
-  duration: string | null
-  order_index: number
-}
-
-interface ModuleData {
-  id: string
-  title: string
-  description: string
-  order_index: number
+function formatDuration(seconds: number): string {
+  if (!seconds || seconds <= 0) return '—'
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.floor(seconds % 60)
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 }
 
 export default function ModuloPage() {
-  const { moduleId } = useParams()
-  const [moduleData, setModuleData] = useState<ModuleData | null>(null)
-  const [lessons, setLessons] = useState<Lesson[]>([])
-  const [completedLessons, setCompletedLessons] = useState<Set<string>>(new Set())
+  const { moduleId } = useParams<{ moduleId: string }>()
+  const router = useRouter()
+  const [moduleData, setModuleData] = useState<ModuleDetailDto | null>(null)
   const [loading, setLoading] = useState(true)
-  const supabase = createClient()
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true)
+  const fetchModule = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    setModuleData(null)
 
-      const { data: { user } } = await supabase.auth.getUser()
-
-      const { data: mod } = await supabase
-        .from('modules')
-        .select('*')
-        .eq('slug', moduleId)
-        .single()
-
-      if (mod) {
-        setModuleData(mod)
-
-        const { data: lessonsData } = await supabase
-          .from('lessons')
-          .select('*')
-          .eq('module_id', mod.id)
-          .order('order_index', { ascending: true })
-
-        if (lessonsData) {
-          setLessons(lessonsData)
+    try {
+      const data = await getModule(moduleId)
+      setModuleData(data)
+    } catch (err) {
+      if (err instanceof LearningApiError) {
+        if (err.kind === 'unauthorized') {
+          router.push('/login')
+          return
         }
-
-        if (user) {
-          const { data: progress } = await supabase
-            .from('user_progress')
-            .select('lesson_id')
-            .eq('user_id', user.id)
-            .eq('module_id', mod.id)
-            .eq('completed', true)
-
-          if (progress) {
-            setCompletedLessons(new Set(progress.map((p: { lesson_id: string }) => p.lesson_id)))
-          }
+        if (err.kind === 'forbidden') {
+          router.push('/membros/assinatura-necessaria')
+          return
+        }
+        if (err.kind === 'not-found') {
+          setLoading(false)
+          return
         }
       }
-
-      setLoading(false)
+      setError('Não foi possível carregar o módulo. Tente novamente.')
     }
 
-    fetchData()
-  }, [moduleId, supabase])
+    setLoading(false)
+  }, [moduleId, router])
+
+  useEffect(() => {
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchModule()
+  }, [fetchModule])
 
   if (loading) {
     return (
@@ -96,15 +78,23 @@ export default function ModuloPage() {
           <ArrowLeft className="w-3.5 h-3.5" />
           Voltar pra Aulas
         </Link>
-        <div className="text-center py-20">
-          <p className="text-text-muted">Módulo não encontrado.</p>
-        </div>
+        {error ? (
+          <div className="flex items-center gap-2 p-3 rounded-lg bg-error/10 border border-error/20 text-error text-sm">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {error}
+          </div>
+        ) : (
+          <div className="text-center py-20">
+            <p className="text-text-muted">Módulo não encontrado.</p>
+          </div>
+        )}
       </div>
     )
   }
 
+  const lessons = moduleData.lessons
   const totalLessons = lessons.length
-  const completedCount = completedLessons.size
+  const completedCount = lessons.filter((lesson) => lesson.progress?.completed).length
   const progressPercentage = totalLessons > 0 ? Math.round((completedCount / totalLessons) * 100) : 0
 
   return (
@@ -116,7 +106,7 @@ export default function ModuloPage() {
 
       <div>
         <div className="text-[10px] text-accent font-medium uppercase tracking-wider mb-1">
-          Módulo {(moduleData.order_index + 1).toString().padStart(2, '0')}
+          Módulo {(moduleData.sortOrder + 1).toString().padStart(2, '0')}
         </div>
         <h1 className="text-2xl font-semibold text-text-primary tracking-tight">{moduleData.title}</h1>
         <p className="text-sm text-text-muted mt-1">{moduleData.description}</p>
@@ -141,7 +131,7 @@ export default function ModuloPage() {
           </div>
         ) : (
           lessons.map((lesson) => {
-            const isCompleted = completedLessons.has(lesson.id)
+            const isCompleted = lesson.progress?.completed ?? false
             return (
               <Link key={lesson.id} href={`/membros/aulas/${moduleId}/${lesson.slug}`}>
                 <div className="flex items-center gap-3 p-4 rounded-xl bg-surface border border-border-subtle hover:border-border transition-colors cursor-pointer">
@@ -158,7 +148,7 @@ export default function ModuloPage() {
                     <h3 className="text-sm font-medium text-text-primary">{lesson.title}</h3>
                     <span className="text-[10px] text-text-muted flex items-center gap-1 mt-0.5">
                       <Clock className="w-3 h-3" />
-                      {lesson.duration || '—'}
+                      {formatDuration(lesson.durationSeconds)}
                     </span>
                   </div>
                   {!isCompleted && (

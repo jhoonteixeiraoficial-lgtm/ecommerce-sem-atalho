@@ -1,141 +1,94 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { ArrowLeft, CheckCircle, Clock, Play, MessageCircle, Download, ThumbsUp, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { ArrowLeft, CheckCircle, Clock, Play, MessageCircle, ThumbsUp, ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { getLesson, getModule, updateProgress, LearningApiError } from '@/lib/learning/client'
+import type { LessonDetailDto } from '@/lib/learning/types'
 
-interface Lesson {
-  id: string
-  title: string
-  slug: string
-  description: string
-  video_url: string
-  duration: string
-  order_index: number
-  module_id: string
-}
-
-interface Module {
-  id: string
-  title: string
-  slug: string
-  order_index: number
-}
-
-interface PrevNextLesson {
-  slug: string
-  title: string
+function formatDuration(seconds: number): string {
+  if (!seconds || seconds <= 0) return '—'
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.floor(seconds % 60)
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 }
 
 export default function AulaPage() {
-  const { moduleId, lessonId } = useParams()
+  const { moduleId, lessonId } = useParams<{ moduleId: string; lessonId: string }>()
   const router = useRouter()
-  const [lesson, setLesson] = useState<Lesson | null>(null)
-  const [moduleData, setModuleData] = useState<Module | null>(null)
-  const [completed, setCompleted] = useState(false)
+  const [lesson, setLesson] = useState<LessonDetailDto | null>(null)
+  const [moduleTitle, setModuleTitle] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [userId, setUserId] = useState<string | null>(null)
-  const [prevLesson, setPrevLesson] = useState<PrevNextLesson | null>(null)
-  const [nextLesson, setNextLesson] = useState<PrevNextLesson | null>(null)
-  const supabase = createClient()
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true)
+  const fetchData = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    setLesson(null)
 
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) setUserId(user.id)
+    try {
+      const lessonData = await getLesson(moduleId, lessonId)
+      setLesson(lessonData)
 
-      const { data: lessonData } = await supabase
-        .from('lessons')
-        .select('*')
-        .eq('slug', lessonId)
-        .single()
-
-      const { data: moduleDataResult } = await supabase
-        .from('modules')
-        .select('*')
-        .eq('slug', moduleId)
-        .single()
-
-      if (lessonData && moduleDataResult) {
-        setLesson(lessonData)
-        setModuleData(moduleDataResult)
-
-        const { data: allLessons } = await supabase
-          .from('lessons')
-          .select('id, slug, title, order_index')
-          .eq('module_id', moduleDataResult.id)
-          .order('order_index', { ascending: true })
-
-        if (allLessons) {
-          const currentIndex = allLessons.findIndex((l: { id: string }) => l.id === lessonData.id)
-          if (currentIndex > 0) {
-            setPrevLesson({ slug: allLessons[currentIndex - 1].slug, title: allLessons[currentIndex - 1].title })
-          } else {
-            setPrevLesson(null)
-          }
-          if (currentIndex < allLessons.length - 1) {
-            setNextLesson({ slug: allLessons[currentIndex + 1].slug, title: allLessons[currentIndex + 1].title })
-          } else {
-            setNextLesson(null)
-          }
+      try {
+        const moduleData = await getModule(moduleId)
+        setModuleTitle(moduleData.title)
+      } catch {
+        setModuleTitle(null)
+      }
+    } catch (err) {
+      if (err instanceof LearningApiError) {
+        if (err.kind === 'unauthorized') {
+          router.push('/login')
+          return
         }
-
-        if (user) {
-          const { data: progress } = await supabase
-            .from('user_progress')
-            .select('*')
-            .eq('user_id', user.id)
-            .eq('lesson_id', lessonData.id)
-            .single()
-
-          if (progress) {
-            setCompleted(progress.completed)
-          }
+        if (err.kind === 'forbidden') {
+          router.push('/membros/assinatura-necessaria')
+          return
+        }
+        if (err.kind === 'not-found') {
+          setLoading(false)
+          return
         }
       }
-
-      setLoading(false)
+      setLoadError('Não foi possível carregar a aula. Tente novamente.')
     }
 
+    setLoading(false)
+  }, [moduleId, lessonId, router])
+
+  useEffect(() => {
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData()
-  }, [moduleId, lessonId])
+  }, [fetchData])
+
+  const completed = lesson?.progress?.completed ?? false
 
   async function toggleCompleted() {
-    if (!userId || !lesson || saving) return
+    if (!lesson || saving) return
 
     setSaving(true)
+    setSaveError(null)
+
     const newCompleted = !completed
+    const positionSeconds = newCompleted
+      ? lesson.durationSeconds
+      : lesson.progress?.positionSeconds ?? 0
 
-    if (completed) {
-      const { error } = await supabase
-        .from('user_progress')
-        .delete()
-        .eq('user_id', userId)
-        .eq('lesson_id', lesson.id)
-
-      if (!error) {
-        setCompleted(false)
-      }
-    } else {
-      const { error } = await supabase
-        .from('user_progress')
-        .insert({
-          user_id: userId,
-          lesson_id: lesson.id,
-          module_id: lesson.module_id,
-          completed: true,
-          completed_at: new Date().toISOString(),
-        })
-
-      if (!error) {
-        setCompleted(true)
-      }
+    try {
+      const { progress } = await updateProgress({
+        lessonId: lesson.id,
+        positionSeconds,
+        completed: newCompleted,
+      })
+      setLesson({ ...lesson, progress })
+    } catch {
+      setSaveError('Não foi possível salvar seu progresso. Tente novamente.')
     }
 
     setSaving(false)
@@ -167,7 +120,15 @@ export default function AulaPage() {
   if (!lesson) {
     return (
       <div className="text-center py-20">
-        <p className="text-text-muted">Aula não encontrada.</p>
+        {loadError ? (
+          <div className="inline-flex items-center gap-2 p-3 rounded-lg bg-error/10 border border-error/20 text-error text-sm">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {loadError}
+          </div>
+        ) : (
+          <p className="text-text-muted">Aula não encontrada.</p>
+        )}
+        <br />
         <Link href="/membros/aulas" className="text-accent text-sm mt-2 inline-block hover:underline">
           Voltar para aulas
         </Link>
@@ -179,13 +140,13 @@ export default function AulaPage() {
     <div className="space-y-6">
       <Link href={`/membros/aulas/${moduleId}`} className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors">
         <ArrowLeft className="w-3.5 h-3.5" />
-        Voltar para {moduleData?.title || 'módulo'}
+        Voltar para {moduleTitle || 'módulo'}
       </Link>
 
-      {lesson.video_url ? (
+      {lesson.videoUrl ? (
         <div className="aspect-video rounded-xl overflow-hidden border border-border-subtle">
           <iframe
-            src={lesson.video_url}
+            src={lesson.videoUrl}
             className="w-full h-full"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             allowFullScreen
@@ -206,13 +167,13 @@ export default function AulaPage() {
         <div className="lg:col-span-2 space-y-5">
           <div>
             <div className="text-[10px] text-accent font-medium uppercase tracking-wider mb-1">
-              {moduleData?.title || 'Módulo'} · Aula {lesson.order_index}
+              {moduleTitle || 'Módulo'} · Aula {lesson.sortOrder + 1}
             </div>
             <h1 className="text-xl font-semibold text-text-primary tracking-tight">{lesson.title}</h1>
             <div className="flex items-center gap-3 text-xs text-text-muted mt-2">
               <span className="flex items-center gap-1">
                 <Clock className="w-3 h-3" />
-                {lesson.duration || '—'}
+                {formatDuration(lesson.durationSeconds)}
               </span>
               {completed && (
                 <span className="flex items-center gap-1">
@@ -241,6 +202,12 @@ export default function AulaPage() {
                 )}
                 {completed ? 'Concluída!' : 'Marcar como concluída'}
               </Button>
+              {saveError && (
+                <div className="flex items-center gap-1.5 text-[11px] text-error">
+                  <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                  {saveError}
+                </div>
+              )}
             </div>
           </div>
 
@@ -259,27 +226,27 @@ export default function AulaPage() {
 
       {/* Navigation between lessons */}
       <div className="flex items-center justify-between pt-4 border-t border-border-subtle">
-        {prevLesson ? (
+        {lesson.prevLesson ? (
           <button
-            onClick={() => router.push(`/membros/aulas/${moduleId}/${prevLesson.slug}`)}
+            onClick={() => router.push(`/membros/aulas/${moduleId}/${lesson.prevLesson!.slug}`)}
             className="flex items-center gap-2 px-4 py-3 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors text-left max-w-[45%]"
           >
             <ChevronLeft className="w-4 h-4 text-accent flex-shrink-0" />
             <div className="min-w-0">
               <div className="text-[10px] text-text-muted">Anterior</div>
-              <div className="text-xs font-medium text-text-primary truncate">{prevLesson.title}</div>
+              <div className="text-xs font-medium text-text-primary truncate">{lesson.prevLesson.title}</div>
             </div>
           </button>
         ) : <div />}
 
-        {nextLesson ? (
+        {lesson.nextLesson ? (
           <button
-            onClick={() => router.push(`/membros/aulas/${moduleId}/${nextLesson.slug}`)}
+            onClick={() => router.push(`/membros/aulas/${moduleId}/${lesson.nextLesson!.slug}`)}
             className="flex items-center gap-2 px-4 py-3 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors text-right max-w-[45%]"
           >
             <div className="min-w-0">
               <div className="text-[10px] text-text-muted">Próxima</div>
-              <div className="text-xs font-medium text-text-primary truncate">{nextLesson.title}</div>
+              <div className="text-xs font-medium text-text-primary truncate">{lesson.nextLesson.title}</div>
             </div>
             <ChevronRight className="w-4 h-4 text-accent flex-shrink-0" />
           </button>

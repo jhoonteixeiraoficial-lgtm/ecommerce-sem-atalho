@@ -2,10 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
-import { BookOpen, TrendingUp, Video, Sparkles, ArrowRight, Play, Calendar, Download, Users, Bell, Clock, Star, Target, Award, Zap, Loader2 } from 'lucide-react'
+import { BookOpen, Video, Sparkles, ArrowRight, Play, Calendar, Download, Users, Bell, Clock, Star, Target, Award, Zap, Loader2, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { getCatalog, getModule, LearningApiError } from '@/lib/learning/client'
+import { computeProgressPercentage, selectContinueWatching, type LessonWithProgress } from '@/lib/learning/progress'
+import type { ModuleDetailDto } from '@/lib/learning/types'
 
 interface UserData {
   name: string
@@ -13,7 +16,6 @@ interface UserData {
 }
 
 interface ProfileData {
-  plan_name: string | null
   full_name: string | null
   avatar_url: string | null
 }
@@ -27,8 +29,30 @@ interface ModuleProgress {
 interface LastLesson {
   title: string
   moduleTitle: string
-  moduleId: string
+  moduleSlug: string
   lessonSlug: string
+}
+
+function toLessonsWithProgress(moduleData: ModuleDetailDto): LessonWithProgress[] {
+  const moduleSummary = {
+    id: moduleData.id,
+    slug: moduleData.slug,
+    title: moduleData.title,
+    isPublished: moduleData.isPublished,
+    releaseAt: moduleData.releaseAt,
+    sortOrder: moduleData.sortOrder,
+  }
+
+  return moduleData.lessons.map((lesson) => ({
+    ...lesson,
+    module: moduleSummary,
+    progress: {
+      positionSeconds: lesson.progress?.positionSeconds ?? 0,
+      completed: lesson.progress?.completed ?? false,
+      completedAt: lesson.progress?.completedAt ?? null,
+      lastViewedAt: lesson.progress?.lastViewedAt ?? null,
+    },
+  }))
 }
 
 export default function DashboardPage() {
@@ -39,7 +63,7 @@ export default function DashboardPage() {
   const [completedLessons, setCompletedLessons] = useState(0)
   const [moduleProgress, setModuleProgress] = useState<ModuleProgress[]>([])
   const [loading, setLoading] = useState(true)
-  const [userId, setUserId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [lastLesson, setLastLesson] = useState<LastLesson | null>(null)
 
   useEffect(() => {
@@ -49,7 +73,6 @@ export default function DashboardPage() {
       const { data: { user: authUser } } = await supabase.auth.getUser()
 
       if (authUser) {
-        setUserId(authUser.id)
         const firstName = authUser.user_metadata?.full_name?.split(' ')[0] || authUser.email?.split('@')[0] || 'Membro'
         setUser({
           name: firstName,
@@ -58,105 +81,62 @@ export default function DashboardPage() {
 
         const { data: profileData } = await supabase
           .from('profiles')
-          .select('plan_name, full_name, avatar_url')
+          .select('full_name, avatar_url')
           .eq('id', authUser.id)
           .single()
 
         if (profileData) setProfile(profileData)
 
-        const { count: modulesCount } = await supabase
-          .from('modules')
-          .select('*', { count: 'exact', head: true })
-          .eq('is_published', true)
+        try {
+          const catalog = await getCatalog()
+          const modules = catalog.flatMap((course) => course.modules)
 
-        setTotalModules(modulesCount || 0)
+          const totals = modules.reduce(
+            (acc, mod) => ({
+              lessons: acc.lessons + mod.lessonCount,
+              completed: acc.completed + mod.completedCount,
+            }),
+            { lessons: 0, completed: 0 }
+          )
 
-        const { count: lessonsCount } = await supabase
-          .from('lessons')
-          .select('*', { count: 'exact', head: true })
+          setTotalModules(modules.length)
+          setTotalLessons(totals.lessons)
+          setCompletedLessons(totals.completed)
+          setModuleProgress(
+            modules.map((mod) => ({
+              name: mod.title,
+              totalLessons: mod.lessonCount,
+              completedLessons: mod.completedCount,
+            }))
+          )
 
-        setTotalLessons(lessonsCount || 0)
+          const modulesInProgress = modules.filter(
+            (mod) => mod.lessonCount > 0 && mod.completedCount < mod.lessonCount
+          )
 
-        const { count: completedCount } = await supabase
-          .from('user_progress')
-          .select('*', { count: 'exact', head: true })
-          .eq('user_id', authUser.id)
-          .eq('completed', true)
+          const moduleDetails = await Promise.allSettled(
+            modulesInProgress.map((mod) => getModule(mod.slug))
+          )
 
-        setCompletedLessons(completedCount || 0)
+          const lessonsWithProgress = moduleDetails
+            .filter((result): result is PromiseFulfilledResult<ModuleDetailDto> => result.status === 'fulfilled')
+            .flatMap((result) => toLessonsWithProgress(result.value))
 
-        const { data: modules } = await supabase
-          .from('modules')
-          .select('id, title')
-          .eq('is_published', true)
-          .order('order_index', { ascending: true })
+          const continueWatching = selectContinueWatching(lessonsWithProgress)
 
-        if (modules) {
-          // Batch: fetch all lessons and completed progress in 2 queries instead of N*2
-          const { data: allLessons } = await supabase
-            .from('lessons')
-            .select('module_id')
-
-          const { data: allCompleted } = await supabase
-            .from('user_progress')
-            .select('module_id, lesson_id')
-            .eq('user_id', authUser.id)
-            .eq('completed', true)
-
-          const lessonsPerModule: Record<string, number> = {}
-          const completedPerModule: Record<string, Set<string>> = {}
-
-          for (const lesson of allLessons || []) {
-            lessonsPerModule[lesson.module_id] = (lessonsPerModule[lesson.module_id] || 0) + 1
+          if (continueWatching) {
+            setLastLesson({
+              title: continueWatching.title,
+              moduleTitle: continueWatching.module.title,
+              moduleSlug: continueWatching.module.slug,
+              lessonSlug: continueWatching.slug,
+            })
           }
-
-          for (const progress of allCompleted || []) {
-            if (!completedPerModule[progress.module_id]) {
-              completedPerModule[progress.module_id] = new Set()
-            }
-            completedPerModule[progress.module_id].add(progress.lesson_id)
-          }
-
-          const progressData: ModuleProgress[] = modules.map((mod: { id: string; title: string }) => ({
-            name: mod.title,
-            totalLessons: lessonsPerModule[mod.id] || 0,
-            completedLessons: completedPerModule[mod.id]?.size || 0
-          }))
-
-          setModuleProgress(progressData)
-
-          // Fetch last viewed lesson
-          const { data: lastProgress } = await supabase
-            .from('user_progress')
-            .select('lesson_id, module_id, completed_at')
-            .eq('user_id', authUser.id)
-            .order('completed_at', { ascending: false })
-            .limit(1)
-            .single()
-
-          if (lastProgress) {
-            const { data: lastLessonData } = await supabase
-              .from('lessons')
-              .select('title, slug, module_id')
-              .eq('id', lastProgress.lesson_id)
-              .single()
-
-            if (lastLessonData) {
-              const { data: lastModuleData } = await supabase
-                .from('modules')
-                .select('title, slug')
-                .eq('id', lastProgress.module_id)
-                .single()
-
-              if (lastModuleData) {
-                setLastLesson({
-                  title: lastLessonData.title,
-                  moduleTitle: lastModuleData.title,
-                  moduleId: lastModuleData.slug,
-                  lessonSlug: lastLessonData.slug
-                })
-              }
-            }
+        } catch (err) {
+          if (err instanceof LearningApiError && (err.kind === 'unauthorized' || err.kind === 'forbidden')) {
+            // Layout-level auth guard will redirect; avoid surfacing a dashboard error for this case.
+          } else {
+            setError('Não foi possível carregar seu progresso. Tente novamente.')
           }
         }
       }
@@ -167,9 +147,9 @@ export default function DashboardPage() {
     fetchData()
   }, [])
 
-  const progressPercentage = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
+  const progressPercentage = computeProgressPercentage(completedLessons, totalLessons)
   const displayName = profile?.full_name?.split(' ')[0] || user?.name || 'Membro'
-  const planName = profile?.plan_name || 'Plano Ativo'
+  const planName = 'Plano Ativo'
   const avatarUrl = profile?.avatar_url || user?.avatarUrl || '/fotos/J&T-210.jpg'
 
   if (loading) {
@@ -185,6 +165,13 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
+      {error && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-error/10 border border-error/20 text-error text-sm">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+
       {/* Welcome Banner */}
       <div className="relative p-6 rounded-2xl bg-gradient-to-r from-accent/15 via-accent/10 to-transparent border border-accent/20 overflow-hidden">
         <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-2xl"></div>
@@ -249,7 +236,7 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
-          <Link href={lastLesson ? `/membros/aulas/${lastLesson.moduleId}/${lastLesson.lessonSlug}` : '/membros/aulas'}>
+          <Link href={lastLesson ? `/membros/aulas/${lastLesson.moduleSlug}/${lastLesson.lessonSlug}` : '/membros/aulas'}>
             <Button size="sm" className="bg-gradient-to-r from-accent to-amber-500 hover:from-accent hover:to-amber-400">
               <Play className="w-3.5 h-3.5" />
               {lastLesson ? 'Continuar' : 'Começar'}
@@ -339,7 +326,7 @@ export default function DashboardPage() {
         <div className="space-y-3">
           {moduleProgress.length > 0 ? (
             moduleProgress.map((mod, i) => {
-              const pct = mod.totalLessons > 0 ? Math.round((mod.completedLessons / mod.totalLessons) * 100) : 0
+              const pct = computeProgressPercentage(mod.completedLessons, mod.totalLessons)
               return (
                 <div key={i} className="flex items-center gap-4">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${

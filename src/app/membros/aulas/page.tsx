@@ -1,73 +1,45 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { BookOpen, Clock, CheckCircle, Play, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { BookOpen, CheckCircle, Play, Loader2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
-
-interface Lesson {
-  id: string
-  title: string
-  duration?: string
-}
-
-interface Module {
-  id: string
-  title: string
-  description?: string
-  order_index: number
-  slug: string
-  lessons: Lesson[]
-}
-
-interface ModuleProgress {
-  total: number
-  completed: number
-}
+import { useRouter } from 'next/navigation'
+import { getCatalog, LearningApiError } from '@/lib/learning/client'
+import type { ModuleCatalogDto } from '@/lib/learning/types'
 
 export default function AulasPage() {
-  const [modules, setModules] = useState<Module[]>([])
-  const [progressMap, setProgressMap] = useState<Record<string, ModuleProgress>>({})
+  const router = useRouter()
+  const [modules, setModules] = useState<ModuleCatalogDto[]>([])
   const [loading, setLoading] = useState(true)
-  const supabase = createClient()
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchCatalog = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+
+    try {
+      const catalog = await getCatalog()
+      setModules(catalog.flatMap((course) => course.modules))
+    } catch (err) {
+      if (err instanceof LearningApiError && err.kind === 'unauthorized') {
+        router.push('/login')
+        return
+      }
+      if (err instanceof LearningApiError && err.kind === 'forbidden') {
+        router.push('/membros/assinatura-necessaria')
+        return
+      }
+      setError('Não foi possível carregar as aulas. Tente novamente.')
+    }
+
+    setLoading(false)
+  }, [router])
 
   useEffect(() => {
-    const fetchModules = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-
-      const { data, error } = await supabase
-        .from('modules')
-        .select('*, lessons(*)')
-        .eq('is_published', true)
-        .order('order_index')
-
-      if (!error && data) {
-        setModules(data)
-
-        if (user) {
-          const progress: Record<string, ModuleProgress> = {}
-          for (const mod of data) {
-            const { count: total } = await supabase
-              .from('lessons')
-              .select('*', { count: 'exact', head: true })
-              .eq('module_id', mod.id)
-
-            const { count: completed } = await supabase
-              .from('user_progress')
-              .select('*', { count: 'exact', head: true })
-              .eq('module_id', mod.id)
-              .eq('user_id', user.id)
-              .eq('completed', true)
-
-            progress[mod.id] = { total: total || 0, completed: completed || 0 }
-          }
-          setProgressMap(progress)
-        }
-      }
-      setLoading(false)
-    }
-    fetchModules()
-  }, [supabase])
+    // Initial client-side load intentionally populates local page state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchCatalog()
+  }, [fetchCatalog])
 
   if (loading) {
     return (
@@ -90,6 +62,13 @@ export default function AulasPage() {
         <p className="text-sm text-text-muted mt-1">Acesse todos os módulos do curso</p>
       </div>
 
+      {error && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-error/10 border border-error/20 text-error text-sm">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+
       {modules.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <BookOpen className="w-10 h-10 text-text-muted mb-3" />
@@ -98,10 +77,9 @@ export default function AulasPage() {
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {modules.map((module, index) => {
-            const progress = progressMap[module.id]
-            const completedCount = progress?.completed || 0
-            const totalCount = progress?.total || module.lessons.length
-            const percentage = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+            const totalCount = module.lessonCount
+            const completedCount = module.completedCount
+            const percentage = module.progressPercentage
             const isCompleted = percentage === 100 && totalCount > 0
             const isInProgress = completedCount > 0 && !isCompleted
 
