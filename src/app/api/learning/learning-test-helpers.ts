@@ -2,7 +2,7 @@ import { vi } from 'vitest'
 
 /**
  * Builds a chainable Supabase query-builder mock. Every chain method
- * (select/eq/in/lte/order/upsert) returns the same builder so tests can
+ * (select/eq/in/lte/or/order/upsert) returns the same builder so tests can
  * call `.eq().eq().single()` in any order the route code uses. The
  * builder is also thenable so `await builder` resolves `result` for
  * routes that never call `.single()`.
@@ -14,6 +14,7 @@ export function makeQueryBuilder(result: { data?: unknown; error?: unknown }) {
   builder.eq = vi.fn(chain)
   builder.in = vi.fn(chain)
   builder.lte = vi.fn(chain)
+  builder.or = vi.fn(chain)
   builder.order = vi.fn(chain)
   builder.upsert = vi.fn(chain)
   builder.single = vi.fn(async () => result)

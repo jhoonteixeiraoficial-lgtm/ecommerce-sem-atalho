@@ -125,12 +125,17 @@ describe('PATCH /api/learning/progress', () => {
 
   it('returns 404 when the lesson does not exist', async () => {
     mocks.adminFrom.mockImplementation(
-      makeFromMock({ lessons: [makeQueryBuilder({ data: null, error: { message: 'not found' } })] }),
+      makeFromMock({ lessons: [makeQueryBuilder({ data: null, error: { code: 'PGRST116', message: 'not found' } })] }),
     )
 
     const res = await PATCH(patchRequest({ lessonId: VALID_LESSON_ID, positionSeconds: 10 }))
 
     expect(res.status).toBe(404)
+  })
+
+  it('returns 500 when the lesson query fails', async () => {
+    mocks.adminFrom.mockImplementation(makeFromMock({ lessons: [makeQueryBuilder({ data: null, error: { code: 'XX000', message: 'db down' } })] }))
+    expect((await PATCH(patchRequest({ lessonId: VALID_LESSON_ID, positionSeconds: 10 }))).status).toBe(500)
   })
 
   it('returns 404 when the lesson is a draft', async () => {
@@ -143,15 +148,37 @@ describe('PATCH /api/learning/progress', () => {
     expect(res.status).toBe(404)
   })
 
+  it.each([
+    ['future lesson', { release_at: '2099-01-01T00:00:00.000Z' }],
+    ['draft module', { module: { ...baseLesson().module, is_published: false } }],
+    ['future module', { module: { ...baseLesson().module, release_at: '2099-01-01T00:00:00.000Z' } }],
+    ['draft course', { module: { ...baseLesson().module, course: { ...baseLesson().module.course, is_published: false } } }],
+    ['future course', { module: { ...baseLesson().module, course: { ...baseLesson().module.course, release_at: '2099-01-01T00:00:00.000Z' } } }],
+  ])('returns 404 for inaccessible %s ancestry', async (_name, overrides) => {
+    mocks.adminFrom.mockImplementation(makeFromMock({ lessons: [makeQueryBuilder({ data: baseLesson(overrides), error: null })] }))
+    expect((await PATCH(patchRequest({ lessonId: VALID_LESSON_ID, positionSeconds: 10 }))).status).toBe(404)
+  })
+
+  it('returns 500 when the existing-progress read fails', async () => {
+    const existingProgressBuilder = makeQueryBuilder({ data: null, error: { code: 'XX000', message: 'db down' } })
+    mocks.adminFrom.mockImplementation(makeFromMock({
+      lessons: [makeQueryBuilder({ data: baseLesson(), error: null })],
+      lesson_progress: [existingProgressBuilder],
+    }))
+    expect((await PATCH(patchRequest({ lessonId: VALID_LESSON_ID, positionSeconds: 10 }))).status).toBe(500)
+    expect(existingProgressBuilder.upsert).not.toHaveBeenCalled()
+  })
+
   it('clamps position to the lesson duration and persists the authorized user id', async () => {
     const upsertBuilder = makeQueryBuilder({
       data: { position_seconds: 100, completed: false, completed_at: null, last_viewed_at: '2026-09-01T00:00:00.000Z' },
       error: null,
     })
 
+    const lessonBuilder = makeQueryBuilder({ data: baseLesson(), error: null })
     mocks.adminFrom.mockImplementation(
       makeFromMock({
-        lessons: [makeQueryBuilder({ data: baseLesson(), error: null })],
+        lessons: [lessonBuilder],
         lesson_progress: [
           makeQueryBuilder({ data: null }), // no existing progress
           upsertBuilder,
@@ -165,7 +192,64 @@ describe('PATCH /api/learning/progress', () => {
     expect(res.status).toBe(200)
     expect(body.progress.positionSeconds).toBe(100)
     expect(upsertBuilder.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ user_id: AUTH_USER.id, lesson_id: VALID_LESSON_ID }),
+      expect.objectContaining({ user_id: AUTH_USER.id, lesson_id: VALID_LESSON_ID, position_seconds: 100 }),
+      { onConflict: 'user_id,lesson_id' },
+    )
+    expect(upsertBuilder.select).toHaveBeenCalledWith('position_seconds, completed, completed_at, last_viewed_at')
+    expect(lessonBuilder.eq).toHaveBeenCalledWith('is_published', true)
+    expect(lessonBuilder.eq).toHaveBeenCalledWith('module.is_published', true)
+    expect(lessonBuilder.eq).toHaveBeenCalledWith('module.course.is_published', true)
+    expect(lessonBuilder.or).toHaveBeenCalledWith(expect.stringContaining('release_at.is.null'))
+    expect(lessonBuilder.or).toHaveBeenCalledWith(expect.stringContaining('release_at.is.null'), { referencedTable: 'module' })
+    expect(lessonBuilder.or).toHaveBeenCalledWith(expect.stringContaining('release_at.is.null'), { referencedTable: 'module.course' })
+    expect(body).toEqual({ progress: {
+      positionSeconds: 100,
+      completed: false,
+      completedAt: null,
+      lastViewedAt: '2026-09-01T00:00:00.000Z',
+    } })
+  })
+
+  it('preserves completion when completed is omitted', async () => {
+    const upsertBuilder = makeQueryBuilder({
+      data: { position_seconds: 40, completed: true, completed_at: '2026-08-01T00:00:00.000Z', last_viewed_at: '2026-09-03T12:00:00.000Z' },
+      error: null,
+    })
+    mocks.adminFrom.mockImplementation(makeFromMock({
+      lessons: [makeQueryBuilder({ data: baseLesson(), error: null })],
+      lesson_progress: [
+        makeQueryBuilder({ data: { completed: true, completed_at: '2026-08-01T00:00:00.000Z', started_at: '2026-07-01T00:00:00.000Z' }, error: null }),
+        upsertBuilder,
+      ],
+    }))
+
+    const res = await PATCH(patchRequest({ lessonId: VALID_LESSON_ID, positionSeconds: 40 }))
+
+    expect(res.status).toBe(200)
+    expect(upsertBuilder.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ completed: true, completed_at: '2026-08-01T00:00:00.000Z' }),
+      { onConflict: 'user_id,lesson_id' },
+    )
+  })
+
+  it('reopens a completed lesson only when completed is explicitly false', async () => {
+    const upsertBuilder = makeQueryBuilder({
+      data: { position_seconds: 40, completed: false, completed_at: null, last_viewed_at: '2026-09-03T12:00:00.000Z' },
+      error: null,
+    })
+    mocks.adminFrom.mockImplementation(makeFromMock({
+      lessons: [makeQueryBuilder({ data: baseLesson(), error: null })],
+      lesson_progress: [
+        makeQueryBuilder({ data: { completed: true, completed_at: '2026-08-01T00:00:00.000Z', started_at: '2026-07-01T00:00:00.000Z' }, error: null }),
+        upsertBuilder,
+      ],
+    }))
+
+    const res = await PATCH(patchRequest({ lessonId: VALID_LESSON_ID, positionSeconds: 40, completed: false }))
+
+    expect(res.status).toBe(200)
+    expect(upsertBuilder.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ completed: false, completed_at: null }),
       { onConflict: 'user_id,lesson_id' },
     )
   })

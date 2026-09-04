@@ -43,6 +43,8 @@ type AdjacentLessonRow = {
   }
 }
 
+const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ moduleSlug: string; lessonSlug: string }> }
@@ -61,7 +63,12 @@ export async function GET(
   }
 
   const { moduleSlug, lessonSlug } = await params
+  if (!slugPattern.test(moduleSlug) || !slugPattern.test(lessonSlug)) {
+    return NextResponse.json({ error: 'Invalid lesson path' }, { status: 400 })
+  }
+
   const adminClient = createAdminClient()
+  const now = new Date().toISOString()
 
   const { data: lessonData, error: lessonError } = await adminClient
     .from('lessons')
@@ -74,9 +81,18 @@ export async function GET(
     `)
     .eq('slug', lessonSlug)
     .eq('module.slug', moduleSlug)
+    .eq('is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`)
+    .eq('module.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'module' })
+    .eq('module.course.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'module.course' })
     .single()
 
-  if (lessonError || !lessonData) {
+  if (lessonError && lessonError.code !== 'PGRST116') {
+    return NextResponse.json({ error: 'Failed to fetch lesson' }, { status: 500 })
+  }
+  if (!lessonData) {
     return NextResponse.json({ error: 'Lesson not found' }, { status: 404 })
   }
 
@@ -91,20 +107,28 @@ export async function GET(
     return NextResponse.json({ error: 'Lesson not found' }, { status: 404 })
   }
 
-  const { data: progress } = await adminClient
+  const { data: progress, error: progressError } = await adminClient
     .from('lesson_progress')
     .select('position_seconds, completed, completed_at, last_viewed_at')
     .eq('user_id', authUser.id)
     .eq('lesson_id', lessonTyped.id)
     .single()
 
-  const { data: allLessonsData } = await adminClient
+  if (progressError && progressError.code !== 'PGRST116') {
+    return NextResponse.json({ error: 'Failed to fetch progress' }, { status: 500 })
+  }
+
+  const { data: allLessonsData, error: allLessonsError } = await adminClient
     .from('lessons')
     .select('id, slug, title, sort_order, is_published, release_at, module:modules!inner(slug)')
     .eq('module_id', lessonTyped.module.id)
     .eq('is_published', true)
-    .lte('release_at', new Date().toISOString())
+    .or(`release_at.is.null,release_at.lte.${now}`)
     .order('sort_order', { ascending: true })
+
+  if (allLessonsError) {
+    return NextResponse.json({ error: 'Failed to fetch adjacent lessons' }, { status: 500 })
+  }
 
   const allLessons = (allLessonsData ?? []) as unknown as AdjacentLessonRow[]
   const lessonIndex = allLessons.findIndex((l) => l.id === lessonTyped.id)

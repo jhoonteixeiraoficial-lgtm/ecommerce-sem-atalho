@@ -17,12 +17,11 @@ export function clampPosition(positionSeconds: number, durationSeconds: number):
 export function computeCompletionTransition(
   currentCompleted: boolean,
   requestedCompleted: boolean,
-  now: string
+  now: string,
+  currentCompletedAt: string | null = null
 ): { completed: boolean; completedAt: string | null } {
-  if (currentCompleted === requestedCompleted) {
-    return { completed: requestedCompleted, completedAt: requestedCompleted ? now : null }
-  }
-  return { completed: requestedCompleted, completedAt: requestedCompleted ? now : null }
+  if (!requestedCompleted) return { completed: false, completedAt: null }
+  return { completed: true, completedAt: currentCompleted ? currentCompletedAt : now }
 }
 
 /**
@@ -71,13 +70,14 @@ export function buildProgressUpsert(
   const { completed: finalCompleted, completedAt } = computeCompletionTransition(
     previous?.completed ?? false,
     completed,
-    now
+    now,
+    previous?.completed_at ?? null
   )
 
   return {
     user_id: userId,
     lesson_id: lessonId,
-    position_seconds: clampPosition(positionSeconds, 0), // duration validated in handler
+    position_seconds: positionSeconds,
     started_at: previous?.started_at ?? now,
     last_viewed_at: now,
     completed: finalCompleted,

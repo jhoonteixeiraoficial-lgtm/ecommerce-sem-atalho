@@ -3,6 +3,7 @@ import {
   clampPosition,
   computeCompletionTransition,
   computeProgressPercentage,
+  buildProgressUpsert,
   selectContinueWatching,
   type LessonWithProgress,
 } from './progress'
@@ -31,6 +32,7 @@ describe('clampPosition', () => {
 
 describe('computeCompletionTransition', () => {
   const now = '2026-09-03T12:00:00.000Z'
+  const completedAt = '2026-09-01T08:00:00.000Z'
 
   it('returns completed=true and timestamp when marking complete', () => {
     const result = computeCompletionTransition(false, true, now)
@@ -51,9 +53,23 @@ describe('computeCompletionTransition', () => {
   })
 
   it('preserves completed=true and existing timestamp when already complete', () => {
-    const result = computeCompletionTransition(true, true, now)
+    const result = computeCompletionTransition(true, true, now, completedAt)
     expect(result.completed).toBe(true)
-    expect(result.completedAt).toBe(now)
+    expect(result.completedAt).toBe(completedAt)
+  })
+})
+
+describe('buildProgressUpsert', () => {
+  it('persists the position already clamped by the lesson-aware caller', () => {
+    const result = buildProgressUpsert(
+      'member-1',
+      'lesson-1',
+      73,
+      false,
+      '2026-09-03T12:00:00.000Z',
+    )
+
+    expect(result.position_seconds).toBe(73)
   })
 })
 

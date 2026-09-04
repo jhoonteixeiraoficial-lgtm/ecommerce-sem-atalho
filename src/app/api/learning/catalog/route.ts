@@ -59,6 +59,7 @@ export async function GET() {
   }
 
   const adminClient = createAdminClient()
+  const now = new Date().toISOString()
 
   const { data: courses, error: coursesError } = await adminClient
     .from('courses')
@@ -70,7 +71,11 @@ export async function GET() {
       )
     `)
     .eq('is_published', true)
-    .lte('release_at', new Date().toISOString())
+    .or(`release_at.is.null,release_at.lte.${now}`)
+    .eq('modules.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'modules' })
+    .eq('modules.lessons.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'modules.lessons' })
     .order('sort_order', { ascending: true })
 
   if (coursesError) {
@@ -78,18 +83,30 @@ export async function GET() {
   }
 
   const coursesTyped = (courses ?? []) as CourseRow[]
+  const nowDate = new Date(now)
+  const visibleCourses = coursesTyped.filter(
+    (course) => course.is_published && (!course.release_at || new Date(course.release_at) <= nowDate)
+  )
 
-  const lessonIds = coursesTyped.flatMap((c) =>
-    c.modules?.flatMap((m) => m.lessons?.map((l) => l.id) ?? []) ?? []
+  const lessonIds = visibleCourses.flatMap((course) =>
+    course.modules
+      ?.filter((module) => module.is_published && (!module.release_at || new Date(module.release_at) <= nowDate))
+      .flatMap((module) => module.lessons
+        ?.filter((lesson) => lesson.is_published && (!lesson.release_at || new Date(lesson.release_at) <= nowDate))
+        .map((lesson) => lesson.id) ?? []) ?? []
   )
 
   const progressMap = new Map<string, ProgressRow>()
   if (lessonIds.length > 0) {
-    const { data: progress } = await adminClient
+    const { data: progress, error: progressError } = await adminClient
       .from('lesson_progress')
       .select('lesson_id, position_seconds, completed, completed_at, last_viewed_at')
       .eq('user_id', authUser.id)
       .in('lesson_id', lessonIds)
+
+    if (progressError) {
+      return NextResponse.json({ error: 'Failed to fetch catalog' }, { status: 500 })
+    }
 
     progress?.forEach((p) => {
       progressMap.set(p.lesson_id, {
@@ -101,7 +118,7 @@ export async function GET() {
     })
   }
 
-  const catalog = coursesTyped.map((course) => ({
+  const catalog = visibleCourses.map((course) => ({
     id: course.id,
     slug: course.slug,
     title: course.title,
@@ -110,10 +127,10 @@ export async function GET() {
     isPublished: course.is_published,
     releaseAt: course.release_at,
     modules: (course.modules ?? [])
-      .filter((m) => m.is_published && (!m.release_at || new Date(m.release_at) <= new Date()))
+      .filter((m) => m.is_published && (!m.release_at || new Date(m.release_at) <= nowDate))
       .map((module) => {
         const publishedLessons = (module.lessons ?? []).filter(
-          (l) => l.is_published && (!l.release_at || new Date(l.release_at) <= new Date())
+          (l) => l.is_published && (!l.release_at || new Date(l.release_at) <= nowDate)
         )
         const completed = publishedLessons.filter(
           (l) => progressMap.get(l.id)?.completed ?? false

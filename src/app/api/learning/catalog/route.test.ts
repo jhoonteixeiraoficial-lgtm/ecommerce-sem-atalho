@@ -76,6 +76,19 @@ describe('GET /api/learning/catalog', () => {
     expect(res.status).toBe(500)
   })
 
+  it('returns 500 when the progress query fails', async () => {
+    mocks.adminFrom.mockImplementation(
+      makeFromMock({
+        courses: [makeQueryBuilder({ data: [{ ...baseCourse(), modules: [{ ...baseModule(), lessons: [baseLesson()] }] }], error: null })],
+        lesson_progress: [makeQueryBuilder({ data: null, error: { message: 'db down' } })],
+      }),
+    )
+
+    const res = await GET()
+
+    expect(res.status).toBe(500)
+  })
+
   it('returns only published, released courses/modules/lessons with computed progress', async () => {
     const courses = [
       {
@@ -113,11 +126,22 @@ describe('GET /api/learning/catalog', () => {
           },
         ],
       },
+      {
+        id: 'course-future',
+        slug: 'course-future',
+        title: 'Future course',
+        description: '',
+        sort_order: 1,
+        is_published: true,
+        release_at: '2099-01-01T00:00:00.000Z',
+        modules: [],
+      },
     ]
 
+    const coursesBuilder = makeQueryBuilder({ data: courses, error: null })
     mocks.adminFrom.mockImplementation(
       makeFromMock({
-        courses: [makeQueryBuilder({ data: courses, error: null })],
+        courses: [coursesBuilder],
         lesson_progress: [
           makeQueryBuilder({
             data: [{ lesson_id: 'lesson-1', position_seconds: 30, completed: true, completed_at: '2026-09-01T00:00:00.000Z', last_viewed_at: '2026-09-01T00:00:00.000Z' }],
@@ -135,5 +159,32 @@ describe('GET /api/learning/catalog', () => {
     expect(body.catalog[0].modules[0].lessonCount).toBe(2)
     expect(body.catalog[0].modules[0].completedCount).toBe(1)
     expect(body.catalog[0].modules[0].progressPercentage).toBe(50)
+    expect(coursesBuilder.eq).toHaveBeenCalledWith('modules.is_published', true)
+    expect(coursesBuilder.eq).toHaveBeenCalledWith('modules.lessons.is_published', true)
+    expect(coursesBuilder.or).toHaveBeenCalledWith(expect.stringContaining('release_at.is.null'))
+    expect(coursesBuilder.or).toHaveBeenCalledWith(expect.stringContaining('release_at.is.null'), { referencedTable: 'modules' })
+    expect(coursesBuilder.or).toHaveBeenCalledWith(expect.stringContaining('release_at.is.null'), { referencedTable: 'modules.lessons' })
+    expect(body).toEqual({
+      catalog: [{
+        id: 'course-1', slug: 'course-1', title: 'Course 1', description: '', sortOrder: 0,
+        isPublished: true, releaseAt: null,
+        modules: [{
+          id: 'module-1', slug: 'module-1', title: 'Module 1', description: '', sortOrder: 0,
+          isPublished: true, releaseAt: null, lessonCount: 2, completedCount: 1, progressPercentage: 50,
+        }],
+      }],
+    })
   })
 })
+
+function baseCourse() {
+  return { id: 'course-1', slug: 'course-1', title: 'Course 1', description: '', sort_order: 0, is_published: true, release_at: null }
+}
+
+function baseModule() {
+  return { id: 'module-1', slug: 'module-1', title: 'Module 1', description: '', sort_order: 0, is_published: true, release_at: null }
+}
+
+function baseLesson() {
+  return { id: 'lesson-1', slug: 'lesson-1', title: 'Lesson 1', description: '', video_url: '', duration_seconds: 60, sort_order: 0, is_published: true, release_at: null }
+}

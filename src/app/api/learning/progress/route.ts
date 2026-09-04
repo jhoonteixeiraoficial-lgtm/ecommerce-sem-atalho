@@ -60,8 +60,9 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
 
-  const { lessonId, positionSeconds, completed = false } = parseResult.data
+  const { lessonId, positionSeconds, completed } = parseResult.data
   const adminClient = createAdminClient()
+  const now = new Date().toISOString()
 
   const { data: lessonData, error: lessonError } = await adminClient
     .from('lessons')
@@ -70,9 +71,18 @@ export async function PATCH(request: Request) {
       module:modules!inner (id, is_published, release_at, course:courses!inner (is_published, release_at))
     `)
     .eq('id', lessonId)
+    .eq('is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`)
+    .eq('module.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'module' })
+    .eq('module.course.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'module.course' })
     .single()
 
-  if (lessonError || !lessonData) {
+  if (lessonError && lessonError.code !== 'PGRST116') {
+    return NextResponse.json({ error: 'Failed to fetch lesson' }, { status: 500 })
+  }
+  if (!lessonData) {
     return NextResponse.json({ error: 'Lesson not found' }, { status: 404 })
   }
 
@@ -89,21 +99,24 @@ export async function PATCH(request: Request) {
 
   const clampedPosition = clampPosition(positionSeconds, lessonTyped.duration_seconds)
 
-  const { data: existingProgress } = await adminClient
+  const { data: existingProgress, error: existingProgressError } = await adminClient
     .from('lesson_progress')
     .select('completed, completed_at, started_at')
     .eq('user_id', authUser.id)
     .eq('lesson_id', lessonId)
     .single()
 
+  if (existingProgressError && existingProgressError.code !== 'PGRST116') {
+    return NextResponse.json({ error: 'Failed to fetch progress' }, { status: 500 })
+  }
+
   const existingProgressTyped = existingProgress as ExistingProgressRow | null
 
-  const now = new Date().toISOString()
   const upsert: LessonProgressInput = buildProgressUpsert(
     authUser.id,
     lessonId,
     clampedPosition,
-    completed,
+    completed ?? existingProgressTyped?.completed ?? false,
     now,
     existingProgressTyped ? {
       completed: existingProgressTyped.completed,
@@ -115,7 +128,7 @@ export async function PATCH(request: Request) {
   const { data: updatedProgress, error: upsertError } = await adminClient
     .from('lesson_progress')
     .upsert(upsert, { onConflict: 'user_id,lesson_id' })
-    .select()
+    .select('position_seconds, completed, completed_at, last_viewed_at')
     .single()
 
   if (upsertError) {

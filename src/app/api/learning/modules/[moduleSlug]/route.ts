@@ -39,6 +39,8 @@ type ProgressRow = {
   last_viewed_at: string | null
 }
 
+const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ moduleSlug: string }> }
@@ -57,7 +59,12 @@ export async function GET(
   }
 
   const { moduleSlug } = await params
+  if (!slugPattern.test(moduleSlug)) {
+    return NextResponse.json({ error: 'Invalid module slug' }, { status: 400 })
+  }
+
   const adminClient = createAdminClient()
+  const now = new Date().toISOString()
 
   const { data: moduleData, error: moduleError } = await adminClient
     .from('modules')
@@ -66,9 +73,16 @@ export async function GET(
       course:courses!inner (id, slug, title, is_published, release_at)
     `)
     .eq('slug', moduleSlug)
+    .eq('is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`)
+    .eq('course.is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`, { referencedTable: 'course' })
     .single()
 
-  if (moduleError || !moduleData) {
+  if (moduleError && moduleError.code !== 'PGRST116') {
+    return NextResponse.json({ error: 'Failed to fetch module' }, { status: 500 })
+  }
+  if (!moduleData) {
     return NextResponse.json({ error: 'Module not found' }, { status: 404 })
   }
 
@@ -85,6 +99,8 @@ export async function GET(
     .from('lessons')
     .select('id, slug, title, description, video_url, duration_seconds, sort_order, is_published, release_at')
     .eq('module_id', moduleDataTyped.id)
+    .eq('is_published', true)
+    .or(`release_at.is.null,release_at.lte.${now}`)
     .order('sort_order', { ascending: true })
 
   if (lessonsError) {
@@ -96,11 +112,15 @@ export async function GET(
 
   const progressMap = new Map<string, ProgressRow>()
   if (lessonIds.length > 0) {
-    const { data: progress } = await adminClient
+    const { data: progress, error: progressError } = await adminClient
       .from('lesson_progress')
       .select('lesson_id, position_seconds, completed, completed_at, last_viewed_at')
       .eq('user_id', authUser.id)
       .in('lesson_id', lessonIds)
+
+    if (progressError) {
+      return NextResponse.json({ error: 'Failed to fetch progress' }, { status: 500 })
+    }
 
     progress?.forEach((p) => {
       progressMap.set(p.lesson_id, {
