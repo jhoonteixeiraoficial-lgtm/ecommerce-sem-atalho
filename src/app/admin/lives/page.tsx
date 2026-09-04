@@ -12,6 +12,7 @@ interface Live {
   scheduled_at: string
   duration_minutes: number
   replay_url: string
+  watch_url: string
   is_live: boolean
   stream_key: string
   rtmp_url: string
@@ -40,6 +41,7 @@ export default function AdminLivesPage() {
   const [showStreamModal, setShowStreamModal] = useState<Live | null>(null)
   const [showReplayModal, setShowReplayModal] = useState<Live | null>(null)
   const [replayUrl, setReplayUrl] = useState('')
+  const [watchUrl, setWatchUrl] = useState('')
   const [copied, setCopied] = useState('')
   const [error, setError] = useState('')
 
@@ -68,6 +70,11 @@ export default function AdminLivesPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const openStreamModal = (live: Live) => {
+    setShowStreamModal(live)
+    setWatchUrl(live.watch_url || '')
   }
 
   const mutateLive = async (method: 'POST' | 'PUT', body: Record<string, unknown>) => {
@@ -130,17 +137,17 @@ export default function AdminLivesPage() {
 
   const handleStartLive = async (live: Live) => {
     if (!live.rtmp_url || !live.stream_key) {
-      setShowStreamModal(live)
+      openStreamModal(live)
       return
     }
 
     try {
       await mutateLive('PUT', { id: live.id, is_live: true })
       const refreshedLives = await fetchLives()
-      setShowStreamModal(refreshedLives.find(item => item.id === live.id) ?? live)
+      openStreamModal(refreshedLives.find(item => item.id === live.id) ?? live)
     } catch (requestError) {
       if (requestError instanceof LiveApiError && requestError.status === 409) {
-        setShowStreamModal({ ...live, rtmp_url: '', stream_key: '' })
+        openStreamModal({ ...live, rtmp_url: '', stream_key: '' })
         return
       }
       setError('Erro ao iniciar live')
@@ -157,6 +164,19 @@ export default function AdminLivesPage() {
 
     setShowReplayModal(live)
     setReplayUrl(live.replay_url || '')
+    await fetchLives()
+  }
+
+  const handleSaveWatchUrl = async () => {
+    if (!showStreamModal) return
+
+    try {
+      await mutateLive('PUT', { id: showStreamModal.id, watch_url: watchUrl })
+    } catch {
+      setError('Erro ao salvar link para os membros')
+      return
+    }
+
     await fetchLives()
   }
 
@@ -291,7 +311,7 @@ export default function AdminLivesPage() {
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => setShowStreamModal(live)}>
+                  <Button size="sm" variant="secondary" onClick={() => openStreamModal(live)}>
                     <ExternalLink className="w-3.5 h-3.5" />
                     RTMP
                   </Button>
@@ -432,6 +452,21 @@ export default function AdminLivesPage() {
                   Configure a transmissão no YouTube Studio e no OBS. Cadastre com segurança a URL de ingestão e a chave fornecidas pelo YouTube antes de iniciar a transmissão.
                 </p>
               )}
+              <div className="pt-2 border-t border-border-subtle">
+                <Input
+                  label="Link para os membros assistirem (embed)"
+                  value={watchUrl}
+                  onChange={e => setWatchUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/embed/..."
+                />
+                <p className="text-[11px] text-text-muted mt-1">
+                  Cole aqui o link de embed (ex: YouTube/Vimeo não listado) depois de iniciar a transmissão, para que os membros possam assistir.
+                </p>
+                <Button size="sm" variant="secondary" onClick={handleSaveWatchUrl} className="mt-2">
+                  <Check className="w-3.5 h-3.5" />
+                  Salvar link
+                </Button>
+              </div>
             </div>
             <Button onClick={() => setShowStreamModal(null)} className="w-full">Fechar</Button>
           </div>

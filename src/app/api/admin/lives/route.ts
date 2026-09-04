@@ -11,12 +11,17 @@ const replayUrlSchema = z.union([
   z.string().url().refine((value) => value.toLowerCase().startsWith('https://')),
   z.literal(''),
 ])
+const watchUrlSchema = z.union([
+  z.string().url().refine((value) => value.toLowerCase().startsWith('https://')),
+  z.literal(''),
+])
 
 const createLiveSchema = z.object({
   title: z.string().trim().min(1),
   description: z.string().trim().default(''),
   scheduled_at: scheduledAtSchema,
   duration_minutes: durationSchema.default(60),
+  watch_url: watchUrlSchema.default(''),
 }).strict()
 
 const updateLiveSchema = z.object({
@@ -27,12 +32,13 @@ const updateLiveSchema = z.object({
   duration_minutes: durationSchema.optional(),
   is_live: z.boolean().optional(),
   replay_url: replayUrlSchema.optional(),
+  watch_url: watchUrlSchema.optional(),
 }).strict().refine(
   (value) => Object.keys(value).some((key) => key !== 'id'),
   { message: 'At least one update field is required' },
 )
 
-const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, is_live, viewer_count, created_at'
+const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, created_at'
 const CREDENTIAL_COLUMNS = 'live_id, rtmp_url, stream_key'
 
 function rateLimit(request: Request, operation: string) {

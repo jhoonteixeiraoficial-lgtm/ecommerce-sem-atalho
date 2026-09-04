@@ -11,6 +11,7 @@ interface Live {
   scheduled_at: string
   duration_minutes: number
   replay_url: string
+  watch_url: string
   is_live: boolean
   viewer_count: number
 }
@@ -24,7 +25,7 @@ export default function LivesPage() {
     const fetchLives = async () => {
       const { data, error } = await supabase
         .from('lives')
-        .select('id, title, description, scheduled_at, duration_minutes, replay_url, is_live, viewer_count')
+        .select('id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count')
         .order('scheduled_at', { ascending: false })
 
       if (!error) {
@@ -67,6 +68,7 @@ export default function LivesPage() {
                 key={live.id}
                 isLive={true}
                 title={live.title}
+                streamUrl={live.watch_url || undefined}
               />
             ))}
           </div>

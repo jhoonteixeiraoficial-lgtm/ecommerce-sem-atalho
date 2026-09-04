@@ -180,6 +180,7 @@ describe('GET', () => {
         scheduled_at: '2026-09-10T18:00:00.000Z',
         duration_minutes: 60,
         replay_url: '',
+        watch_url: '',
         is_live: false,
         viewer_count: 0,
         created_at: '2026-09-01T10:00:00.000Z',
@@ -202,6 +203,7 @@ describe('GET', () => {
         scheduled_at: '2026-09-10T18:00:00.000Z',
         duration_minutes: 60,
         replay_url: '',
+        watch_url: '',
         is_live: false,
         viewer_count: 0,
         created_at: '2026-09-01T10:00:00.000Z',
@@ -247,6 +249,7 @@ describe('POST', () => {
       description: 'Questions and answers',
       scheduled_at: '2026-09-10T18:00:00.000Z',
       duration_minutes: 90,
+      watch_url: '',
     })
   })
 
@@ -259,6 +262,77 @@ describe('POST', () => {
     const response = await POST(new Request('https://example.test/api/admin/lives', {
       method: 'POST',
       body: JSON.stringify(body),
+    }))
+
+    expect(response.status).toBe(400)
+    expect(mocks.insert).not.toHaveBeenCalled()
+  })
+
+  it('accepts an HTTPS watch URL on create', async () => {
+    const response = await POST(new Request('https://example.test/api/admin/lives', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Office hours',
+        scheduled_at: '2026-09-10T18:00:00.000Z',
+        watch_url: 'https://www.youtube.com/embed/placeholder',
+      }),
+    }))
+
+    expect(response.status).toBe(201)
+    expect(mocks.insert).toHaveBeenCalledWith({
+      title: 'Office hours',
+      description: '',
+      scheduled_at: '2026-09-10T18:00:00.000Z',
+      duration_minutes: 60,
+      watch_url: 'https://www.youtube.com/embed/placeholder',
+    })
+  })
+
+  it('defaults the watch URL to an empty string when omitted', async () => {
+    const response = await POST(new Request('https://example.test/api/admin/lives', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Office hours',
+        scheduled_at: '2026-09-10T18:00:00.000Z',
+      }),
+    }))
+
+    expect(response.status).toBe(201)
+    expect(mocks.insert).toHaveBeenCalledWith({
+      title: 'Office hours',
+      description: '',
+      scheduled_at: '2026-09-10T18:00:00.000Z',
+      duration_minutes: 60,
+      watch_url: '',
+    })
+  })
+
+  it.each([
+    'javascript:alert(1)',
+    'ftp://video.example.test/watch',
+    'http://video.example.test/watch',
+  ])('rejects the non-HTTPS watch URL %s before writing', async (watchUrl) => {
+    const response = await POST(new Request('https://example.test/api/admin/lives', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Office hours',
+        scheduled_at: '2026-09-10T18:00:00.000Z',
+        watch_url: watchUrl,
+      }),
+    }))
+
+    expect(response.status).toBe(400)
+    expect(mocks.insert).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed watch URL before writing', async () => {
+    const response = await POST(new Request('https://example.test/api/admin/lives', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Office hours',
+        scheduled_at: '2026-09-10T18:00:00.000Z',
+        watch_url: 'not a URL',
+      }),
     }))
 
     expect(response.status).toBe(400)
@@ -288,6 +362,42 @@ describe('PUT', () => {
     const response = await PUT(new Request('https://example.test/api/admin/lives', {
       method: 'PUT',
       body: JSON.stringify({ id: LIVE_ID, replay_url: replayUrl }),
+    }))
+
+    expect(response.status).toBe(400)
+    expect(mocks.update).not.toHaveBeenCalled()
+  })
+
+  it('updates the watch URL', async () => {
+    const response = await PUT(new Request('https://example.test/api/admin/lives', {
+      method: 'PUT',
+      body: JSON.stringify({ id: LIVE_ID, watch_url: 'https://www.youtube.com/embed/placeholder' }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.update).toHaveBeenCalledWith({
+      watch_url: 'https://www.youtube.com/embed/placeholder',
+    })
+  })
+
+  it('allows clearing the watch URL with an empty string', async () => {
+    const response = await PUT(new Request('https://example.test/api/admin/lives', {
+      method: 'PUT',
+      body: JSON.stringify({ id: LIVE_ID, watch_url: '' }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.update).toHaveBeenCalledWith({ watch_url: '' })
+  })
+
+  it.each([
+    'javascript:alert(1)',
+    'ftp://video.example.test/watch',
+    'http://video.example.test/watch',
+  ])('rejects the non-HTTPS watch URL %s before writing', async (watchUrl) => {
+    const response = await PUT(new Request('https://example.test/api/admin/lives', {
+      method: 'PUT',
+      body: JSON.stringify({ id: LIVE_ID, watch_url: watchUrl }),
     }))
 
     expect(response.status).toBe(400)
@@ -325,6 +435,7 @@ describe('PUT', () => {
   it.each([
     ['malformed UUIDs', { id: 'not-a-uuid', is_live: true }],
     ['malformed URLs', { id: LIVE_ID, replay_url: 'not a URL' }],
+    ['malformed watch URLs', { id: LIVE_ID, watch_url: 'not a URL' }],
     ['credential fields', { id: LIVE_ID, stream_key: 'placeholder-key' }],
     ['empty updates', { id: LIVE_ID }],
   ])('rejects %s before writing', async (_case, body) => {
