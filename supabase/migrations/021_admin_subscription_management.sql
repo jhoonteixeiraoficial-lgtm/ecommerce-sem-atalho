@@ -55,7 +55,7 @@ begin
     if existing_id is not null then
       update public.subscriptions
       set plan = p_plan,
-          status = 'active'::public.subscription_status,
+          status = 'active',
           payment_provider = 'manual',
           current_period_start = pg_catalog.statement_timestamp(),
           current_period_end = pg_catalog.statement_timestamp() + make_interval(days => p_period_days),
@@ -65,7 +65,7 @@ begin
       insert into public.subscriptions (
         user_id, plan, status, payment_provider, current_period_start, current_period_end
       ) values (
-        p_target_user_id, p_plan, 'active'::public.subscription_status, 'manual',
+        p_target_user_id, p_plan, 'active', 'manual',
         pg_catalog.statement_timestamp(), pg_catalog.statement_timestamp() + make_interval(days => p_period_days)
       );
     end if;
@@ -79,11 +79,11 @@ begin
     );
   elsif p_action = 'revoke' then
     update public.subscriptions
-    set status = 'cancelled'::public.subscription_status,
+    set status = 'cancelled',
         current_period_end = pg_catalog.statement_timestamp(),
         updated_at = pg_catalog.statement_timestamp()
     where user_id = p_target_user_id
-      and status = 'active'::public.subscription_status;
+      and status = 'active';
 
     insert into public.admin_audit_log (actor_user_id, action, target_user_id, metadata)
     values (p_actor_user_id, 'subscription.revoked', p_target_user_id, '{}'::jsonb);
