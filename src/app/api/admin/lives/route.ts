@@ -20,7 +20,7 @@ const urlSchema = z.union([
   z.literal(''),
 ])
 const eventTypeSchema = z.enum(['live', 'conteudo', 'aula', 'material', 'atualizacao', 'evento_especial'])
-const eventStatusSchema = z.enum(['agendada', 'ao_vivo', 'encerrada', 'cancelada'])
+const eventStatusSchema = z.enum(['agendada', 'ao_vivo', 'encerrada', 'cancelada', 'replay'])
 
 const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/
 
@@ -64,7 +64,10 @@ const createLiveSchema = z.object({
   type: eventTypeSchema.default('live'),
   status: eventStatusSchema.default('agendada'),
   youtube_url: urlSchema.default(''),
+  youtube_video_id: z.string().default(''),
   thumbnail_url: urlSchema.default(''),
+  replay_url: replayUrlSchema.default(''),
+  replay_available: z.boolean().default(false),
 }).strict()
 
 const updateLiveSchema = z.object({

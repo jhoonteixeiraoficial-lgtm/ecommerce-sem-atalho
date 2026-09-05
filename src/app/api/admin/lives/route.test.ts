@@ -255,6 +255,8 @@ describe('POST', () => {
       youtube_url: '',
       youtube_video_id: '',
       thumbnail_url: '',
+      replay_url: '',
+      replay_available: false,
     })
   })
 
@@ -295,6 +297,8 @@ describe('POST', () => {
       youtube_url: '',
       youtube_video_id: '',
       thumbnail_url: '',
+      replay_url: '',
+      replay_available: false,
     })
   })
 
@@ -319,6 +323,8 @@ describe('POST', () => {
       youtube_url: '',
       youtube_video_id: '',
       thumbnail_url: '',
+      replay_url: '',
+      replay_available: false,
     })
   })
 

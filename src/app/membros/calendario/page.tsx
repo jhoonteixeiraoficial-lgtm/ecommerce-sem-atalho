@@ -9,7 +9,7 @@ import { createClient } from '@/lib/supabase/client'
 const WEEKDAY_LABELS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S']
 
 type EventType = 'live' | 'conteudo' | 'aula' | 'material' | 'atualizacao' | 'evento_especial'
-type EventStatus = 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada'
+type EventStatus = 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada' | 'replay'
 
 function dateKey(d: Date) {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
@@ -53,6 +53,7 @@ const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
   ao_vivo: 'Ao Vivo',
   encerrada: 'Encerrada',
   cancelada: 'Cancelada',
+  replay: 'Replay',
 }
 
 const EVENT_STATUS_COLORS: Record<EventStatus, string> = {
@@ -60,6 +61,7 @@ const EVENT_STATUS_COLORS: Record<EventStatus, string> = {
   ao_vivo: 'text-red-500',
   encerrada: 'text-text-muted',
   cancelada: 'text-error',
+  replay: 'text-green-400',
 }
 
 function formatDuration(minutes: number) {
@@ -125,6 +127,7 @@ export default function CalendarioPage() {
 
   function computeEffectiveStatus(e: AgendaEvent): AgendaEvent['status'] {
     if (e.status === 'cancelada') return 'cancelada'
+    if (e.status === 'replay') return 'replay'
     if (e.status === 'encerrada') return 'encerrada'
     if (e.status === 'ao_vivo') return 'ao_vivo'
     if (e.status === 'agendada' && new Date(e.scheduled_at) <= now) return 'ao_vivo'
@@ -137,7 +140,7 @@ export default function CalendarioPage() {
   })
   const pastEvents = events.filter(e => {
     const es = computeEffectiveStatus(e)
-    return es === 'encerrada' && e.replay_url
+    return es === 'encerrada' || es === 'replay'
   })
 
   const eventsByDay = useMemo(() => {

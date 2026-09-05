@@ -53,7 +53,7 @@ function extractYouTubeVideoId(url: string): string {
 }
 
 type EventType = 'live' | 'conteudo' | 'aula' | 'material' | 'atualizacao' | 'evento_especial'
-type EventStatus = 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada'
+type EventStatus = 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada' | 'replay'
 
 interface AgendaEvent {
   id: string
@@ -99,6 +99,7 @@ const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
   ao_vivo: 'Ao Vivo',
   encerrada: 'Encerrada',
   cancelada: 'Cancelada',
+  replay: 'Replay',
 }
 
 const EVENT_STATUS_COLORS: Record<EventStatus, string> = {
@@ -106,6 +107,7 @@ const EVENT_STATUS_COLORS: Record<EventStatus, string> = {
   ao_vivo: 'text-red-500',
   encerrada: 'text-text-muted',
   cancelada: 'text-error',
+  replay: 'text-green-400',
 }
 
 function formatDateTime(iso: string) {
@@ -211,8 +213,6 @@ export default function AdminAgendaPage() {
         youtube_url: form.youtube_url,
         youtube_video_id: videoId,
         thumbnail_url: form.thumbnail_url,
-        replay_url: formStatus === 'encerrada' ? form.youtube_url : '',
-        replay_available: formStatus === 'encerrada',
       }
 
       if (editingEvent) {
@@ -343,20 +343,13 @@ export default function AdminAgendaPage() {
   }
 
   const handleStopLive = async (event: AgendaEvent) => {
-    const defaultUrl = event.youtube_url || ''
-    const replayUrl = prompt('URL da gravação (YouTube):', defaultUrl)
-    if (replayUrl === null) return
+    if (!confirm('Encerrar esta live?')) return
 
     try {
-      const videoId = extractYouTubeVideoId(replayUrl)
       await mutateEvent('PUT', {
         id: event.id,
         status: 'encerrada',
         is_live: false,
-        replay_url: replayUrl,
-        youtube_url: replayUrl,
-        youtube_video_id: videoId,
-        replay_available: true,
       })
     } catch {
       setError('Erro ao encerrar live')
@@ -366,11 +359,27 @@ export default function AdminAgendaPage() {
     await fetchEvents()
   }
 
-  const handleAddReplay = () => {
-    resetForm()
-    setFormStatus('encerrada')
-    setShowForm(true)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+  const handleSetReplay = async (event: AgendaEvent) => {
+    const defaultUrl = event.youtube_url || ''
+    const replayUrl = prompt('URL da gravação (YouTube):', defaultUrl)
+    if (replayUrl === null) return
+
+    try {
+      const videoId = extractYouTubeVideoId(replayUrl)
+      await mutateEvent('PUT', {
+        id: event.id,
+        status: 'replay',
+        replay_url: replayUrl,
+        youtube_url: replayUrl,
+        youtube_video_id: videoId,
+        replay_available: true,
+      })
+    } catch {
+      setError('Erro ao disponibilizar replay')
+      return
+    }
+
+    await fetchEvents()
   }
 
   const copyToClipboard = (text: string, label: string) => {
@@ -387,7 +396,7 @@ export default function AdminAgendaPage() {
     return e.status === 'agendada'
   })
   const pastEvents = filteredEvents.filter(e => {
-    return e.status === 'encerrada' || e.status === 'cancelada' || e.replay_available
+    return e.status === 'encerrada' || e.status === 'cancelada' || e.status === 'replay'
   })
 
   if (loading) {
@@ -423,12 +432,6 @@ export default function AdminAgendaPage() {
           <Plus className="w-4 h-4" />
           {showForm ? 'Fechar' : 'Novo Evento'}
         </Button>
-        {!showForm && (
-          <Button onClick={handleAddReplay} className="flex items-center gap-2">
-            <Play className="w-4 h-4" />
-            Adicionar Replay
-          </Button>
-        )}
       </div>
 
       {/* Error */}
@@ -606,6 +609,7 @@ export default function AdminAgendaPage() {
                 event={event}
                 onStartLive={handleStartLive}
                 onStopLive={handleStopLive}
+                onSetReplay={handleSetReplay}
                 onEdit={handleEdit}
                 onDelete={handleDelete}
                 onCancel={handleCancel}
@@ -631,6 +635,7 @@ export default function AdminAgendaPage() {
                 event={event}
                 onStartLive={handleStartLive}
                 onStopLive={handleStopLive}
+                onSetReplay={handleSetReplay}
                 onEdit={handleEdit}
                 onDelete={handleDelete}
                 onCancel={handleCancel}
@@ -656,6 +661,7 @@ export default function AdminAgendaPage() {
                 event={event}
                 onStartLive={handleStartLive}
                 onStopLive={handleStopLive}
+                onSetReplay={handleSetReplay}
                 onEdit={handleEdit}
                 onDelete={handleDelete}
                 onCancel={handleCancel}
@@ -777,6 +783,7 @@ interface EventRowProps {
   event: AgendaEvent
   onStartLive: (event: AgendaEvent) => void
   onStopLive: (event: AgendaEvent) => void
+  onSetReplay: (event: AgendaEvent) => void
   onEdit: (event: AgendaEvent) => void
   onDelete: (id: string) => void
   onCancel: (event: AgendaEvent) => void
@@ -785,7 +792,7 @@ interface EventRowProps {
   onCopy: (text: string, label: string) => void
 }
 
-function EventRow({ event, onStartLive, onStopLive, onEdit, onDelete, onCancel, onOpenStream, copied, onCopy }: EventRowProps) {
+function EventRow({ event, onStartLive, onStopLive, onSetReplay, onEdit, onDelete, onCancel, onOpenStream, copied, onCopy }: EventRowProps) {
   const TypeIcon = EVENT_TYPE_ICONS[event.type]
   const dt = formatDateTime(event.scheduled_at)
   const isActive = event.status === 'ao_vivo' || event.is_live
@@ -848,23 +855,16 @@ function EventRow({ event, onStartLive, onStopLive, onEdit, onDelete, onCancel, 
           </Button>
         ) : null}
 
-        {!isCancelled && !isActive && (
-          <Button size="sm" variant="secondary" onClick={() => onEdit(event)}>
-            <Edit3 className="w-3.5 h-3.5" />
-          </Button>
-        )}
-
-        {event.status === 'encerrada' && !event.replay_available && (
-          <Button size="sm" variant="secondary" onClick={() => onStopLive(event)}>
+        {event.status === 'encerrada' && (
+          <Button size="sm" variant="secondary" onClick={() => onSetReplay(event)}>
             <Play className="w-3.5 h-3.5" />
             Disp. Replay
           </Button>
         )}
 
-        {event.status === 'encerrada' && event.replay_available && (
-          <Button size="sm" variant="secondary" onClick={() => onStopLive(event)}>
+        {!isCancelled && !isActive && event.status !== 'encerrada' && (
+          <Button size="sm" variant="secondary" onClick={() => onEdit(event)}>
             <Edit3 className="w-3.5 h-3.5" />
-            Editar Replay
           </Button>
         )}
 

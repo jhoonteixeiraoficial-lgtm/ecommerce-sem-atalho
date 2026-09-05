@@ -56,8 +56,9 @@ export default function LivesPage() {
 
   const now = new Date()
 
-  function effectiveStatus(live: Live): 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada' {
+  function effectiveStatus(live: Live): 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada' | 'replay' {
     if (live.status === 'cancelada') return 'cancelada'
+    if (live.status === 'replay') return 'replay'
     if (live.status === 'encerrada') return 'encerrada'
     if (live.status === 'ao_vivo') return 'ao_vivo'
     // Time-based: AGENDADA + scheduled_at <= now → effectively AO VIVO
@@ -71,8 +72,7 @@ export default function LivesPage() {
     return es === 'agendada'
   })
   const pastLives = lives.filter(l => {
-    const es = effectiveStatus(l)
-    return es === 'encerrada' && l.replay_available
+    return effectiveStatus(l) === 'replay'
   })
 
   if (loading) {
