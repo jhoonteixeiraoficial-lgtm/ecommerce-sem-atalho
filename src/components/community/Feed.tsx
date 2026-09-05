@@ -195,11 +195,16 @@ export default function Feed() {
       for (const postId of expandedPostIds) void commentSnapshots.refresh(postId);
     };
     const commentRefresh = createRefreshScheduler(refreshExpandedComments, 250);
+    // Fallback poll only kicks in once the channel actually reports a
+    // failure (CHANNEL_ERROR/TIMED_OUT/CLOSED), not continuously - an
+    // always-on short poll was too aggressive for constrained mobile
+    // devices/networks (overlapping requests could pile up and destabilize
+    // the page). 5s keeps recovery snappy without the constant overhead.
     const recovery = createRealtimeRecovery(() => {
       if (!run.isCurrent()) return;
       void snapshots.refresh();
       refreshExpandedComments();
-    }, 15000);
+    }, 5000);
     const changes = createFeedChangeCoordinator({
       invalidatePosts: snapshots.invalidate,
       requestPosts: refresh.request,
@@ -207,16 +212,6 @@ export default function Feed() {
       invalidateComments: commentSnapshots.invalidate,
       requestComments: commentRefresh.request,
     });
-
-    // Mobile carriers/browsers frequently kill an idle WebSocket without ever
-    // firing CHANNEL_ERROR/CLOSED, so the realtime subscription can silently
-    // stop delivering updates while still reporting SUBSCRIBED. A short
-    // unconditional poll guarantees new posts/comments still arrive within a
-    // few seconds on every device, independent of the status callback firing.
-    const pollFallback = setInterval(() => {
-      void snapshots.refresh();
-      refreshExpandedComments();
-    }, 4000);
 
     const channel = supabase
       .channel('community-posts')
@@ -257,7 +252,6 @@ export default function Feed() {
       commentRefresh.cancel();
       commentSnapshots.cancel();
       recovery.cancel();
-      clearInterval(pollFallback);
       supabase.removeChannel(channel);
     };
   }, [

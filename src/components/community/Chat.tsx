@@ -148,15 +148,31 @@ export default function Chat() {
     });
 
     const refresh = createRefreshScheduler(() => void snapshots.refresh(), 250);
-    const recovery = createRealtimeRecovery(() => void snapshots.refresh(), 15000);
+    // Fallback poll only kicks in once the channel actually reports a
+    // failure (CHANNEL_ERROR/TIMED_OUT/CLOSED), not continuously - an
+    // always-on short poll was too aggressive for constrained mobile
+    // devices/networks (overlapping requests could pile up and destabilize
+    // the page). 5s keeps recovery snappy without the constant overhead.
+    const recovery = createRealtimeRecovery(() => void snapshots.refresh(), 5000);
 
-    // Mobile carriers/browsers (iOS Safari, Android Chrome) frequently kill an
-    // idle WebSocket without ever firing CHANNEL_ERROR/CLOSED, so the realtime
-    // subscription can silently stop delivering new messages while still
-    // reporting SUBSCRIBED. A short unconditional poll guarantees messages
-    // still arrive within a few seconds on every device even when the socket
-    // is dead, independent of the realtime status callback ever firing.
-    const pollFallback = setInterval(() => void snapshots.refresh(), 4000);
+    // TEMPORARY DIAGNOSTIC (remove once mobile realtime is confirmed fixed):
+    // on some mobile networks (carrier-grade NAT/proxies) the WebSocket join
+    // handshake can hang forever without the client library ever calling the
+    // subscribe callback with an error status - it just silently never
+    // reaches SUBSCRIBED. The existing recovery only reacts to an explicit
+    // CHANNEL_ERROR/TIMED_OUT/CLOSED, so that failure mode was never
+    // detected. This watchdog forces a fallback + full reconnect if the
+    // channel hasn't confirmed SUBSCRIBED within a bounded time.
+    let joinConfirmed = false;
+    const joinWatchdog = setTimeout(() => {
+      if (joinConfirmed || !run.isCurrent()) return;
+      console.warn('[chat-rt] join timeout - no SUBSCRIBED status after 8s, forcing reconnect');
+      setRealtimeError('Atualizações em tempo real indisponíveis. Atualização automática ativada.');
+      recovery.failed();
+      setRefreshVersion((version) => version + 1);
+    }, 8000);
+
+    console.log('[chat-rt] subscribing to channel', channelId);
 
     const channel = supabase
       .channel(`chat:${channelId}`)
@@ -170,6 +186,7 @@ export default function Chat() {
         },
         async (payload: { eventType: string; new: Record<string, unknown> }) => {
           if (!run.isCurrent()) return;
+          console.log('[chat-rt] postgres_changes event received', payload.eventType, payload.new?.id);
           snapshots.invalidate();
           refresh.request();
           if (payload.eventType !== 'INSERT') {
@@ -199,23 +216,28 @@ export default function Chat() {
         }
       )
       .subscribe((status) => {
+        console.log('[chat-rt] subscribe status', status);
         if (!run.isCurrent()) return;
         if (status === 'SUBSCRIBED') {
+          joinConfirmed = true;
+          clearTimeout(joinWatchdog);
           recovery.recovered();
           setRealtimeError(null);
           void snapshots.refresh();
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          joinConfirmed = true;
+          clearTimeout(joinWatchdog);
           setRealtimeError('Atualizações em tempo real indisponíveis. Atualização automática ativada.');
           recovery.failed();
         }
       });
 
     return () => {
+      clearTimeout(joinWatchdog);
       syncGenerations.cancel();
       snapshots.cancel();
       refresh.cancel();
       recovery.cancel();
-      clearInterval(pollFallback);
       supabase.removeChannel(channel);
     };
   }, [selectedChannel, supabase, syncGenerations, refreshVersion]);
