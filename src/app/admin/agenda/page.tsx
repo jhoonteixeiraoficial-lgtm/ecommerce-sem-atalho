@@ -360,13 +360,11 @@ export default function AdminAgendaPage() {
     if (replayUrl === null) return
 
     try {
-      const videoId = extractYouTubeVideoId(replayUrl)
       await mutateEvent('PUT', {
         id: event.id,
         status: 'replay',
         replay_url: replayUrl,
         youtube_url: replayUrl,
-        youtube_video_id: videoId,
         replay_available: true,
       })
     } catch {
@@ -857,7 +855,7 @@ function EventRow({ event, onStartLive, onStopLive, onSetReplay, onEdit, onDelet
           </Button>
         )}
 
-        {!isCancelled && !isActive && event.status !== 'encerrada' && (
+        {!isCancelled && !isActive && (
           <Button size="sm" variant="secondary" onClick={() => onEdit(event)}>
             <Edit3 className="w-3.5 h-3.5" />
           </Button>
