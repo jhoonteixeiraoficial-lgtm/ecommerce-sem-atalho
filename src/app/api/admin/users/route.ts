@@ -65,7 +65,7 @@ export async function GET(request: Request) {
   const statuses = statusesResult.data
   const subscriptions = subscriptionsResult.data
 
-  if (rolesError || statusesError || subscriptionsError) {
+  if (rolesResult.error || statusesResult.error || subscriptionsResult.error) {
     return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 })
   }
 

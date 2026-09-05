@@ -99,31 +99,30 @@ export default function HomePage() {
     const fetchData = async () => {
       try {
         const supabase = createClient()
-
         const { data: { user: authUser } } = await supabase.auth.getUser()
 
-      if (authUser) {
-        const { data: profileData } = await supabase
-          .from('profiles')
-          .select('full_name, avatar_url')
-          .eq('id', authUser.id)
-          .single()
+        if (authUser) {
+          const [profileRes, catalog] = await Promise.all([
+            supabase
+              .from('profiles')
+              .select('full_name, avatar_url')
+              .eq('id', authUser.id)
+              .single(),
+            (async () => {
+              try {
+                return await getCatalog()
+              } catch (retryErr) {
+                if (retryErr instanceof LearningApiError && retryErr.kind === 'server-error') {
+                  return await getCatalog()
+                }
+                throw retryErr
+              }
+            })(),
+          ])
 
-          if (profileData) setProfile(profileData)
+          if (profileRes.data) setProfile(profileRes.data)
 
-        try {
-          let catalog
-          try {
-            catalog = await getCatalog()
-          } catch (retryErr) {
-            if (retryErr instanceof LearningApiError && retryErr.kind === 'server-error') {
-              catalog = await getCatalog()
-            } else {
-              throw retryErr
-            }
-          }
           const modules = catalog.flatMap((course) => course.modules)
-
           const totals = modules.reduce(
             (acc, mod) => ({
               lessons: acc.lessons + mod.lessonCount,
@@ -146,7 +145,6 @@ export default function HomePage() {
             .flatMap((result) => toLessonsWithProgress(result.value))
 
           const continueWatching = selectContinueWatching(lessonsWithProgress)
-
           if (continueWatching) {
             setLastLesson({
               title: continueWatching.title,
@@ -155,61 +153,53 @@ export default function HomePage() {
               lessonSlug: continueWatching.slug,
             })
           }
-        } catch (err) {
-          if (err instanceof LearningApiError && (err.kind === 'unauthorized' || err.kind === 'forbidden')) {
-            // Layout-level auth guard will redirect; avoid surfacing a home error for this case.
-          } else {
-            setError('Não foi possível carregar seu progresso. Tente novamente.')
-          }
-        }
 
-        const now = new Date().toISOString()
+          const now = new Date().toISOString()
 
-        // First: check if there's a live currently AO VIVO (explicit or time-based)
-        const { data: liveNowData } = await supabase
-          .from('lives')
-          .select('id, title, scheduled_at, type, status')
-          .eq('type', 'live')
-          .not('status', 'in', '(encerrada,cancelada,replay)')
-          .order('scheduled_at', { ascending: false })
-          .limit(5)
-
-        let liveNow: NextEvent | null = null
-        const nowDate = new Date()
-        for (const row of liveNowData ?? []) {
-          const isExplicitlyLive = row.status === 'ao_vivo'
-          const isScheduledAndPast = row.status === 'agendada' && new Date(row.scheduled_at) <= nowDate
-          if (isExplicitlyLive || isScheduledAndPast) {
-            liveNow = {
-              id: row.id,
-              title: row.title,
-              scheduled_at: row.scheduled_at,
-              type: row.type,
-              status: row.status,
-              effectiveStatus: 'ao_vivo',
-            }
-            break
-          }
-        }
-
-        if (liveNow) {
-          setNextEvent(liveNow)
-        } else {
-          // No live currently active — find next upcoming event of any type
-          const { data: nextEventData } = await supabase
+          const { data: liveNowData } = await supabase
             .from('lives')
             .select('id, title, scheduled_at, type, status')
-            .gt('scheduled_at', now)
+            .eq('type', 'live')
             .not('status', 'in', '(encerrada,cancelada,replay)')
-            .order('scheduled_at', { ascending: true })
-            .limit(1)
-            .single()
+            .order('scheduled_at', { ascending: false })
+            .limit(5)
 
-          if (nextEventData) {
-            setNextEvent({
-              ...nextEventData,
-              effectiveStatus: nextEventData.status as NextEvent['effectiveStatus'],
-            })
+          let liveNow: NextEvent | null = null
+          const nowDate = new Date()
+          for (const row of liveNowData ?? []) {
+            const isExplicitlyLive = row.status === 'ao_vivo'
+            const isScheduledAndPast = row.status === 'agendada' && new Date(row.scheduled_at) <= nowDate
+            if (isExplicitlyLive || isScheduledAndPast) {
+              liveNow = {
+                id: row.id,
+                title: row.title,
+                scheduled_at: row.scheduled_at,
+                type: row.type,
+                status: row.status,
+                effectiveStatus: 'ao_vivo',
+              }
+              break
+            }
+          }
+
+          if (liveNow) {
+            setNextEvent(liveNow)
+          } else {
+            const { data: nextEventData } = await supabase
+              .from('lives')
+              .select('id, title, scheduled_at, type, status')
+              .gt('scheduled_at', now)
+              .not('status', 'in', '(encerrada,cancelada,replay)')
+              .order('scheduled_at', { ascending: true })
+              .limit(1)
+              .single()
+
+            if (nextEventData) {
+              setNextEvent({
+                ...nextEventData,
+                effectiveStatus: nextEventData.status as NextEvent['effectiveStatus'],
+              })
+            }
           }
         }
       } catch {
