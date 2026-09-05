@@ -96,7 +96,7 @@ export default function LandingPage() {
       >
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <Link href="/" className="flex items-center">
-            <img src="/logo-horizontal.svg" alt="E-commerce Sem Atalho" className="h-8" />
+            <img src="/logo-concept3-horizontal.svg" alt="E-commerce Sem Atalho" className="h-10" />
           </Link>
           <div className="hidden md:flex items-center gap-8">
             <a href="#ecossistema" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Ecossistema</a>
@@ -141,12 +141,21 @@ export default function LandingPage() {
 
       {/* Hero */}
       <section className="relative pt-32 pb-24 px-6 bg-bg overflow-hidden">
-        {/* Animated Background Orbs */}
+        {/* Background video: warehouse/logistics operation, dimmed behind a dark gradient for legibility */}
         <div className="absolute inset-0 z-0">
+          <video
+            className="absolute inset-0 w-full h-full object-cover opacity-[0.18] contrast-125 saturate-0"
+            autoPlay
+            muted
+            loop
+            playsInline
+            aria-hidden="true"
+          >
+            <source src="/videos/hero-warehouse.mp4" type="video/mp4" />
+          </video>
           <div className="orb orb-1"></div>
-          <div className="orb orb-2"></div>
           <div className="orb orb-3"></div>
-          <div className="absolute inset-0 bg-gradient-to-b from-bg/40 via-bg/60 to-bg"></div>
+          <div className="absolute inset-0 bg-gradient-to-b from-bg/50 via-bg/70 to-bg"></div>
         </div>
 
         <div className="max-w-6xl mx-auto relative z-10">
@@ -352,7 +361,7 @@ export default function LandingPage() {
               { title: 'Comunidade ativa', desc: 'Feed, chat em tempo real e troca direta com quem está construindo a mesma jornada.' },
               { title: 'Lives + replays', desc: 'Conteúdo ao vivo toda semana, sempre disponível depois para assistir quando quiser.' },
             ].map((item) => (
-              <div key={item.title} className="bg-surface border border-border rounded-2xl p-6">
+              <div key={item.title} className="bg-surface border border-border-subtle rounded-2xl p-6 hover:border-accent/30 transition-colors card-hover">
                 <h3 className="text-sm font-medium text-text-primary mb-2">{item.title}</h3>
                 <p className="text-sm text-text-secondary leading-relaxed">{item.desc}</p>
               </div>
@@ -570,7 +579,7 @@ export default function LandingPage() {
           <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-10 mb-12">
             <div className="lg:col-span-2">
               <div className="mb-4">
-                <img src="/logo.svg" alt="E-commerce Sem Atalho" className="h-12" />
+                <img src="/logo-concept3-horizontal.svg" alt="E-commerce Sem Atalho" className="h-14" />
               </div>
               <p className="text-xs text-text-muted leading-relaxed max-w-xs">
                 Educação, ferramentas e conteúdo para quem vende no varejo digital.
