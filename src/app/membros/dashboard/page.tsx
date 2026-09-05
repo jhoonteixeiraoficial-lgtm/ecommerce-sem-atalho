@@ -2,28 +2,19 @@
 
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
-import { BookOpen, Video, Sparkles, ArrowRight, Play, Calendar, Download, Users, Bell, Clock, Star, Target, Award, Zap, Loader2, AlertCircle } from 'lucide-react'
+import { Video, Sparkles, Play, Calendar, Download, Users, Bell, MessageCircle, Heart, Loader2, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
+import { formatDistanceToNow } from 'date-fns'
+import { ptBR } from 'date-fns/locale'
 import { createClient } from '@/lib/supabase/client'
 import { getCatalog, getModule, LearningApiError } from '@/lib/learning/client'
 import { computeProgressPercentage, selectContinueWatching, type LessonWithProgress } from '@/lib/learning/progress'
 import type { ModuleDetailDto } from '@/lib/learning/types'
 
-interface UserData {
-  name: string
-  avatarUrl: string
-}
-
 interface ProfileData {
   full_name: string | null
   avatar_url: string | null
-}
-
-interface ModuleProgress {
-  name: string
-  totalLessons: number
-  completedLessons: number
 }
 
 interface LastLesson {
@@ -37,6 +28,16 @@ interface NextLive {
   id: string
   title: string
   scheduled_at: string
+}
+
+interface FeedPost {
+  id: string
+  content: string
+  category: string
+  created_at: string
+  profiles: { full_name: string; avatar_url: string }
+  community_comments: { count: number }[]
+  community_reactions: { count: number }[]
 }
 
 function toLessonsWithProgress(moduleData: ModuleDetailDto): LessonWithProgress[] {
@@ -61,17 +62,15 @@ function toLessonsWithProgress(moduleData: ModuleDetailDto): LessonWithProgress[
   }))
 }
 
-export default function DashboardPage() {
-  const [user, setUser] = useState<UserData | null>(null)
+export default function HomePage() {
   const [profile, setProfile] = useState<ProfileData | null>(null)
-  const [totalModules, setTotalModules] = useState(0)
-  const [totalLessons, setTotalLessons] = useState(0)
-  const [completedLessons, setCompletedLessons] = useState(0)
-  const [moduleProgress, setModuleProgress] = useState<ModuleProgress[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastLesson, setLastLesson] = useState<LastLesson | null>(null)
+  const [progressPercentage, setProgressPercentage] = useState(0)
   const [nextLive, setNextLive] = useState<NextLive | null>(null)
+  const [posts, setPosts] = useState<FeedPost[]>([])
+  const [postsLoading, setPostsLoading] = useState(true)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -80,12 +79,6 @@ export default function DashboardPage() {
       const { data: { user: authUser } } = await supabase.auth.getUser()
 
       if (authUser) {
-        const firstName = authUser.user_metadata?.full_name?.split(' ')[0] || authUser.email?.split('@')[0] || 'Membro'
-        setUser({
-          name: firstName,
-          avatarUrl: authUser.user_metadata?.avatar_url || '/fotos/J&T-210.jpg'
-        })
-
         const { data: profileData } = await supabase
           .from('profiles')
           .select('full_name, avatar_url')
@@ -114,17 +107,7 @@ export default function DashboardPage() {
             }),
             { lessons: 0, completed: 0 }
           )
-
-          setTotalModules(modules.length)
-          setTotalLessons(totals.lessons)
-          setCompletedLessons(totals.completed)
-          setModuleProgress(
-            modules.map((mod) => ({
-              name: mod.title,
-              totalLessons: mod.lessonCount,
-              completedLessons: mod.completedCount,
-            }))
-          )
+          setProgressPercentage(computeProgressPercentage(totals.completed, totals.lessons))
 
           const modulesInProgress = modules.filter(
             (mod) => mod.lessonCount > 0 && mod.completedCount < mod.lessonCount
@@ -150,7 +133,7 @@ export default function DashboardPage() {
           }
         } catch (err) {
           if (err instanceof LearningApiError && (err.kind === 'unauthorized' || err.kind === 'forbidden')) {
-            // Layout-level auth guard will redirect; avoid surfacing a dashboard error for this case.
+            // Layout-level auth guard will redirect; avoid surfacing a home error for this case.
           } else {
             setError('Não foi possível carregar seu progresso. Tente novamente.')
           }
@@ -178,24 +161,39 @@ export default function DashboardPage() {
     fetchData()
   }, [])
 
-  const progressPercentage = computeProgressPercentage(completedLessons, totalLessons)
-  const displayName = profile?.full_name?.split(' ')[0] || user?.name || 'Membro'
-  const planName = 'Plano Ativo'
-  const avatarUrl = profile?.avatar_url || user?.avatarUrl || '/fotos/J&T-210.jpg'
+  useEffect(() => {
+    const fetchPosts = async () => {
+      try {
+        const res = await fetch('/api/community/posts?limit=4')
+        if (res.ok) {
+          const data = await res.json()
+          setPosts(data.posts || [])
+        }
+      } catch {
+        // Feed preview is best-effort; the full Comunidade page is the source of truth.
+      }
+      setPostsLoading(false)
+    }
+
+    fetchPosts()
+  }, [])
+
+  const displayName = profile?.full_name?.split(' ')[0] || 'Membro'
+  const avatarUrl = profile?.avatar_url || '/fotos/J&T-210.jpg'
 
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 text-accent animate-spin" />
-          <p className="text-text-secondary text-sm">Carregando dashboard...</p>
+          <p className="text-text-secondary text-sm">Carregando...</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {error && (
         <div className="flex items-center gap-2 p-3 rounded-lg bg-error/10 border border-error/20 text-error text-sm">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -203,38 +201,18 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Welcome Banner */}
-      <div className="relative p-6 rounded-2xl bg-gradient-to-r from-accent/15 via-accent/10 to-transparent border border-accent/20 overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-2xl"></div>
-        <div className="absolute bottom-0 left-1/2 w-24 h-24 bg-accent/5 rounded-full blur-xl"></div>
-        
-        <div className="flex items-center gap-6 relative z-10">
-          <div className="relative flex-shrink-0">
-            <div className="absolute -inset-1 bg-gradient-to-br from-accent/40 to-accent/20 rounded-full blur-sm"></div>
-            <Image
-              src={avatarUrl}
-              alt={displayName}
-              width={80}
-              height={80}
-              className="relative w-16 h-16 md:w-20 md:h-20 rounded-full object-cover border-2 border-accent/30"
-            />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h1 className="text-xl md:text-2xl font-semibold text-text-primary tracking-tight">
-              Olá, {displayName} <span className="inline-block animate-bounce">👋</span>
-            </h1>
-            <p className="text-sm text-text-secondary mt-1">Bem-vindo de volta. Continue de onde você parou.</p>
-            <div className="flex items-center gap-3 mt-3">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-accent/10 text-accent text-xs font-medium">
-                <Award className="w-3 h-3" />
-                {planName}
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-success/10 text-success text-xs font-medium">
-                <Zap className="w-3 h-3" />
-                {progressPercentage}% concluído
-              </span>
-            </div>
-          </div>
+      {/* Greeting */}
+      <div className="flex items-center gap-4">
+        <Image
+          src={avatarUrl}
+          alt={displayName}
+          width={48}
+          height={48}
+          className="w-12 h-12 rounded-full object-cover border-2 border-accent/30"
+        />
+        <div>
+          <h1 className="text-lg font-semibold text-text-primary tracking-tight">Olá, {displayName}</h1>
+          <p className="text-xs text-text-muted">Bem-vindo de volta.</p>
         </div>
       </div>
 
@@ -263,12 +241,12 @@ export default function DashboardPage() {
                 <span className="text-accent font-medium">{progressPercentage}%</span>
               </div>
               <div className="h-1.5 bg-border rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-accent to-amber-400 rounded-full transition-all" style={{ width: `${progressPercentage}%` }}></div>
+                <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${progressPercentage}%` }}></div>
               </div>
             </div>
           </div>
           <Link href={lastLesson ? `/membros/aulas/${lastLesson.moduleSlug}/${lastLesson.lessonSlug}` : '/membros/aulas'}>
-            <Button size="sm" className="bg-gradient-to-r from-accent to-amber-500 hover:from-accent hover:to-amber-400">
+            <Button size="sm">
               <Play className="w-3.5 h-3.5" />
               {lastLesson ? 'Continuar' : 'Começar'}
             </Button>
@@ -276,135 +254,91 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {[
-          { icon: Target, value: `${progressPercentage}%`, label: 'Concluído', color: 'text-accent', bg: 'bg-accent/10' },
-          { icon: BookOpen, value: String(totalModules), label: 'Módulos', color: 'text-text-primary', bg: 'bg-surface-raised' },
-          { icon: Clock, value: String(totalLessons), label: 'Aulas', color: 'text-text-primary', bg: 'bg-surface-raised' },
-          { icon: Star, value: '4.9', label: 'Avaliação', color: 'text-accent', bg: 'bg-accent/10' },
-        ].map((stat, i) => (
-          <div key={i} className="p-4 rounded-xl bg-surface border border-border-subtle text-center hover:border-accent/30 transition-colors">
-            <div className={`w-10 h-10 ${stat.bg} rounded-lg flex items-center justify-center mx-auto mb-2`}>
-              <stat.icon className={`w-4 h-4 ${stat.color}`} />
-            </div>
-            <div className={`text-xl font-semibold ${stat.color}`}>{stat.value}</div>
-            <div className="text-[10px] text-text-muted mt-0.5">{stat.label}</div>
+      {/* Próxima live */}
+      <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-accent/10">
+            <Video className="w-4 h-4 text-accent" />
           </div>
-        ))}
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid md:grid-cols-2 gap-4">
-        <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors">
-          <div className="flex items-start gap-3">
-            <div className="p-2 rounded-lg bg-accent/10">
-              <Video className="w-4 h-4 text-accent" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">Próxima Live</div>
-              {nextLive ? (
-                <>
-                  <h3 className="text-sm font-medium text-text-primary">{nextLive.title}</h3>
-                  <p className="text-xs text-text-muted mt-1">
-                    {new Date(nextLive.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
-                    {new Date(nextLive.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                  <div className="mt-3">
-                    <Button size="sm" variant="secondary" onClick={() => {
-                      const d = new Date(nextLive.scheduled_at)
-                      const pad = (n: number) => String(n).padStart(2, '0')
-                      const dtStart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`
-                      const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextLive.title} - E-commerce Sem Atalho\nDESCRIPTION:Live exclusiva do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
-                      const blob = new Blob([event], { type: 'text/calendar' })
-                      const url = URL.createObjectURL(blob)
-                      const a = document.createElement('a')
-                      a.href = url
-                      a.download = `${nextLive.title.replace(/\s+/g, '-').toLowerCase()}.ics`
-                      a.click()
-                      URL.revokeObjectURL(url)
-                    }}>
-                      <Calendar className="w-3.5 h-3.5" />
-                      Adicionar ao calendário
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <h3 className="text-sm font-medium text-text-primary">Nenhuma live agendada</h3>
-                  <p className="text-xs text-text-muted mt-1">Fique atento às novidades</p>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors">
-          <div className="flex items-start gap-3">
-            <div className="p-2 rounded-lg bg-success/10">
-              <Users className="w-4 h-4 text-success" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">Comunidade</div>
-              <h3 className="text-sm font-medium text-text-primary">Participe da comunidade</h3>
-              <p className="text-xs text-text-muted mt-1">Conecte-se com outros membros</p>
-              <div className="mt-3">
-                <Link href="/membros/comunidade">
-                  <Button size="sm" variant="secondary">
-                    <Users className="w-3.5 h-3.5" />
-                    Ver comunidade
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">Próxima Live</div>
+            {nextLive ? (
+              <>
+                <h3 className="text-sm font-medium text-text-primary">{nextLive.title}</h3>
+                <p className="text-xs text-text-muted mt-1">
+                  {new Date(nextLive.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
+                  {new Date(nextLive.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                </p>
+                <div className="mt-3">
+                  <Button size="sm" variant="secondary" onClick={() => {
+                    const d = new Date(nextLive.scheduled_at)
+                    const pad = (n: number) => String(n).padStart(2, '0')
+                    const dtStart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`
+                    const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextLive.title} - E-commerce Sem Atalho\nDESCRIPTION:Live exclusiva do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
+                    const blob = new Blob([event], { type: 'text/calendar' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `${nextLive.title.replace(/\s+/g, '-').toLowerCase()}.ics`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  }}>
+                    <Calendar className="w-3.5 h-3.5" />
+                    Adicionar ao calendário
                   </Button>
-                </Link>
-              </div>
-            </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-sm font-medium text-text-primary">Nenhuma live agendada</h3>
+                <p className="text-xs text-text-muted mt-1">Fique atento às novidades</p>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Module progress */}
-      <div className="p-5 rounded-xl bg-surface border border-border-subtle">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-medium text-text-primary">Seu progresso</h3>
-          <Link href="/membros/aulas" className="text-xs text-accent hover:text-accent-hover flex items-center gap-1">
-            Ver todas <ArrowRight className="w-3 h-3" />
+      {/* Community feed preview */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-medium text-text-primary">Comunidade</h2>
+          <Link href="/membros/comunidade" className="text-xs text-accent hover:text-accent-hover">
+            Ver tudo
           </Link>
         </div>
-        <div className="space-y-3">
-          {moduleProgress.length > 0 ? (
-            moduleProgress.map((mod, i) => {
-              const pct = computeProgressPercentage(mod.completedLessons, mod.totalLessons)
-              return (
-                <div key={i} className="flex items-center gap-4">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    pct === 100 ? 'bg-success/10' : 'bg-accent/10'
-                  }`}>
-                    {pct === 100 ? (
-                      <Sparkles className="w-4 h-4 text-success" />
-                    ) : (
-                      <BookOpen className="w-4 h-4 text-accent" />
-                    )}
+        {postsLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-5 h-5 text-accent animate-spin" />
+          </div>
+        ) : posts.length === 0 ? (
+          <div className="p-6 rounded-xl bg-surface border border-border-subtle text-center">
+            <MessageCircle className="w-8 h-8 text-text-muted mx-auto mb-2 opacity-50" />
+            <p className="text-sm text-text-muted">Nenhuma publicação ainda</p>
+            <Link href="/membros/comunidade" className="text-xs text-accent hover:underline mt-1 inline-block">
+              Seja o primeiro a postar
+            </Link>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {posts.map((post) => (
+              <Link key={post.id} href="/membros/comunidade" className="block">
+                <div className="p-4 rounded-xl bg-surface border border-border-subtle hover:border-border transition-colors">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-sm font-medium text-text-primary">{post.profiles?.full_name || 'Membro'}</span>
+                    <span className="text-[10px] text-text-muted">
+                      {formatDistanceToNow(new Date(post.created_at), { addSuffix: true, locale: ptBR })}
+                    </span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm text-text-primary truncate">{mod.name}</span>
-                      <span className="text-xs text-text-muted ml-2">{mod.completedLessons}/{mod.totalLessons} aulas</span>
-                    </div>
-                    <div className="h-1 bg-border rounded-full overflow-hidden">
-                      <div 
-                        className={`h-full rounded-full transition-all ${
-                          pct === 100 ? 'bg-success' : 'bg-gradient-to-r from-accent to-amber-400'
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      ></div>
-                    </div>
+                  <p className="text-sm text-text-secondary line-clamp-2">{post.content}</p>
+                  <div className="flex items-center gap-3 mt-2 text-xs text-text-muted">
+                    <span className="flex items-center gap-1"><Heart className="w-3 h-3" />{post.community_reactions?.[0]?.count || 0}</span>
+                    <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" />{post.community_comments?.[0]?.count || 0}</span>
                   </div>
                 </div>
-              )
-            })
-          ) : (
-            <p className="text-sm text-text-muted text-center py-4">Nenhum módulo encontrado</p>
-          )}
-        </div>
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Quick links */}
