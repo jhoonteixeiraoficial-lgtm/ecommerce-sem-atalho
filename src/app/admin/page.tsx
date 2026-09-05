@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { Shield, Users, BookOpen, FileText, Video, BarChart3, ChevronRight, Radio, MessageSquare, Ban } from 'lucide-react'
+import { Shield, Users, BookOpen, FileText, Video, BarChart3, ChevronRight, Radio, MessageSquare, Ban, Calendar } from 'lucide-react'
 import Card from '@/components/ui/Card'
 import Link from 'next/link'
 
@@ -72,6 +72,7 @@ export default function AdminDashboard() {
   ]
 
   const links = [
+    { href: '/admin/agenda', label: 'Agenda e Conteúdos', desc: 'Lives, aulas, materiais e eventos', icon: Calendar },
     { href: '/admin/lessons', label: 'Gerenciar Aulas', desc: 'Módulos e aulas do curso', icon: BookOpen },
     { href: '/admin/materials', label: 'Gerenciar Materiais', desc: 'PDFs e arquivos para download', icon: FileText },
     { href: '/admin/users', label: 'Gerenciar Usuários', desc: 'Ver todos os membros', icon: Users },

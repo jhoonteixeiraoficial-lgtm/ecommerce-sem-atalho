@@ -250,6 +250,11 @@ describe('POST', () => {
       scheduled_at: '2026-09-10T18:00:00.000Z',
       duration_minutes: 90,
       watch_url: '',
+      type: 'live',
+      status: 'agendada',
+      youtube_url: '',
+      youtube_video_id: '',
+      thumbnail_url: '',
     })
   })
 
@@ -285,6 +290,11 @@ describe('POST', () => {
       scheduled_at: '2026-09-10T18:00:00.000Z',
       duration_minutes: 60,
       watch_url: 'https://www.youtube.com/embed/placeholder',
+      type: 'live',
+      status: 'agendada',
+      youtube_url: '',
+      youtube_video_id: '',
+      thumbnail_url: '',
     })
   })
 
@@ -304,6 +314,11 @@ describe('POST', () => {
       scheduled_at: '2026-09-10T18:00:00.000Z',
       duration_minutes: 60,
       watch_url: '',
+      type: 'live',
+      status: 'agendada',
+      youtube_url: '',
+      youtube_video_id: '',
+      thumbnail_url: '',
     })
   })
 

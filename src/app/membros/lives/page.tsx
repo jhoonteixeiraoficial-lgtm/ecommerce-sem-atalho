@@ -15,6 +15,8 @@ interface Live {
   watch_url: string
   is_live: boolean
   viewer_count: number
+  type: string
+  status: string
 }
 
 export default function LivesPage() {
@@ -26,7 +28,8 @@ export default function LivesPage() {
     const fetchLives = async () => {
       const { data, error } = await supabase
         .from('lives')
-        .select('id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count')
+        .select('id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, type, status')
+        .eq('type', 'live')
         .order('scheduled_at', { ascending: false })
 
       if (!error) {
@@ -41,9 +44,12 @@ export default function LivesPage() {
   }, [supabase])
 
   const now = new Date()
-  const activeLives = lives.filter(l => l.is_live)
-  const upcomingLives = lives.filter(l => new Date(l.scheduled_at) > now && !l.is_live && !l.replay_url)
-  const pastLives = lives.filter(l => l.replay_url && !l.is_live)
+  const activeLives = lives.filter(l => l.status === 'ao_vivo' || l.is_live)
+  const upcomingLives = lives.filter(l => {
+    const d = new Date(l.scheduled_at)
+    return d > now && l.status !== 'ao_vivo' && l.status !== 'encerrada' && l.status !== 'cancelada' && !l.replay_url
+  })
+  const pastLives = lives.filter(l => l.replay_url && l.status !== 'ao_vivo')
 
   if (loading) {
     return <div className="p-6 text-text-muted">Carregando...</div>

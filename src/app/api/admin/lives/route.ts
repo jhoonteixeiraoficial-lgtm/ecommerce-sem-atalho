@@ -15,6 +15,45 @@ const watchUrlSchema = z.union([
   z.string().url().refine((value) => value.toLowerCase().startsWith('https://')),
   z.literal(''),
 ])
+const urlSchema = z.union([
+  z.string().url().refine((value) => value.toLowerCase().startsWith('https://')),
+  z.literal(''),
+])
+const eventTypeSchema = z.enum(['live', 'conteudo', 'aula', 'material', 'atualizacao', 'evento_especial'])
+const eventStatusSchema = z.enum(['agendada', 'ao_vivo', 'encerrada', 'cancelada'])
+
+const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/
+
+function extractYouTubeVideoId(url: string): string {
+  if (!url) return ''
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return ''
+  }
+  const host = parsed.hostname.replace(/^www\./, '').toLowerCase()
+  if (host === 'youtu.be') {
+    const id = parsed.pathname.slice(1).split('/')[0]
+    return YOUTUBE_ID_RE.test(id) ? id : ''
+  }
+  if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtube-nocookie.com') {
+    if (parsed.pathname === '/watch') {
+      const id = parsed.searchParams.get('v')
+      return id && YOUTUBE_ID_RE.test(id) ? id : ''
+    }
+    const embedMatch = parsed.pathname.match(/^\/embed\/([a-zA-Z0-9_-]{11})/)
+    if (embedMatch) return embedMatch[1]
+    const shortsMatch = parsed.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]{11})/)
+    if (shortsMatch) return shortsMatch[1]
+  }
+  return ''
+}
+
+function prepareYouTubeFields(youtubeUrl: string) {
+  const videoId = extractYouTubeVideoId(youtubeUrl)
+  return { youtube_url: youtubeUrl, youtube_video_id: videoId }
+}
 
 const createLiveSchema = z.object({
   title: z.string().trim().min(1),
@@ -22,6 +61,10 @@ const createLiveSchema = z.object({
   scheduled_at: scheduledAtSchema,
   duration_minutes: durationSchema.default(60),
   watch_url: watchUrlSchema.default(''),
+  type: eventTypeSchema.default('live'),
+  status: eventStatusSchema.default('agendada'),
+  youtube_url: urlSchema.default(''),
+  thumbnail_url: urlSchema.default(''),
 }).strict()
 
 const updateLiveSchema = z.object({
@@ -33,12 +76,16 @@ const updateLiveSchema = z.object({
   is_live: z.boolean().optional(),
   replay_url: replayUrlSchema.optional(),
   watch_url: watchUrlSchema.optional(),
+  type: eventTypeSchema.optional(),
+  status: eventStatusSchema.optional(),
+  youtube_url: urlSchema.optional(),
+  thumbnail_url: urlSchema.optional(),
 }).strict().refine(
   (value) => Object.keys(value).some((key) => key !== 'id'),
   { message: 'At least one update field is required' },
 )
 
-const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, created_at'
+const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, created_at, type, status, youtube_url, youtube_video_id, thumbnail_url'
 const CREDENTIAL_COLUMNS = 'live_id, rtmp_url, stream_key'
 
 function rateLimit(request: Request, operation: string) {
@@ -148,9 +195,11 @@ export async function POST(request: Request) {
   }
 
   try {
+    const youtubeFields = prepareYouTubeFields(parsed.data.youtube_url)
+    const insertData = { ...parsed.data, ...youtubeFields }
     const { data: live, error } = await createAdminClient()
       .from('lives')
-      .insert(parsed.data)
+      .insert(insertData)
       .select(LIVE_COLUMNS)
       .single()
 
@@ -182,7 +231,8 @@ export async function PUT(request: Request) {
   const { id, ...updates } = parsed.data
   try {
     const admin = createAdminClient()
-    if (updates.is_live === true) {
+
+    if (updates.status === 'ao_vivo' || updates.is_live === true) {
       const { data: credentials, error: credentialsError } = await admin
         .from('live_credentials')
         .select(CREDENTIAL_COLUMNS)
@@ -198,9 +248,16 @@ export async function PUT(request: Request) {
       }
     }
 
+    const updatePayload: Record<string, unknown> = { ...updates }
+    if (updates.youtube_url !== undefined) {
+      const youtubeFields = prepareYouTubeFields(updates.youtube_url)
+      updatePayload.youtube_url = youtubeFields.youtube_url
+      updatePayload.youtube_video_id = youtubeFields.youtube_video_id
+    }
+
     const { data: live, error } = await admin
       .from('lives')
-      .update(updates)
+      .update(updatePayload)
       .eq('id', id)
       .select(LIVE_COLUMNS)
       .single()

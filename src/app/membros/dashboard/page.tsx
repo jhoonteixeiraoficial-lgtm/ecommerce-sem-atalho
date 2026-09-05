@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
-import { Video, Sparkles, Play, Calendar, Download, Users, Bell, MessageCircle, Heart, Loader2, AlertCircle } from 'lucide-react'
+import { Video, Sparkles, Play, Calendar, Download, Users, Bell, MessageCircle, Heart, Loader2, AlertCircle, FileText, BookOpen, Star } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
 import { formatDistanceToNow } from 'date-fns'
@@ -11,6 +11,8 @@ import { createClient } from '@/lib/supabase/client'
 import { getCatalog, getModule, LearningApiError } from '@/lib/learning/client'
 import { computeProgressPercentage, selectContinueWatching, type LessonWithProgress } from '@/lib/learning/progress'
 import type { ModuleDetailDto } from '@/lib/learning/types'
+
+type EventType = 'live' | 'conteudo' | 'aula' | 'material' | 'atualizacao' | 'evento_especial'
 
 interface ProfileData {
   full_name: string | null
@@ -24,10 +26,29 @@ interface LastLesson {
   lessonSlug: string
 }
 
-interface NextLive {
+interface NextEvent {
   id: string
   title: string
   scheduled_at: string
+  type: EventType
+}
+
+const EVENT_TYPE_LABELS: Record<EventType, string> = {
+  live: 'Live',
+  conteudo: 'Conteúdo',
+  aula: 'Aula',
+  material: 'Material',
+  atualizacao: 'Atualização',
+  evento_especial: 'Evento Especial',
+}
+
+const EVENT_TYPE_ICONS: Record<EventType, typeof Video> = {
+  live: Video,
+  conteudo: FileText,
+  aula: BookOpen,
+  material: Download,
+  atualizacao: Bell,
+  evento_especial: Star,
 }
 
 interface FeedPost {
@@ -68,7 +89,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
   const [lastLesson, setLastLesson] = useState<LastLesson | null>(null)
   const [progressPercentage, setProgressPercentage] = useState(0)
-  const [nextLive, setNextLive] = useState<NextLive | null>(null)
+  const [nextEvent, setNextEvent] = useState<NextEvent | null>(null)
   const [posts, setPosts] = useState<FeedPost[]>([])
   const [postsLoading, setPostsLoading] = useState(true)
 
@@ -140,18 +161,18 @@ export default function HomePage() {
         }
 
         const now = new Date().toISOString()
-        const { data: nextLiveData } = await supabase
+        const { data: nextEventData } = await supabase
           .from('lives')
-          .select('id, title, scheduled_at')
+          .select('id, title, scheduled_at, type')
           .gt('scheduled_at', now)
-          .eq('is_live', false)
+          .not('status', 'in', '("ao_vivo","encerrada","cancelada")')
           .is('replay_url', null)
           .order('scheduled_at', { ascending: true })
           .limit(1)
           .single()
 
-        if (nextLiveData) {
-          setNextLive(nextLiveData)
+        if (nextEventData) {
+          setNextEvent(nextEventData)
         }
       }
 
@@ -254,32 +275,41 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Próxima live */}
+      {/* Próximo Evento */}
       <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors">
         <div className="flex items-start gap-3">
           <div className="p-2 rounded-lg bg-accent/10">
-            <Video className="w-4 h-4 text-accent" />
+            {nextEvent ? (
+              (() => {
+                const EventIcon = EVENT_TYPE_ICONS[nextEvent.type]
+                return <EventIcon className="w-4 h-4 text-accent" />
+              })()
+            ) : (
+              <Calendar className="w-4 h-4 text-accent" />
+            )}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">Próxima Live</div>
-            {nextLive ? (
+            <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">
+              {nextEvent ? EVENT_TYPE_LABELS[nextEvent.type] : 'Próximo Evento'}
+            </div>
+            {nextEvent ? (
               <>
-                <h3 className="text-sm font-medium text-text-primary">{nextLive.title}</h3>
+                <h3 className="text-sm font-medium text-text-primary">{nextEvent.title}</h3>
                 <p className="text-xs text-text-muted mt-1">
-                  {new Date(nextLive.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
-                  {new Date(nextLive.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  {new Date(nextEvent.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
+                  {new Date(nextEvent.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                 </p>
                 <div className="mt-3">
                   <Button size="sm" variant="secondary" onClick={() => {
-                    const d = new Date(nextLive.scheduled_at)
+                    const d = new Date(nextEvent.scheduled_at)
                     const pad = (n: number) => String(n).padStart(2, '0')
                     const dtStart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`
-                    const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextLive.title} - E-commerce Sem Atalho\nDESCRIPTION:Live exclusiva do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
+                    const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextEvent.title} - E-commerce Sem Atalho\nDESCRIPTION:${EVENT_TYPE_LABELS[nextEvent.type]} do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
                     const blob = new Blob([event], { type: 'text/calendar' })
                     const url = URL.createObjectURL(blob)
                     const a = document.createElement('a')
                     a.href = url
-                    a.download = `${nextLive.title.replace(/\s+/g, '-').toLowerCase()}.ics`
+                    a.download = `${nextEvent.title.replace(/\s+/g, '-').toLowerCase()}.ics`
                     a.click()
                     URL.revokeObjectURL(url)
                   }}>
@@ -290,7 +320,7 @@ export default function HomePage() {
               </>
             ) : (
               <>
-                <h3 className="text-sm font-medium text-text-primary">Nenhuma live agendada</h3>
+                <h3 className="text-sm font-medium text-text-primary">Nenhum evento agendado</h3>
                 <p className="text-xs text-text-muted mt-1">Fique atento às novidades</p>
               </>
             )}
