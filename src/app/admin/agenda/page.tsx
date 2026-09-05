@@ -201,7 +201,6 @@ export default function AdminAgendaPage() {
 
     try {
       const scheduledAt = new Date(form.scheduled_at).toISOString()
-      const videoId = form.youtube_url ? extractYouTubeVideoId(form.youtube_url) : ''
       const payload = {
         title: form.title,
         description: form.description,
@@ -210,7 +209,6 @@ export default function AdminAgendaPage() {
         type: form.type,
         status: form.status,
         youtube_url: form.youtube_url,
-        youtube_video_id: videoId,
         thumbnail_url: form.thumbnail_url,
       }
 
