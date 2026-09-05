@@ -22,20 +22,39 @@ import {
 import { useState, useEffect, useCallback, useEffectEvent } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
-const menuItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', href: '/membros/dashboard' },
-  { icon: BookOpen, label: 'Aulas', href: '/membros/aulas' },
-  { icon: Users, label: 'Comunidade', href: '/membros/comunidade' },
-  { icon: Video, label: 'Lives', href: '/membros/lives' },
-  { icon: Calendar, label: 'Calendário', href: '/membros/calendario' },
-  { icon: Download, label: 'Materiais', href: '/membros/materiais' },
-  { icon: Bell, label: 'Atualizações', href: '/membros/atualizacoes' },
-  { icon: Sparkles, label: 'Assertive IA', href: '/membros/assertive-ecommerce-ia' },
-  { icon: HelpCircle, label: 'Suporte', href: '/membros/suporte' },
-  { icon: User, label: 'Perfil', href: '/membros/perfil' },
+const navGroups = [
+  {
+    title: 'Início',
+    items: [{ icon: LayoutDashboard, label: 'Início', href: '/membros/dashboard' }],
+  },
+  {
+    title: 'Aprender',
+    items: [
+      { icon: BookOpen, label: 'Aulas', href: '/membros/aulas' },
+      { icon: Video, label: 'Lives', href: '/membros/lives' },
+      { icon: Calendar, label: 'Calendário', href: '/membros/calendario' },
+      { icon: Download, label: 'Materiais', href: '/membros/materiais' },
+      { icon: Bell, label: 'Atualizações', href: '/membros/atualizacoes' },
+    ],
+  },
+  {
+    title: 'Comunidade',
+    items: [{ icon: Users, label: 'Comunidade', href: '/membros/comunidade' }],
+  },
+  {
+    title: 'Ferramentas',
+    items: [{ icon: Sparkles, label: 'Assertive IA', href: '/membros/assertive-ecommerce-ia' }],
+  },
+  {
+    title: 'Conta',
+    items: [
+      { icon: HelpCircle, label: 'Suporte', href: '/membros/suporte' },
+      { icon: User, label: 'Perfil', href: '/membros/perfil' },
+    ],
+  },
 ]
 
-const adminItem = { icon: Shield, label: 'Administração', href: '/admin' }
+const adminGroup = { title: 'Administração', items: [{ icon: Shield, label: 'Administração', href: '/admin' }] }
 
 interface SidebarProps {
   open: boolean
@@ -48,7 +67,7 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
   const [collapsed, setCollapsed] = useState(false)
   const [supabase] = useState(() => createClient())
   const closeForNavigation = useEffectEvent(onClose)
-  const navItems = isAdmin ? [...menuItems, adminItem] : menuItems
+  const groups = isAdmin ? [...navGroups, adminGroup] : navGroups
 
   const handleLogout = useCallback(async () => {
     await supabase.auth.signOut()
@@ -87,24 +106,33 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
           </button>
         </div>
 
-        <nav className="flex-1 py-3 px-2 space-y-0.5">
-          {navItems.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  isActive
-                    ? 'bg-accent-soft text-accent'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-raised'
-                }`}
-              >
-                <item.icon className="w-4 h-4 flex-shrink-0" />
-                <span>{item.label}</span>
-              </Link>
-            )
-          })}
+        <nav className="flex-1 py-3 px-2 space-y-4 overflow-y-auto">
+          {groups.map((group) => (
+            <div key={group.title}>
+              <p className="px-3 mb-1 text-[10px] font-semibold text-text-muted uppercase tracking-wider">
+                {group.title}
+              </p>
+              <div className="space-y-0.5">
+                {group.items.map((item) => {
+                  const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+                        isActive
+                          ? 'bg-accent-soft text-accent'
+                          : 'text-text-muted hover:text-text-secondary hover:bg-surface-raised'
+                      }`}
+                    >
+                      <item.icon className="w-4 h-4 flex-shrink-0" />
+                      <span>{item.label}</span>
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="p-2 border-t border-border-subtle">
@@ -128,24 +156,35 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
           )}
         </div>
 
-        <nav className="flex-1 py-3 px-2 space-y-0.5">
-          {navItems.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  isActive
-                    ? 'bg-accent-soft text-accent'
-                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-raised'
-                }`}
-              >
-                <item.icon className="w-4 h-4 flex-shrink-0" />
-                {!collapsed && <span>{item.label}</span>}
-              </Link>
-            )
-          })}
+        <nav className="flex-1 py-3 px-2 space-y-4 overflow-y-auto">
+          {groups.map((group) => (
+            <div key={group.title}>
+              {!collapsed && (
+                <p className="px-3 mb-1 text-[10px] font-semibold text-text-muted uppercase tracking-wider">
+                  {group.title}
+                </p>
+              )}
+              <div className="space-y-0.5">
+                {group.items.map((item) => {
+                  const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+                        isActive
+                          ? 'bg-accent-soft text-accent'
+                          : 'text-text-muted hover:text-text-secondary hover:bg-surface-raised'
+                      }`}
+                    >
+                      <item.icon className="w-4 h-4 flex-shrink-0" />
+                      {!collapsed && <span>{item.label}</span>}
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="p-2 border-t border-border-subtle">
