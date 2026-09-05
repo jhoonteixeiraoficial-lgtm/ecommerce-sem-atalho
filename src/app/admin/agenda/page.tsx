@@ -173,7 +173,7 @@ export default function AdminAgendaPage() {
 
     try {
       const scheduledAt = new Date(form.scheduled_at).toISOString()
-      const payload = {
+      const payload: Record<string, unknown> = {
         title: form.title,
         description: form.description,
         scheduled_at: scheduledAt,
@@ -182,6 +182,11 @@ export default function AdminAgendaPage() {
         status: form.status,
         youtube_url: form.youtube_url,
         thumbnail_url: form.thumbnail_url,
+      }
+
+      if (form.type === 'live' && form.status === 'replay') {
+        payload.replay_url = form.youtube_url
+        payload.replay_available = true
       }
 
       if (editingEvent) {
