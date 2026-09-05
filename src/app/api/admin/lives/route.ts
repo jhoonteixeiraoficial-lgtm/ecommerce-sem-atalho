@@ -236,22 +236,6 @@ export async function PUT(request: Request) {
   try {
     const admin = createAdminClient()
 
-    if (updates.status === 'ao_vivo' || updates.is_live === true) {
-      const { data: credentials, error: credentialsError } = await admin
-        .from('live_credentials')
-        .select(CREDENTIAL_COLUMNS)
-        .eq('live_id', id)
-        .maybeSingle()
-
-      if (credentialsError) {
-        return NextResponse.json({ error: 'Failed to update live' }, { status: 500 })
-      }
-
-      if (!credentials?.rtmp_url?.trim() || !credentials.stream_key?.trim()) {
-        return NextResponse.json({ error: 'Streaming setup required' }, { status: 409 })
-      }
-    }
-
     const updatePayload: Record<string, unknown> = { ...updates }
     if (updates.youtube_url !== undefined) {
       const youtubeFields = prepareYouTubeFields(updates.youtube_url)

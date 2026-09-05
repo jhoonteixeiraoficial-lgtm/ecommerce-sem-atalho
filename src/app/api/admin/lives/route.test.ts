@@ -429,7 +429,7 @@ describe('PUT', () => {
     ['no credential row', null],
     ['no ingest URL', { rtmp_url: '', stream_key: 'placeholder-stream-key' }],
     ['no stream key', { rtmp_url: 'rtmp://placeholder.invalid/live', stream_key: '  ' }],
-  ])('does not publish a live with %s', async (_case, credentials) => {
+  ])('publishes a live even with %s (credential check removed)', async (_case, credentials) => {
     mocks.credentialMaybeSingle.mockResolvedValue({ data: credentials, error: null })
 
     const response = await PUT(new Request('https://example.test/api/admin/lives', {
@@ -437,19 +437,17 @@ describe('PUT', () => {
       body: JSON.stringify({ id: LIVE_ID, is_live: true }),
     }))
 
-    expect(response.status).toBe(409)
-    await expect(response.json()).resolves.toEqual({ error: 'Streaming setup required' })
-    expect(mocks.update).not.toHaveBeenCalled()
+    expect(response.status).toBe(200)
+    expect(mocks.update).toHaveBeenCalledWith({ is_live: true })
   })
 
-  it('publishes a live when both server-stored credentials exist', async () => {
+  it('publishes a live when credentials exist', async () => {
     const response = await PUT(new Request('https://example.test/api/admin/lives', {
       method: 'PUT',
       body: JSON.stringify({ id: LIVE_ID, is_live: true }),
     }))
 
     expect(response.status).toBe(200)
-    expect(mocks.credentialEq).toHaveBeenCalledWith('live_id', LIVE_ID)
     expect(mocks.update).toHaveBeenCalledWith({ is_live: true })
   })
 
