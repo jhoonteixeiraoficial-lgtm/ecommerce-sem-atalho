@@ -44,6 +44,7 @@ export default function AdminLivesPage() {
   const [watchUrl, setWatchUrl] = useState('')
   const [copied, setCopied] = useState('')
   const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const [form, setForm] = useState({
     title: '',
@@ -95,6 +96,7 @@ export default function AdminLivesPage() {
       return
     }
 
+    setSubmitting(true)
     try {
       const scheduledAt = new Date(form.scheduled_at).toISOString()
       if (editingLive) {
@@ -113,15 +115,16 @@ export default function AdminLivesPage() {
           duration_minutes: form.duration_minutes,
         })
       }
+
+      setForm({ title: '', description: '', scheduled_at: '', duration_minutes: 60 })
+      setEditingLive(null)
+      setShowForm(false)
+      await fetchLives()
     } catch {
       setError(editingLive ? 'Erro ao atualizar live' : 'Erro ao criar live')
-      return
+    } finally {
+      setSubmitting(false)
     }
-
-    setForm({ title: '', description: '', scheduled_at: '', duration_minutes: 60 })
-    setEditingLive(null)
-    setShowForm(false)
-    await fetchLives()
   }
 
   const handleEdit = (live: Live) => {
@@ -141,6 +144,7 @@ export default function AdminLivesPage() {
       return
     }
 
+    setSubmitting(true)
     try {
       await mutateLive('PUT', { id: live.id, is_live: true })
       const refreshedLives = await fetchLives()
@@ -151,20 +155,23 @@ export default function AdminLivesPage() {
         return
       }
       setError('Erro ao iniciar live')
+    } finally {
+      setSubmitting(false)
     }
   }
 
   const handleStopLive = async (live: Live) => {
+    setSubmitting(true)
     try {
       await mutateLive('PUT', { id: live.id, is_live: false })
+      setShowReplayModal(live)
+      setReplayUrl(live.replay_url || '')
+      await fetchLives()
     } catch {
       setError('Erro ao finalizar live')
-      return
+    } finally {
+      setSubmitting(false)
     }
-
-    setShowReplayModal(live)
-    setReplayUrl(live.replay_url || '')
-    await fetchLives()
   }
 
   const handleSaveWatchUrl = async () => {
@@ -183,30 +190,32 @@ export default function AdminLivesPage() {
   const handleSaveReplay = async () => {
     if (!showReplayModal) return
 
+    setSubmitting(true)
     try {
       await mutateLive('PUT', { id: showReplayModal.id, replay_url: replayUrl })
+      setShowReplayModal(null)
+      setReplayUrl('')
+      await fetchLives()
     } catch {
       setError('Erro ao salvar replay')
-      return
+    } finally {
+      setSubmitting(false)
     }
-
-    setShowReplayModal(null)
-    setReplayUrl('')
-    await fetchLives()
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Tem certeza que deseja excluir esta live?')) return
 
+    setSubmitting(true)
     try {
       const response = await fetch(`/api/admin/lives?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
       if (!response.ok) throw new Error('Unable to delete live')
+      await fetchLives()
     } catch {
       setError('Erro ao excluir live')
-      return
+    } finally {
+      setSubmitting(false)
     }
-
-    await fetchLives()
   }
 
   const copyToClipboard = (text: string, label: string) => {
@@ -279,11 +288,11 @@ export default function AdminLivesPage() {
             />
           </div>
           <div className="flex gap-2">
-            <Button type="submit">
+            <Button type="submit" disabled={submitting}>
               <Check className="w-4 h-4" />
-              {editingLive ? 'Salvar' : 'Agendar'}
+              {submitting ? 'Salvando...' : editingLive ? 'Salvar' : 'Agendar'}
             </Button>
-            <Button type="button" variant="secondary" onClick={() => { setShowForm(false); setEditingLive(null) }}>
+            <Button type="button" variant="secondary" onClick={() => { setShowForm(false); setEditingLive(null) }} disabled={submitting}>
               <X className="w-4 h-4" />
               Cancelar
             </Button>
@@ -315,9 +324,9 @@ export default function AdminLivesPage() {
                     <ExternalLink className="w-3.5 h-3.5" />
                     RTMP
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => handleStopLive(live)}>
+                  <Button size="sm" variant="ghost" onClick={() => handleStopLive(live)} disabled={submitting}>
                     <Square className="w-3.5 h-3.5" />
-                    Finalizar
+                    {submitting ? 'Processando...' : 'Finalizar'}
                   </Button>
                 </div>
               </div>
@@ -347,14 +356,14 @@ export default function AdminLivesPage() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm" onClick={() => handleStartLive(live)}>
+                  <Button size="sm" onClick={() => handleStartLive(live)} disabled={submitting}>
                     <Radio className="w-3.5 h-3.5" />
-                    Iniciar Live
+                    {submitting ? 'Processando...' : 'Iniciar Live'}
                   </Button>
-                  <Button size="sm" variant="secondary" onClick={() => handleEdit(live)}>
+                  <Button size="sm" variant="secondary" onClick={() => handleEdit(live)} disabled={submitting}>
                     <Edit3 className="w-3.5 h-3.5" />
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => handleDelete(live.id)}>
+                  <Button size="sm" variant="ghost" onClick={() => handleDelete(live.id)} disabled={submitting}>
                     <Trash2 className="w-3.5 h-3.5 text-error" />
                   </Button>
                 </div>
@@ -386,11 +395,11 @@ export default function AdminLivesPage() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => { setShowReplayModal(live); setReplayUrl(live.replay_url || '') }}>
+                  <Button size="sm" variant="secondary" onClick={() => { setShowReplayModal(live); setReplayUrl(live.replay_url || '') }} disabled={submitting}>
                     <Edit3 className="w-3.5 h-3.5" />
                     Replay
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => handleDelete(live.id)}>
+                  <Button size="sm" variant="ghost" onClick={() => handleDelete(live.id)} disabled={submitting}>
                     <Trash2 className="w-3.5 h-3.5 text-error" />
                   </Button>
                 </div>
@@ -490,11 +499,11 @@ export default function AdminLivesPage() {
               placeholder="https://www.youtube.com/watch?v=..."
             />
             <div className="flex gap-2">
-              <Button onClick={handleSaveReplay} className="flex-1">
+              <Button onClick={handleSaveReplay} className="flex-1" disabled={submitting}>
                 <Check className="w-4 h-4" />
-                Salvar
+                {submitting ? 'Salvando...' : 'Salvar'}
               </Button>
-              <Button variant="secondary" onClick={() => setShowReplayModal(null)}>
+              <Button variant="secondary" onClick={() => setShowReplayModal(null)} disabled={submitting}>
                 Cancelar
               </Button>
             </div>

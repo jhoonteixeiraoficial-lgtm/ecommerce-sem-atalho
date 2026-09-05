@@ -3,7 +3,7 @@ import { createServerGuards } from '@/lib/auth/server-guards'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export async function GET(request: Request) {
-  const ip = request.headers.get('x-forwarded-for') || 'unknown'
+  const url = new URL(request.url)
 
   const { createClient } = await import('@/lib/supabase/server')
   const serverClient = await createClient()
@@ -18,12 +18,26 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Forbidden' }, { status })
   }
 
+  const page = Math.max(1, Number(url.searchParams.get('page')) || 1)
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50))
+  const search = url.searchParams.get('search')?.trim() || ''
+  const from = (page - 1) * limit
+  const to = from + limit - 1
+
   const admin = createAdminClient()
 
-  const { data: profiles, error: profileError } = await admin
+  let query = admin
     .from('profiles')
-    .select('id, full_name, email, created_at, updated_at')
+    .select('id, full_name, email, created_at, updated_at', { count: 'exact' })
     .order('created_at', { ascending: false })
+
+  if (search) {
+    query = query.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`)
+  }
+
+  query = query.range(from, to)
+
+  const { data: profiles, error: profileError, count } = await query
 
   if (profileError) {
     return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 })
@@ -31,21 +45,25 @@ export async function GET(request: Request) {
 
   const userIds = (profiles ?? []).map(p => p.id)
 
-  const { data: roles, error: rolesError } = await admin
-    .from('user_roles')
-    .select('user_id, role')
-    .in('user_id', userIds)
+  const [rolesResult, statusesResult, subscriptionsResult] = await Promise.all([
+    admin
+      .from('user_roles')
+      .select('user_id, role')
+      .in('user_id', userIds),
+    admin
+      .from('account_status')
+      .select('user_id, status, reason')
+      .in('user_id', userIds),
+    admin
+      .from('subscriptions')
+      .select('user_id, plan, status, current_period_end')
+      .in('user_id', userIds)
+      .eq('status', 'active'),
+  ])
 
-  const { data: statuses, error: statusesError } = await admin
-    .from('account_status')
-    .select('user_id, status, reason')
-    .in('user_id', userIds)
-
-  const { data: subscriptions, error: subscriptionsError } = await admin
-    .from('subscriptions')
-    .select('user_id, plan, status, current_period_end')
-    .in('user_id', userIds)
-    .eq('status', 'active')
+  const roles = rolesResult.data
+  const statuses = statusesResult.data
+  const subscriptions = subscriptionsResult.data
 
   if (rolesError || statusesError || subscriptionsError) {
     return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 })
@@ -72,5 +90,13 @@ export async function GET(request: Request) {
     subscriptions: subMap.get(p.id) ?? [],
   }))
 
-  return NextResponse.json({ users })
+  const total = count ?? 0
+
+  return NextResponse.json({
+    users,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  })
 }

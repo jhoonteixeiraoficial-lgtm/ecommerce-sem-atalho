@@ -60,6 +60,7 @@ export default function Chat({ initialChannelSlug }: ChatProps = {}) {
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const profileCacheRef = useRef<Map<string, { full_name: string; avatar_url: string }>>(new Map());
   const [composer] = useState(createChannelComposer);
   const [syncGenerations] = useState(createSyncGeneration);
   const [supabase] = useState(() => createClient());
@@ -211,11 +212,19 @@ export default function Chat({ initialChannelSlug }: ChatProps = {}) {
             return;
           }
 
-          const { data: profile } = await supabase
-            .from('community_profiles')
-            .select('full_name, avatar_url')
-            .eq('id', payload.new.user_id)
-            .single();
+          const userId = payload.new.user_id as string;
+          let profileData = profileCacheRef.current.get(userId);
+          if (!profileData) {
+            const { data: profile } = await supabase
+              .from('community_profiles')
+              .select('full_name, avatar_url')
+              .eq('id', userId)
+              .single();
+            if (profile) {
+              profileData = profile;
+              profileCacheRef.current.set(userId, profile);
+            }
+          }
 
           if (!run.isCurrent() || payload.new.channel_id !== channelId) return;
 
@@ -227,7 +236,7 @@ export default function Chat({ initialChannelSlug }: ChatProps = {}) {
             is_edited: payload.new.is_edited as boolean,
             edited_at: payload.new.edited_at as string | null,
             created_at: payload.new.created_at as string,
-            profiles: profile || { full_name: 'Usuário', avatar_url: '' }
+            profiles: profileData || { full_name: 'Usuário', avatar_url: '' }
           };
 
           setMessages((current) => mergeChronological(current, [newMessage]));
@@ -256,6 +265,7 @@ export default function Chat({ initialChannelSlug }: ChatProps = {}) {
       snapshots.cancel();
       refresh.cancel();
       recovery.cancel();
+      profileCacheRef.current.clear();
       supabase.removeChannel(channel);
     };
   }, [selectedChannel, supabase, syncGenerations, refreshVersion]);

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Shield, Users, BarChart3, Search, Ban, ChevronDown, X } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Button from '@/components/ui/Button'
@@ -27,6 +27,10 @@ export default function AdminUsersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [total, setTotal] = useState(0)
   const [roleChangeConfirm, setRoleChangeConfirm] = useState<{ userId: string; newRole: string } | null>(null)
   const [banConfirm, setBanConfirm] = useState<{ userId: string; userName: string } | null>(null)
   const [banReason, setBanReason] = useState('')
@@ -37,12 +41,28 @@ export default function AdminUsersPage() {
   const router = useRouter()
   const [supabase] = useState(() => createClient())
 
-  const checkAdminAndFetch = async () => {
+  const debouncedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (debouncedTimerRef.current) clearTimeout(debouncedTimerRef.current)
+    debouncedTimerRef.current = setTimeout(() => {
+      setDebouncedSearch(searchTerm)
+      setPage(1)
+    }, 300)
+    return () => {
+      if (debouncedTimerRef.current) clearTimeout(debouncedTimerRef.current)
+    }
+  }, [searchTerm])
+
+  const fetchUsers = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { router.push('/login'); return }
 
     try {
-      const res = await fetch('/api/admin/users')
+      const params = new URLSearchParams({ page: String(page), limit: '50' })
+      if (debouncedSearch) params.set('search', debouncedSearch)
+
+      const res = await fetch(`/api/admin/users?${params}`)
       if (res.status === 401) { router.push('/login'); return }
       if (res.status === 403) { router.push('/membros/dashboard'); return }
       if (!res.ok) {
@@ -59,17 +79,17 @@ export default function AdminUsersPage() {
       }
       const data = await res.json()
       setUsers(data.users || [])
+      setTotalPages(data.totalPages || 1)
+      setTotal(data.total || 0)
     } catch {
       setError('Erro ao carregar dados')
     }
     setLoading(false)
-  }
+  }, [supabase, router, page, debouncedSearch])
 
   useEffect(() => {
-    // Initial client-side load intentionally populates local page state.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    checkAdminAndFetch()
-  }, [])
+    fetchUsers()
+  }, [fetchUsers])
 
   const handleRoleChange = async (userId: string, newRole: string) => {
     const res = await fetch(`/api/admin/users/${userId}`, {
@@ -157,11 +177,6 @@ export default function AdminUsersPage() {
     }
   }
 
-  const filteredUsers = users.filter(user =>
-    user.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email?.toLowerCase().includes(searchTerm.toLowerCase())
-  )
-
   if (loading) {
     return <div className="p-6 text-text-muted">Carregando...</div>
   }
@@ -169,9 +184,6 @@ export default function AdminUsersPage() {
   if (error) {
     return <div className="p-6 text-error">{error}</div>
   }
-
-  const activeCount = users.filter(u => u.subscriptions?.some(s => s.status === 'active')).length
-  const bannedCount = users.filter(u => u.is_banned).length
 
   return (
     <div className="space-y-6">
@@ -183,17 +195,17 @@ export default function AdminUsersPage() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-5 rounded-xl bg-surface border border-border-subtle text-center">
           <Users className="w-5 h-5 text-accent mx-auto mb-2" />
-          <div className="text-2xl font-semibold text-text-primary">{users.length}</div>
+          <div className="text-2xl font-semibold text-text-primary">{total}</div>
           <div className="text-xs text-text-muted">Total de usuarios</div>
         </div>
         <div className="p-5 rounded-xl bg-surface border border-border-subtle text-center">
           <BarChart3 className="w-5 h-5 text-success mx-auto mb-2" />
-          <div className="text-2xl font-semibold text-success">{activeCount}</div>
+          <div className="text-2xl font-semibold text-success">-</div>
           <div className="text-xs text-text-muted">Assinantes ativos</div>
         </div>
         <div className="p-5 rounded-xl bg-surface border border-border-subtle text-center">
           <Ban className="w-5 h-5 text-error mx-auto mb-2" />
-          <div className="text-2xl font-semibold text-error">{bannedCount}</div>
+          <div className="text-2xl font-semibold text-error">-</div>
           <div className="text-xs text-text-muted">Suspensos</div>
         </div>
       </div>
@@ -212,12 +224,12 @@ export default function AdminUsersPage() {
       <div className="rounded-xl bg-surface border border-border-subtle overflow-hidden">
         <div className="p-4 border-b border-border-subtle">
           <h3 className="text-sm font-medium text-text-primary">
-            {filteredUsers.length} usuario{filteredUsers.length !== 1 ? 's' : ''}
+            {users.length} usuario{users.length !== 1 ? 's' : ''} (página {page} de {totalPages}, {total} total)
           </h3>
         </div>
         <div className="divide-y divide-border-subtle">
-          {filteredUsers.map((user) => (
-            <div key={user.id} className="p-4 flex flex-wrap items-center gap-3 hover:bg-surface-raised transition-colors">
+          {users.map((user) => (
+            <div key={user.id} className="p-4 flex items-center gap-4 hover:bg-surface-raised transition-colors">
               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${
                 user.is_banned ? 'bg-error/10 text-error' : 'bg-accent/10 text-accent'
               }`}>
@@ -357,6 +369,50 @@ export default function AdminUsersPage() {
           ))}
         </div>
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+          >
+            Anterior
+          </Button>
+          {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+            let pageNum: number
+            if (totalPages <= 5) {
+              pageNum = i + 1
+            } else if (page <= 3) {
+              pageNum = i + 1
+            } else if (page >= totalPages - 2) {
+              pageNum = totalPages - 4 + i
+            } else {
+              pageNum = page - 2 + i
+            }
+            return (
+              <Button
+                key={pageNum}
+                variant={pageNum === page ? 'primary' : 'ghost'}
+                size="sm"
+                onClick={() => setPage(pageNum)}
+                className={pageNum === page ? 'bg-accent' : ''}
+              >
+                {pageNum}
+              </Button>
+            )
+          })}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+          >
+            Próximo
+          </Button>
+        </div>
+      )}
 
       {banConfirm && (
         <div className="fixed inset-0 bg-bg/80 flex items-center justify-center p-4 z-50">

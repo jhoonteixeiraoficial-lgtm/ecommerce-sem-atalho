@@ -97,9 +97,10 @@ export default function HomePage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const supabase = createClient()
+      try {
+        const supabase = createClient()
 
-      const { data: { user: authUser } } = await supabase.auth.getUser()
+        const { data: { user: authUser } } = await supabase.auth.getUser()
 
       if (authUser) {
         const { data: profileData } = await supabase
@@ -108,7 +109,7 @@ export default function HomePage() {
           .eq('id', authUser.id)
           .single()
 
-        if (profileData) setProfile(profileData)
+          if (profileData) setProfile(profileData)
 
         try {
           let catalog
@@ -211,9 +212,11 @@ export default function HomePage() {
             })
           }
         }
+      } catch {
+        setError('Erro ao carregar dados. Tente novamente.')
+      } finally {
+        setLoading(false)
       }
-
-      setLoading(false)
     }
 
     fetchData()
@@ -356,6 +359,19 @@ export default function HomePage() {
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 text-accent animate-spin" />
           <p className="text-text-secondary text-sm">Carregando...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <p className="text-text-secondary text-sm">{error}</p>
+          <Button size="sm" onClick={() => { setError(null); setLoading(true); window.location.reload() }}>
+            Tentar novamente
+          </Button>
         </div>
       </div>
     )

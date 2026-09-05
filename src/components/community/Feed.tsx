@@ -87,6 +87,7 @@ export default function Feed() {
   const [expandedComments, setExpandedComments] = useState<string[]>([]);
   const [comments, setComments] = useState<Record<string, Comment[]>>({});
   const [newComment, setNewComment] = useState<Record<string, string>>({});
+  const [commentSubmitting, setCommentSubmitting] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<Record<string, Reactions>>({});
   const [editingPost, setEditingPost] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
@@ -94,6 +95,9 @@ export default function Feed() {
   const [error, setError] = useState<string | null>(null);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [supabase] = useState(() => createClient());
   const [activeCategory] = useState({ value: selectedCategory });
   const [locallySubmittedPosts] = useState(() => new Set<string>());
@@ -164,7 +168,7 @@ export default function Feed() {
     const run = feedGenerations.begin();
     const snapshots = createSnapshotCoordinator<Post[]>({
       load: async (signal) => {
-        const params = new URLSearchParams({ limit: '50' });
+        const params = new URLSearchParams({ page: String(page), limit: '50' });
         if (category !== 'all') params.set('category', category);
         const response = await fetch(`/api/community/posts?${params}`, { signal });
         const result = await response.json();
@@ -173,15 +177,21 @@ export default function Feed() {
       },
       apply: (postsSnapshot) => {
         const snapshot = normalizeFeedPosts<Post>(postsSnapshot, category);
-        const snapshotIds = new Set(snapshot.map((post) => post.id));
-        setPosts((current) => {
-          const retainedLocal = current.filter((post) => (
-            locallySubmittedPosts.has(post.id) && !snapshotIds.has(post.id)
-          ));
-          for (const id of snapshotIds) locallySubmittedPosts.delete(id);
-          return normalizeFeedPosts([...retainedLocal, ...snapshot], category);
-        });
+        if (page === 1) {
+          const snapshotIds = new Set(snapshot.map((post) => post.id));
+          setPosts((current) => {
+            const retainedLocal = current.filter((post) => (
+              locallySubmittedPosts.has(post.id) && !snapshotIds.has(post.id)
+            ));
+            for (const id of snapshotIds) locallySubmittedPosts.delete(id);
+            return normalizeFeedPosts([...retainedLocal, ...snapshot], category);
+          });
+        } else {
+          setPosts((current) => normalizeFeedPosts([...current, ...snapshot], category));
+        }
+        setHasMore(snapshot.length >= 50);
         setLoading(false);
+        setLoadingMore(false);
       },
       onError: () => {
         setError('Erro de conexão ao carregar publicações');
@@ -256,6 +266,7 @@ export default function Feed() {
     };
   }, [
     selectedCategory,
+    page,
     supabase,
     locallySubmittedPosts,
     expandedPostIds,
@@ -475,6 +486,7 @@ export default function Feed() {
     const content = newComment[postId]?.trim();
     if (!content) return;
 
+    setCommentSubmitting(prev => ({ ...prev, [postId]: true }));
     try {
       const response = await fetch('/api/community/comments', {
         method: 'POST',
@@ -508,6 +520,8 @@ export default function Feed() {
     } catch (err) {
       console.error('Add comment error:', err);
       setError('Erro de conexão ao adicionar comentário');
+    } finally {
+      setCommentSubmitting(prev => ({ ...prev, [postId]: false }));
     }
   };
 
@@ -649,6 +663,8 @@ export default function Feed() {
               setLoading(true);
               setError(null);
               setRealtimeError(null);
+              setPage(1);
+              setHasMore(true);
               expandedPostIds.clear();
               commentSnapshots.cancel();
               setExpandedComments([]);
@@ -864,7 +880,7 @@ export default function Feed() {
                     />
                     <button
                       onClick={() => addComment(post.id)}
-                      disabled={!newComment[post.id]?.trim()}
+                      disabled={!newComment[post.id]?.trim() || commentSubmitting[post.id]}
                       className="p-2 bg-accent hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors"
                     >
                       <Send className="w-3 h-3 text-white" />
@@ -874,6 +890,27 @@ export default function Feed() {
               )}
             </div>
           ))
+        )}
+        {!loading && hasMore && posts.length > 0 && (
+          <div className="flex justify-center py-4">
+            <button
+              onClick={() => {
+                setLoadingMore(true);
+                setPage((p) => p + 1);
+              }}
+              disabled={loadingMore}
+              className="px-6 py-2.5 bg-surface-raised border border-border-subtle rounded-xl text-sm font-medium text-text-secondary hover:bg-surface hover:text-text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              {loadingMore ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                  Carregando...
+                </>
+              ) : (
+                'Carregar mais'
+              )}
+            </button>
+          </div>
         )}
       </div>
     </div>
