@@ -292,13 +292,11 @@ export default function AdminAgendaPage() {
     if (!showReplayModal) return
 
     try {
-      const videoId = extractYouTubeVideoId(replayUrl)
       await mutateEvent('PUT', {
         id: showReplayModal.id,
         replay_url: replayUrl,
         replay_available: true,
         youtube_url: replayUrl,
-        youtube_video_id: videoId,
       })
     } catch {
       setError('Erro ao salvar replay')
