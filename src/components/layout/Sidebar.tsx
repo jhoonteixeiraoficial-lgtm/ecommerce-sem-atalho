@@ -30,7 +30,7 @@ const menuItems = [
   { icon: Calendar, label: 'Calendário', href: '/membros/calendario' },
   { icon: Download, label: 'Materiais', href: '/membros/materiais' },
   { icon: Bell, label: 'Atualizações', href: '/membros/atualizacoes' },
-  { icon: Sparkles, label: 'Acertive Ecom', href: '/membros/acertive-ecom' },
+  { icon: Sparkles, label: 'Assertive IA', href: '/membros/assertive-ecommerce-ia' },
   { icon: HelpCircle, label: 'Suporte', href: '/membros/suporte' },
   { icon: User, label: 'Perfil', href: '/membros/perfil' },
 ]

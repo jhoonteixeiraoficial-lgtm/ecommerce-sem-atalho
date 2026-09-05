@@ -412,7 +412,7 @@ export default function DashboardPage() {
         {[
           { icon: Download, label: 'Materiais', href: '/membros/materiais', color: 'text-blue-400' },
           { icon: Bell, label: 'Atualizações', href: '/membros/atualizacoes', color: 'text-purple-400' },
-          { icon: Sparkles, label: 'Acertive IA', href: '/membros/acertive-ecom', color: 'text-pink-400' },
+          { icon: Sparkles, label: 'Assertive IA', href: '/membros/assertive-ecommerce-ia', color: 'text-pink-400' },
           { icon: Users, label: 'Suporte', href: '/membros/suporte', color: 'text-green-400' },
         ].map((link, i) => (
           <Link key={i} href={link.href}>

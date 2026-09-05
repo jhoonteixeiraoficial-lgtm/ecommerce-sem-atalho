@@ -44,7 +44,7 @@ const obstacles = [
 
 const solutions = [
   { name: 'E-commerce Sem Atalho', desc: 'Treinamento completo para Mercado Livre. Do básico ao avançado, com método e prática.', cta: 'Conhecer o treinamento' },
-  { name: 'Acertive Ecom', desc: 'Tecnologia para auxiliar pesquisa, anúncios e decisões do vendedor.', cta: 'Ver a ferramenta' },
+  { name: 'Assertive E-commerce IA', desc: 'Tecnologia para auxiliar pesquisa, anúncios e decisões do vendedor.', cta: 'Ver a ferramenta' },
   { name: 'Comunidade E-commerce Sem Atalho', desc: 'Ambiente para troca de experiências, networking e aprendizado contínuo.', cta: 'Entrar na comunidade' },
   { name: 'Lives', desc: 'Conteúdo atualizado e aplicação prática toda semana.', cta: 'Ver agenda' },
   { name: 'Materiais', desc: 'Planilhas, checklists e recursos prontos para aplicar.', cta: 'Ver materiais' },
@@ -102,7 +102,7 @@ export default function LandingPage() {
             <a href="#ecossistema" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Ecossistema</a>
             <a href="#solucoes" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Soluções</a>
             <a href="#conteudo" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Conteúdo</a>
-            <a href="#acertive" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Acertive</a>
+            <a href="#assertive" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Assertive IA</a>
             <a href="#planos" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">Planos</a>
             <Link href="/login" className="text-sm text-text-secondary hover:text-text-primary transition-colors nav-link">
               Entrar
@@ -128,7 +128,7 @@ export default function LandingPage() {
               <a href="#ecossistema" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Ecossistema</a>
               <a href="#solucoes" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Soluções</a>
               <a href="#conteudo" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Conteúdo</a>
-              <a href="#acertive" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Acertive</a>
+              <a href="#assertive" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Assertive IA</a>
               <a href="#planos" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Planos</a>
               <Link href="/login" onClick={() => setMobileMenuOpen(false)} className="text-sm text-text-secondary hover:text-text-primary py-2">Entrar</Link>
               <Link href="/cadastro" onClick={() => setMobileMenuOpen(false)}>
@@ -238,7 +238,7 @@ export default function LandingPage() {
             </p>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px bg-border rounded-xl overflow-hidden border border-border stagger-grid">
-            {['Treinamento', 'Comunidade', 'Lives', 'Acertive Ecom', 'Materiais', 'Operação real'].map((item) => (
+            {['Treinamento', 'Comunidade', 'Lives', 'Assertive IA', 'Materiais', 'Operação real'].map((item) => (
               <div key={item} className="p-6 bg-bg text-center card-hover">
                 <span className="text-sm font-medium text-text-primary">{item}</span>
               </div>
@@ -424,8 +424,8 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Acertive Ecom */}
-      <section className="py-24 px-6 bg-surface" id="acertive" data-animate>
+      {/* Assertive E-commerce IA */}
+      <section className="py-24 px-6 bg-surface" id="assertive" data-animate>
         <div className="max-w-6xl mx-auto">
           <div className="grid lg:grid-cols-2 gap-16 items-center">
             <div>
@@ -436,11 +436,11 @@ export default function LandingPage() {
                 informação para decidir.
               </h2>
               <p className="text-text-secondary leading-relaxed mb-8">
-                O Acertive Ecom é uma ferramenta de inteligência artificial criada para auxiliar vendedores no Mercado Livre. Pesquisa de produtos, otimização de anúncios e análise de concorrência — tudo em um só lugar.
+                O Assertive E-commerce IA é uma ferramenta de inteligência artificial criada para auxiliar vendedores no Mercado Livre. Pesquisa de produtos, otimização de anúncios e análise de concorrência — tudo em um só lugar.
               </p>
               <Link href="#planos">
                 <Button variant="secondary" size="sm" className="text-xs">
-                  Conhecer o Acertive
+                  Conhecer o Assertive IA
                   <ArrowRight className="w-3 h-3 ml-2" />
                 </Button>
               </Link>
@@ -448,7 +448,7 @@ export default function LandingPage() {
             <div className="relative aspect-video bg-bg rounded-2xl overflow-hidden border border-border-subtle">
               <img
                 src="https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=800&h=450&fit=crop"
-                alt="Dashboard do Acertive Ecom"
+                alt="Dashboard do Assertive E-commerce IA"
                 className="absolute inset-0 w-full h-full object-cover"
               />
             </div>
@@ -489,9 +489,9 @@ export default function LandingPage() {
               </Link>
             </div>
 
-            {/* Acertive */}
+            {/* Assertive E-commerce IA */}
             <div className="p-8 rounded-2xl bg-surface border border-border-subtle card-hover">
-              <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">Acertive Ecom</p>
+              <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">Assertive IA</p>
               <div className="mb-8">
                 <span className="text-4xl font-semibold text-text-primary">R$ 29,90</span>
                 <span className="text-sm text-text-muted">/mês</span>
@@ -519,7 +519,7 @@ export default function LandingPage() {
                 <span className="text-sm text-text-muted">/mês</span>
               </div>
               <ul className="space-y-3 mb-8">
-                {['Tudo do Plano E-commerce Sem Atalho', 'Tudo do Acertive Ecom', 'Acesso a Todos os Módulos', 'Lives Exclusivas', 'Suporte Prioritário', 'Materiais Premium'].map((f, i) => (
+                {['Tudo do Plano E-commerce Sem Atalho', 'Tudo do Assertive IA', 'Acesso a Todos os Módulos', 'Lives Exclusivas', 'Suporte Prioritário', 'Materiais Premium'].map((f, i) => (
                   <li key={i} className="flex items-center gap-3 text-sm text-text-secondary">
                     <div className="w-1 h-1 rounded-full bg-accent flex-shrink-0" />
                     {f}
@@ -610,7 +610,7 @@ export default function LandingPage() {
               <ul className="space-y-2.5 text-sm text-text-secondary">
                 <li><a href="#conteudo" className="hover:text-text-primary transition-colors">Conteúdo</a></li>
                 <li><a href="#comunidade" className="hover:text-text-primary transition-colors">Comunidade</a></li>
-                <li><a href="#acertive" className="hover:text-text-primary transition-colors">Acertive</a></li>
+                <li><a href="#assertive" className="hover:text-text-primary transition-colors">Assertive IA</a></li>
                 <li><a href="#planos" className="hover:text-text-primary transition-colors">Planos</a></li>
               </ul>
             </div>

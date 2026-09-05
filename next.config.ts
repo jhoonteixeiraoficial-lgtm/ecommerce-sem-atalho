@@ -17,6 +17,11 @@ const nextConfig: NextConfig = {
       destination: '/onboarding',
       permanent: true,
     },
+    {
+      source: '/membros/acertive-ecom',
+      destination: '/membros/assertive-ecommerce-ia',
+      permanent: true,
+    },
   ],
   headers: async () => [
     {

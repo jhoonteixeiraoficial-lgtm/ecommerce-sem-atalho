@@ -137,7 +137,7 @@ export default function VSLPage() {
             {[
               { name: 'Carlos M.', text: 'Em 3 meses já estava faturando R$ 45k/mês. O método funciona.', metric: 'R$ 45k/mês' },
               { name: 'Ana B.', text: 'Concilo com a maternidade e tenho meses muito bons. Recomendo.', metric: 'R$ 25k/mês' },
-              { name: 'Pedro O.', text: 'O Acertive Ecom mudou meus anúncios. Conversão subiu 180%.', metric: '+180%' },
+              { name: 'Pedro O.', text: 'O Assertive E-commerce IA mudou meus anúncios. Conversão subiu 180%.', metric: '+180%' },
             ].map((t, i) => (
               <div key={i} className="p-6 rounded-xl bg-bg border border-border-subtle text-left">
                 <div className="flex items-center gap-0.5 mb-3">

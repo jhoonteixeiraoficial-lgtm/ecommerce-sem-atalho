@@ -414,7 +414,7 @@ export default function AdminUsersPage() {
               className="w-full bg-surface border border-border-subtle rounded-lg px-3.5 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent"
             >
               <option value="comunidade">Comunidade</option>
-              <option value="acertive">Acertive</option>
+              <option value="acertive">Assertive IA</option>
               <option value="combo">Combo</option>
             </select>
             <div className="flex items-center gap-2 justify-end">

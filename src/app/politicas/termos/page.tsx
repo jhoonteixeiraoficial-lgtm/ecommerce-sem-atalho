@@ -17,7 +17,7 @@ export default function TermosPage() {
           <p>
             O E-commerce Sem Atalho é uma plataforma de ensino online que oferece cursos, materiais, comunidade e ferramentas
             de inteligência artificial para auxiliar pessoas a vender no Mercado Livre. O serviço inclui
-            acesso a módulos de aulas, lives, comunidade, suporte e o aplicativo Acertive Ecom.
+            acesso a módulos de aulas, lives, comunidade, suporte e o aplicativo Assertive E-commerce IA.
           </p>
 
           <h2 className="text-xl font-bold text-text-primary mt-8">3. Cadastro e Conta</h2>
