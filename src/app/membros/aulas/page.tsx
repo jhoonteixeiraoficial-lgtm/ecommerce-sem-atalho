@@ -85,7 +85,10 @@ export default function AulasPage() {
 
             return (
               <Link key={module.id} href={`/membros/aulas/${module.slug}`}>
-                <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-border transition-colors cursor-pointer h-full">
+                <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors cursor-pointer h-full">
+                  <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
+                    <BookOpen className="w-5 h-5 text-accent" />
+                  </div>
                   <div className="text-[10px] text-accent font-medium uppercase tracking-wider mb-2">
                     Módulo {(index + 1).toString().padStart(2, '0')}
                   </div>

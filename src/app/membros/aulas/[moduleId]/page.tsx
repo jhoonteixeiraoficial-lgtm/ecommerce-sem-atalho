@@ -96,6 +96,7 @@ export default function ModuloPage() {
   const totalLessons = lessons.length
   const completedCount = lessons.filter((lesson) => lesson.progress?.completed).length
   const progressPercentage = totalLessons > 0 ? Math.round((completedCount / totalLessons) * 100) : 0
+  const nextLesson = lessons.find((lesson) => !lesson.progress?.completed)
 
   return (
     <div className="space-y-6">
@@ -122,6 +123,20 @@ export default function ModuloPage() {
           <div className="text-[10px] text-text-muted">Progresso</div>
         </div>
       </div>
+
+      {nextLesson && completedCount > 0 && (
+        <Link href={`/membros/aulas/${moduleId}/${nextLesson.slug}`}>
+          <div className="p-4 rounded-xl bg-accent/10 border border-accent/20 flex items-center gap-3 hover:border-accent/40 transition-colors">
+            <div className="w-9 h-9 rounded-lg bg-accent/15 flex items-center justify-center flex-shrink-0">
+              <Play className="w-4 h-4 text-accent" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] text-accent font-medium uppercase tracking-wider">Continuar assistindo</div>
+              <div className="text-sm text-text-primary truncate">{nextLesson.title}</div>
+            </div>
+          </div>
+        </Link>
+      )}
 
       <div className="space-y-2">
         {lessons.length === 0 ? (
