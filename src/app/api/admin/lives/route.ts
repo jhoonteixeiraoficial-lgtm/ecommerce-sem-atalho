@@ -75,6 +75,7 @@ const updateLiveSchema = z.object({
   duration_minutes: durationSchema.optional(),
   is_live: z.boolean().optional(),
   replay_url: replayUrlSchema.optional(),
+  replay_available: z.boolean().optional(),
   watch_url: watchUrlSchema.optional(),
   type: eventTypeSchema.optional(),
   status: eventStatusSchema.optional(),
@@ -85,7 +86,7 @@ const updateLiveSchema = z.object({
   { message: 'At least one update field is required' },
 )
 
-const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, created_at, type, status, youtube_url, youtube_video_id, thumbnail_url'
+const LIVE_COLUMNS = 'id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, created_at, type, status, youtube_url, youtube_video_id, thumbnail_url, replay_available'
 const CREDENTIAL_COLUMNS = 'live_id, rtmp_url, stream_key'
 
 function rateLimit(request: Request, operation: string) {

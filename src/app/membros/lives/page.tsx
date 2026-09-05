@@ -17,6 +17,7 @@ interface Live {
   viewer_count: number
   type: string
   status: string
+  replay_available: boolean
 }
 
 export default function LivesPage() {
@@ -24,24 +25,34 @@ export default function LivesPage() {
   const [loading, setLoading] = useState(true)
   const [supabase] = useState(() => createClient())
 
-  useEffect(() => {
-    const fetchLives = async () => {
-      const { data, error } = await supabase
-        .from('lives')
-        .select('id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, type, status')
-        .eq('type', 'live')
-        .order('scheduled_at', { ascending: false })
+  const fetchLives = async () => {
+    const { data, error } = await supabase
+      .from('lives')
+      .select('id, title, description, scheduled_at, duration_minutes, replay_url, watch_url, is_live, viewer_count, type, status, replay_available')
+      .eq('type', 'live')
+      .order('scheduled_at', { ascending: false })
 
-      if (!error) {
-        setLives(data || [])
-      }
-      setLoading(false)
+    if (!error) {
+      setLives(data || [])
     }
+    setLoading(false)
+  }
 
+  useEffect(() => {
     void fetchLives()
     const interval = setInterval(fetchLives, 30000)
     return () => clearInterval(interval)
   }, [supabase])
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchLives()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
 
   const now = new Date()
 
@@ -61,7 +72,7 @@ export default function LivesPage() {
   })
   const pastLives = lives.filter(l => {
     const es = effectiveStatus(l)
-    return es === 'encerrada' && l.replay_url
+    return es === 'encerrada' && l.replay_available
   })
 
   if (loading) {

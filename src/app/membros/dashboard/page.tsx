@@ -274,6 +274,63 @@ export default function HomePage() {
   }, [])
 
   useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        const supabase = createClient()
+        const nowDate = new Date()
+        const now = nowDate.toISOString()
+
+        const refresh = async () => {
+          const { data: liveNowData } = await supabase
+            .from('lives')
+            .select('id, title, scheduled_at, type, status')
+            .eq('type', 'live')
+            .not('status', 'in', '(encerrada,cancelada)')
+            .order('scheduled_at', { ascending: false })
+            .limit(5)
+
+          for (const row of liveNowData ?? []) {
+            const isExplicitlyLive = row.status === 'ao_vivo'
+            const isScheduledAndPast = row.status === 'agendada' && new Date(row.scheduled_at) <= nowDate
+            if (isExplicitlyLive || isScheduledAndPast) {
+              setNextEvent({
+                id: row.id,
+                title: row.title,
+                scheduled_at: row.scheduled_at,
+                type: row.type,
+                status: row.status,
+                effectiveStatus: 'ao_vivo',
+              })
+              return
+            }
+          }
+
+          const { data: nextEventData } = await supabase
+            .from('lives')
+            .select('id, title, scheduled_at, type, status')
+            .gt('scheduled_at', now)
+            .not('status', 'in', '(encerrada,cancelada)')
+            .order('scheduled_at', { ascending: true })
+            .limit(1)
+            .single()
+
+          if (nextEventData) {
+            setNextEvent({
+              ...nextEventData,
+              effectiveStatus: nextEventData.status as NextEvent['effectiveStatus'],
+            })
+          } else {
+            setNextEvent(null)
+          }
+        }
+        refresh()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
+
+  useEffect(() => {
     const fetchPosts = async () => {
       try {
         const res = await fetch('/api/community/posts?limit=4')

@@ -27,6 +27,7 @@ interface AgendaEvent {
   status: EventStatus
   youtube_url: string
   youtube_video_id: string
+  replay_available: boolean
 }
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
@@ -93,22 +94,31 @@ export default function CalendarioPage() {
   const [selectedDay, setSelectedDay] = useState<Date | null>(null)
   const [showDayEvents, setShowDayEvents] = useState(false)
 
-  useEffect(() => {
+  const fetchEvents = async () => {
     const supabase = createClient()
-
-    const fetchEvents = async () => {
       const { data, error } = await supabase
         .from('lives')
-        .select('id, title, description, scheduled_at, duration_minutes, replay_url, is_live, type, status, youtube_url, youtube_video_id')
+        .select('id, title, description, scheduled_at, duration_minutes, replay_url, is_live, type, status, youtube_url, youtube_video_id, replay_available')
         .order('scheduled_at', { ascending: false })
 
-      if (!error) {
-        setEvents(data || [])
-      }
-      setLoading(false)
+    if (!error) {
+      setEvents(data || [])
     }
+    setLoading(false)
+  }
 
+  useEffect(() => {
     void fetchEvents()
+  }, [])
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchEvents()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [])
 
   const now = new Date()
