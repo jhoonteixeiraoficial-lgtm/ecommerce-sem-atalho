@@ -44,7 +44,12 @@ const nextConfig: NextConfig = {
         },
         {
           key: 'Content-Security-Policy',
-          value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://*.supabase.co; frame-src 'self' https://player.twitch.tv https://www.youtube.com https://*.supabase.co;",
+          // connect-src explicitly lists both https and wss schemes for
+          // Supabase: Chromium treats an https source as also permitting the
+          // same-host wss upgrade, but Safari/WebKit does not always apply
+          // that equivalence, which can silently block the Realtime
+          // WebSocket (used only by the community chat/feed) on iOS.
+          value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co; frame-src 'self' https://player.twitch.tv https://www.youtube.com https://*.supabase.co;",
         },
         {
           key: 'Strict-Transport-Security',
