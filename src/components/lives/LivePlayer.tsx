@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Play, ExternalLink } from 'lucide-react'
+import { Play } from 'lucide-react'
+import { resolvePlayerUrl } from '@/lib/learning/video'
 
 interface LivePlayerProps {
   streamUrl?: string
@@ -69,7 +70,7 @@ export default function LivePlayer({ streamUrl, isLive, title, scheduledAt, repl
         <div className="relative">
           <div className="aspect-video bg-black">
             <iframe
-              src={streamUrl}
+              src={resolvePlayerUrl(streamUrl)}
               className="w-full h-full"
               allowFullScreen
               allow="autoplay; fullscreen"
@@ -109,7 +110,7 @@ export default function LivePlayer({ streamUrl, isLive, title, scheduledAt, repl
       <div className="rounded-xl overflow-hidden border border-border-subtle bg-surface">
         <div className="aspect-video bg-black relative group">
           <iframe
-            src={replayUrl}
+            src={resolvePlayerUrl(replayUrl)}
             className="w-full h-full"
             allowFullScreen
           />

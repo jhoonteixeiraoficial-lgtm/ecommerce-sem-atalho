@@ -1,9 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Calendar, Clock, Video, ExternalLink } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Calendar, Clock, Video, Play, ChevronLeft, ChevronRight } from 'lucide-react'
+import Link from 'next/link'
 import Button from '@/components/ui/Button'
 import { createClient } from '@/lib/supabase/client'
+
+const WEEKDAY_LABELS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S']
+
+function dateKey(d: Date) {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
 
 interface Live {
   id: string
@@ -40,6 +47,10 @@ function downloadIcs(title: string, scheduledAt: string) {
 export default function CalendarioPage() {
   const [lives, setLives] = useState<Live[]>([])
   const [loading, setLoading] = useState(true)
+  const [viewMonth, setViewMonth] = useState(() => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth(), 1)
+  })
 
   useEffect(() => {
     const supabase = createClient()
@@ -63,6 +74,40 @@ export default function CalendarioPage() {
   const upcomingLives = lives.filter(l => new Date(l.scheduled_at) > now && !l.is_live && !l.replay_url)
   const pastLives = lives.filter(l => l.replay_url && !l.is_live)
 
+  const eventsByDay = useMemo(() => {
+    const map = new Map<string, Live[]>()
+    for (const live of lives) {
+      const key = dateKey(new Date(live.scheduled_at))
+      const list = map.get(key) ?? []
+      list.push(live)
+      map.set(key, list)
+    }
+    return map
+  }, [lives])
+
+  const calendarDays = useMemo(() => {
+    const year = viewMonth.getFullYear()
+    const month = viewMonth.getMonth()
+    const firstDay = new Date(year, month, 1)
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const leading = firstDay.getDay()
+    const cells: Array<{ date: Date; isCurrentMonth: boolean }> = []
+    for (let i = 0; i < leading; i++) {
+      cells.push({ date: new Date(year, month, i - leading + 1), isCurrentMonth: false })
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      cells.push({ date: new Date(year, month, d), isCurrentMonth: true })
+    }
+    while (cells.length % 7 !== 0) {
+      const last = cells[cells.length - 1].date
+      cells.push({ date: new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1), isCurrentMonth: false })
+    }
+    return cells
+  }, [viewMonth])
+
+  const today = new Date()
+  const monthLabel = viewMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
+
   if (loading) {
     return <div className="p-6 text-text-muted">Carregando...</div>
   }
@@ -72,6 +117,52 @@ export default function CalendarioPage() {
       <div>
         <h1 className="text-2xl font-semibold text-text-primary tracking-tight">Calendário</h1>
         <p className="text-sm text-text-muted mt-1">Próximas lives e eventos do E-commerce Sem Atalho.</p>
+      </div>
+
+      {/* Month grid */}
+      <div className="p-4 rounded-xl bg-surface border border-border-subtle">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-medium text-text-primary capitalize">{monthLabel}</h2>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1))}
+              className="p-1.5 rounded-lg text-text-muted hover:text-text-secondary hover:bg-surface-raised transition-colors"
+              aria-label="Mês anterior"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1))}
+              className="p-1.5 rounded-lg text-text-muted hover:text-text-secondary hover:bg-surface-raised transition-colors"
+              aria-label="Próximo mês"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-center">
+          {WEEKDAY_LABELS.map((label, i) => (
+            <div key={i} className="text-[10px] text-text-muted font-medium py-1">{label}</div>
+          ))}
+          {calendarDays.map(({ date, isCurrentMonth }, i) => {
+            const key = dateKey(date)
+            const dayEvents = eventsByDay.get(key) ?? []
+            const isToday = dateKey(date) === dateKey(today)
+            return (
+              <div
+                key={i}
+                className={`aspect-square flex flex-col items-center justify-center rounded-lg text-xs ${
+                  !isCurrentMonth ? 'text-text-muted/40' : isToday ? 'bg-accent/15 text-accent font-medium' : 'text-text-secondary'
+                }`}
+              >
+                <span>{date.getDate()}</span>
+                {dayEvents.length > 0 && isCurrentMonth && (
+                  <span className="w-1 h-1 rounded-full bg-accent mt-0.5" />
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       {/* Upcoming */}
@@ -124,15 +215,19 @@ export default function CalendarioPage() {
                     {new Date(live.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} · {formatDuration(live.duration_minutes)}
                   </p>
                 </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!live.replay_url}
-                  onClick={() => live.replay_url && window.open(live.replay_url, '_blank')}
-                >
-                  Assistir
-                  <ExternalLink className="w-3 h-3 ml-1" />
-                </Button>
+                {live.replay_url ? (
+                  <Link href="/membros/lives">
+                    <Button size="sm" variant="ghost">
+                      Assistir
+                      <Play className="w-3 h-3 ml-1" />
+                    </Button>
+                  </Link>
+                ) : (
+                  <Button size="sm" variant="ghost" disabled>
+                    Assistir
+                    <Play className="w-3 h-3 ml-1" />
+                  </Button>
+                )}
               </div>
             ))}
           </div>
