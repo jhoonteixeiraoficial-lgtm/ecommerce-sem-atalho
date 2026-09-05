@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import LivePlayer from '@/components/lives/LivePlayer'
+import Chat from '@/components/community/Chat'
 
 interface Live {
   id: string
@@ -62,14 +63,20 @@ export default function LivesPage() {
             <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
             <h2 className="text-lg font-semibold text-text-primary tracking-tight">Ao Vivo Agora</h2>
           </div>
-          <div className="space-y-4">
+          <div className="space-y-6">
             {activeLives.map(live => (
-              <LivePlayer
-                key={live.id}
-                isLive={true}
-                title={live.title}
-                streamUrl={live.watch_url || undefined}
-              />
+              <div key={live.id} className="grid lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-2">
+                  <LivePlayer
+                    isLive={true}
+                    title={live.title}
+                    streamUrl={live.watch_url || undefined}
+                  />
+                </div>
+                <div className="h-[420px] lg:h-auto rounded-xl border border-border-subtle overflow-hidden">
+                  <Chat initialChannelSlug="ao-vivo" />
+                </div>
+              </div>
             ))}
           </div>
         </div>

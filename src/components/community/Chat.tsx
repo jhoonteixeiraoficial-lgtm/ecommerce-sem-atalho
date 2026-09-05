@@ -43,7 +43,12 @@ interface UserProfile {
   avatar_url: string;
 }
 
-export default function Chat() {
+interface ChatProps {
+  /** When provided, auto-selects this channel (by slug) once channels load, skipping the channel list. */
+  initialChannelSlug?: string
+}
+
+export default function Chat({ initialChannelSlug }: ChatProps = {}) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -122,6 +127,19 @@ export default function Chat() {
 
     fetchChannels();
   }, [supabase]);
+
+  useEffect(() => {
+    if (!initialChannelSlug || selectedChannel || channels.length === 0) return
+    const target = channels.find((c) => c.slug === initialChannelSlug)
+    if (!target) return
+    composer.setActiveChannel(target.id)
+    setMessages([])
+    setLoading(true)
+    setError(null)
+    setRealtimeError(null)
+    setSelectedChannel(target)
+    setNewMessage(composer.getDraft(target.id))
+  }, [initialChannelSlug, channels, selectedChannel, composer])
 
   useEffect(() => {
     if (!selectedChannel) return;
