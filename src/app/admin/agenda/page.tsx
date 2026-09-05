@@ -155,7 +155,6 @@ export default function AdminAgendaPage() {
     youtube_url: '',
     thumbnail_url: '',
   })
-  const [formStatus, setFormStatus] = useState<EventStatus>('agendada')
 
   useEffect(() => {
     loadEvents()
@@ -209,7 +208,7 @@ export default function AdminAgendaPage() {
         scheduled_at: scheduledAt,
         duration_minutes: form.duration_minutes,
         type: form.type,
-        status: formStatus,
+        status: form.status,
         youtube_url: form.youtube_url,
         youtube_video_id: videoId,
         thumbnail_url: form.thumbnail_url,
@@ -240,14 +239,12 @@ export default function AdminAgendaPage() {
       youtube_url: '',
       thumbnail_url: '',
     })
-    setFormStatus('agendada')
     setEditingEvent(null)
     setShowForm(false)
   }
 
   const handleEdit = (event: AgendaEvent) => {
     setEditingEvent(event)
-    setFormStatus(event.status)
     setForm({
       title: event.title,
       description: event.description,
