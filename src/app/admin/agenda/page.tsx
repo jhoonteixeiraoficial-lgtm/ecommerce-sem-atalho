@@ -24,34 +24,6 @@ import {
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 
-const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/
-
-function extractYouTubeVideoId(url: string): string {
-  if (!url) return ''
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return ''
-  }
-  const host = parsed.hostname.replace(/^www\./, '').toLowerCase()
-  if (host === 'youtu.be') {
-    const id = parsed.pathname.slice(1).split('/')[0]
-    return YOUTUBE_ID_RE.test(id) ? id : ''
-  }
-  if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtube-nocookie.com') {
-    if (parsed.pathname === '/watch') {
-      const id = parsed.searchParams.get('v')
-      return id && YOUTUBE_ID_RE.test(id) ? id : ''
-    }
-    const embedMatch = parsed.pathname.match(/^\/embed\/([a-zA-Z0-9_-]{11})/)
-    if (embedMatch) return embedMatch[1]
-    const shortsMatch = parsed.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]{11})/)
-    if (shortsMatch) return shortsMatch[1]
-  }
-  return ''
-}
-
 type EventType = 'live' | 'conteudo' | 'aula' | 'material' | 'atualizacao' | 'evento_especial'
 type EventStatus = 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada' | 'replay'
 
