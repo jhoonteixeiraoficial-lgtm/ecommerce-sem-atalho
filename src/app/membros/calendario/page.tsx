@@ -112,11 +112,23 @@ export default function CalendarioPage() {
   }, [])
 
   const now = new Date()
+
+  function computeEffectiveStatus(e: AgendaEvent): AgendaEvent['status'] {
+    if (e.status === 'cancelada') return 'cancelada'
+    if (e.status === 'encerrada') return 'encerrada'
+    if (e.status === 'ao_vivo') return 'ao_vivo'
+    if (e.status === 'agendada' && new Date(e.scheduled_at) <= now) return 'ao_vivo'
+    return 'agendada'
+  }
+
   const upcomingEvents = events.filter(e => {
-    const d = new Date(e.scheduled_at)
-    return d > now && e.status !== 'ao_vivo' && e.status !== 'encerrada' && e.status !== 'cancelada' && !e.replay_url
+    const es = computeEffectiveStatus(e)
+    return es === 'agendada'
   })
-  const pastEvents = events.filter(e => e.replay_url && e.status !== 'ao_vivo')
+  const pastEvents = events.filter(e => {
+    const es = computeEffectiveStatus(e)
+    return es === 'encerrada' && e.replay_url
+  })
 
   const eventsByDay = useMemo(() => {
     const map = new Map<string, AgendaEvent[]>()
@@ -249,13 +261,14 @@ export default function CalendarioPage() {
             <div className="space-y-3">
               {(eventsByDay.get(dateKey(selectedDay)) ?? []).map(event => {
                 const EventIcon = EVENT_TYPE_ICONS[event.type]
+                const effStatus = computeEffectiveStatus(event)
                 return (
                   <div key={event.id} className="p-3 rounded-lg bg-bg border border-border-subtle">
                     <div className="flex items-center gap-2 mb-1">
                       <EventIcon className="w-4 h-4 text-accent" />
                       <span className="text-xs font-medium text-accent">{EVENT_TYPE_LABELS[event.type]}</span>
-                      <span className={`text-[10px] font-medium ${EVENT_STATUS_COLORS[event.status]}`}>
-                        {EVENT_STATUS_LABELS[event.status]}
+                      <span className={`text-[10px] font-medium ${EVENT_STATUS_COLORS[effStatus]}`}>
+                        {EVENT_STATUS_LABELS[effStatus]}
                       </span>
                     </div>
                     <h4 className="text-sm font-medium text-text-primary">{event.title}</h4>

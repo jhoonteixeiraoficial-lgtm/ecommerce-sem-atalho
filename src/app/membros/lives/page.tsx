@@ -44,12 +44,25 @@ export default function LivesPage() {
   }, [supabase])
 
   const now = new Date()
-  const activeLives = lives.filter(l => l.status === 'ao_vivo' || l.is_live)
+
+  function effectiveStatus(live: Live): 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada' {
+    if (live.status === 'cancelada') return 'cancelada'
+    if (live.status === 'encerrada') return 'encerrada'
+    if (live.status === 'ao_vivo') return 'ao_vivo'
+    // Time-based: AGENDADA + scheduled_at <= now → effectively AO VIVO
+    if (live.status === 'agendada' && new Date(live.scheduled_at) <= now) return 'ao_vivo'
+    return 'agendada'
+  }
+
+  const activeLives = lives.filter(l => effectiveStatus(l) === 'ao_vivo')
   const upcomingLives = lives.filter(l => {
-    const d = new Date(l.scheduled_at)
-    return d > now && l.status !== 'ao_vivo' && l.status !== 'encerrada' && l.status !== 'cancelada' && !l.replay_url
+    const es = effectiveStatus(l)
+    return es === 'agendada'
   })
-  const pastLives = lives.filter(l => l.replay_url && l.status !== 'ao_vivo')
+  const pastLives = lives.filter(l => {
+    const es = effectiveStatus(l)
+    return es === 'encerrada' && l.replay_url
+  })
 
   if (loading) {
     return <div className="p-6 text-text-muted">Carregando...</div>

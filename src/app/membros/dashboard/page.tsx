@@ -31,6 +31,8 @@ interface NextEvent {
   title: string
   scheduled_at: string
   type: EventType
+  status: string
+  effectiveStatus: 'agendada' | 'ao_vivo' | 'encerrada' | 'cancelada'
 }
 
 const EVENT_TYPE_LABELS: Record<EventType, string> = {
@@ -161,18 +163,53 @@ export default function HomePage() {
         }
 
         const now = new Date().toISOString()
-        const { data: nextEventData } = await supabase
-          .from('lives')
-          .select('id, title, scheduled_at, type')
-          .gt('scheduled_at', now)
-          .not('status', 'in', '("ao_vivo","encerrada","cancelada")')
-          .is('replay_url', null)
-          .order('scheduled_at', { ascending: true })
-          .limit(1)
-          .single()
 
-        if (nextEventData) {
-          setNextEvent(nextEventData)
+        // First: check if there's a live currently AO VIVO (explicit or time-based)
+        const { data: liveNowData } = await supabase
+          .from('lives')
+          .select('id, title, scheduled_at, type, status')
+          .eq('type', 'live')
+          .not('status', 'in', '(encerrada,cancelada)')
+          .order('scheduled_at', { ascending: false })
+          .limit(5)
+
+        let liveNow: NextEvent | null = null
+        const nowDate = new Date()
+        for (const row of liveNowData ?? []) {
+          const isExplicitlyLive = row.status === 'ao_vivo'
+          const isScheduledAndPast = row.status === 'agendada' && new Date(row.scheduled_at) <= nowDate
+          if (isExplicitlyLive || isScheduledAndPast) {
+            liveNow = {
+              id: row.id,
+              title: row.title,
+              scheduled_at: row.scheduled_at,
+              type: row.type,
+              status: row.status,
+              effectiveStatus: 'ao_vivo',
+            }
+            break
+          }
+        }
+
+        if (liveNow) {
+          setNextEvent(liveNow)
+        } else {
+          // No live currently active — find next upcoming event of any type
+          const { data: nextEventData } = await supabase
+            .from('lives')
+            .select('id, title, scheduled_at, type, status')
+            .gt('scheduled_at', now)
+            .not('status', 'in', '(encerrada,cancelada)')
+            .order('scheduled_at', { ascending: true })
+            .limit(1)
+            .single()
+
+          if (nextEventData) {
+            setNextEvent({
+              ...nextEventData,
+              effectiveStatus: nextEventData.status as NextEvent['effectiveStatus'],
+            })
+          }
         }
       }
 
@@ -180,6 +217,60 @@ export default function HomePage() {
     }
 
     fetchData()
+
+    // Light refresh: recalculate effectiveStatus every 60s
+    // so a live that reaches its scheduled time shows "AO VIVO" without manual refresh
+    const refreshTimer = setInterval(async () => {
+      const supabase = createClient()
+      const nowDate = new Date()
+
+      // Check for live currently active
+      const { data: liveNowData } = await supabase
+        .from('lives')
+        .select('id, title, scheduled_at, type, status')
+        .eq('type', 'live')
+        .not('status', 'in', '(encerrada,cancelada)')
+        .order('scheduled_at', { ascending: false })
+        .limit(5)
+
+      for (const row of liveNowData ?? []) {
+        const isExplicitlyLive = row.status === 'ao_vivo'
+        const isScheduledAndPast = row.status === 'agendada' && new Date(row.scheduled_at) <= nowDate
+        if (isExplicitlyLive || isScheduledAndPast) {
+          setNextEvent({
+            id: row.id,
+            title: row.title,
+            scheduled_at: row.scheduled_at,
+            type: row.type,
+            status: row.status,
+            effectiveStatus: 'ao_vivo',
+          })
+          return
+        }
+      }
+
+      // No live active — refresh next upcoming event
+      const now = nowDate.toISOString()
+      const { data: nextEventData } = await supabase
+        .from('lives')
+        .select('id, title, scheduled_at, type, status')
+        .gt('scheduled_at', now)
+        .not('status', 'in', '(encerrada,cancelada)')
+        .order('scheduled_at', { ascending: true })
+        .limit(1)
+        .single()
+
+      if (nextEventData) {
+        setNextEvent({
+          ...nextEventData,
+          effectiveStatus: nextEventData.status as NextEvent['effectiveStatus'],
+        })
+      } else {
+        setNextEvent(null)
+      }
+    }, 60_000)
+
+    return () => clearInterval(refreshTimer)
   }, [])
 
   useEffect(() => {
@@ -275,58 +366,96 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Próximo Evento */}
-      <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors">
-        <div className="flex items-start gap-3">
-          <div className="p-2 rounded-lg bg-accent/10">
-            {nextEvent ? (
-              (() => {
-                const EventIcon = EVENT_TYPE_ICONS[nextEvent.type]
-                return <EventIcon className="w-4 h-4 text-accent" />
-              })()
-            ) : (
-              <Calendar className="w-4 h-4 text-accent" />
-            )}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">
-              {nextEvent ? EVENT_TYPE_LABELS[nextEvent.type] : 'Próximo Evento'}
+      {/* Próximo Evento / AO VIVO */}
+      {nextEvent?.effectiveStatus === 'ao_vivo' ? (
+        <div className="p-5 rounded-xl bg-surface border border-red-500/30 hover:border-red-500/50 transition-colors">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-red-500/10">
+              <span className="flex items-center gap-1.5 text-red-500 text-xs font-bold">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                AO VIVO
+              </span>
             </div>
-            {nextEvent ? (
-              <>
-                <h3 className="text-sm font-medium text-text-primary">{nextEvent.title}</h3>
-                <p className="text-xs text-text-muted mt-1">
-                  {new Date(nextEvent.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
-                  {new Date(nextEvent.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                </p>
-                <div className="mt-3">
-                  <Button size="sm" variant="secondary" onClick={() => {
-                    const d = new Date(nextEvent.scheduled_at)
-                    const pad = (n: number) => String(n).padStart(2, '0')
-                    const dtStart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`
-                    const event = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextEvent.title} - E-commerce Sem Atalho\nDESCRIPTION:${EVENT_TYPE_LABELS[nextEvent.type]} do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
-                    const blob = new Blob([event], { type: 'text/calendar' })
-                    const url = URL.createObjectURL(blob)
-                    const a = document.createElement('a')
-                    a.href = url
-                    a.download = `${nextEvent.title.replace(/\s+/g, '-').toLowerCase()}.ics`
-                    a.click()
-                    URL.revokeObjectURL(url)
-                  }}>
-                    <Calendar className="w-3.5 h-3.5" />
-                    Adicionar ao calendário
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] font-medium text-red-500 uppercase tracking-wider mb-1">AO VIVO AGORA</div>
+              <h3 className="text-sm font-medium text-text-primary">{nextEvent.title}</h3>
+              <p className="text-xs text-text-muted mt-1">
+                {new Date(nextEvent.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
+                {new Date(nextEvent.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+              </p>
+              <div className="mt-3">
+                <Link href="/membros/lives">
+                  <Button size="sm">
+                    <Play className="w-3.5 h-3.5" />
+                    Assistir Agora
                   </Button>
-                </div>
-              </>
-            ) : (
-              <>
-                <h3 className="text-sm font-medium text-text-primary">Nenhum evento agendado</h3>
-                <p className="text-xs text-text-muted mt-1">Fique atento às novidades</p>
-              </>
-            )}
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-accent/30 transition-colors">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-accent/10">
+              {nextEvent ? (
+                (() => {
+                  const EventIcon = EVENT_TYPE_ICONS[nextEvent.type]
+                  return <EventIcon className="w-4 h-4 text-accent" />
+                })()
+              ) : (
+                <Calendar className="w-4 h-4 text-accent" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] font-medium text-text-muted uppercase tracking-wider mb-1">
+                {nextEvent ? EVENT_TYPE_LABELS[nextEvent.type] : 'Próximo Evento'}
+              </div>
+              {nextEvent ? (
+                <>
+                  <h3 className="text-sm font-medium text-text-primary">{nextEvent.title}</h3>
+                  <p className="text-xs text-text-muted mt-1">
+                    {new Date(nextEvent.scheduled_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })} às{' '}
+                    {new Date(nextEvent.scheduled_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                  <div className="mt-3">
+                    {nextEvent.type === 'live' ? (
+                      <Link href="/membros/lives">
+                        <Button size="sm" variant="secondary">
+                          <Play className="w-3.5 h-3.5" />
+                          Ver Detalhes
+                        </Button>
+                      </Link>
+                    ) : (
+                      <Button size="sm" variant="secondary" onClick={() => {
+                        const d = new Date(nextEvent.scheduled_at)
+                        const pad = (n: number) => String(n).padStart(2, '0')
+                        const dtStart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`
+                        const eventCal = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${dtStart}\nSUMMARY:${nextEvent.title} - E-commerce Sem Atalho\nDESCRIPTION:${EVENT_TYPE_LABELS[nextEvent.type]} do E-commerce Sem Atalho\nEND:VEVENT\nEND:VCALENDAR`
+                        const blob = new Blob([eventCal], { type: 'text/calendar' })
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `${nextEvent.title.replace(/\s+/g, '-').toLowerCase()}.ics`
+                        a.click()
+                        URL.revokeObjectURL(url)
+                      }}>
+                        <Calendar className="w-3.5 h-3.5" />
+                        Adicionar ao calendário
+                      </Button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-sm font-medium text-text-primary">Nenhum evento agendado</h3>
+                  <p className="text-xs text-text-muted mt-1">Fique atento às novidades</p>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Community feed preview */}
       <div>
