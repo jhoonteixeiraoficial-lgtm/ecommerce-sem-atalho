@@ -1,6 +1,6 @@
 'use client'
 
-import { ArrowRight, Play, Shield, Check, Clock, Lock, Award } from 'lucide-react'
+import { ArrowRight, Play, Shield, Check, Clock, Lock } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
 
@@ -45,7 +45,7 @@ export default function VSLPage() {
           </h1>
 
           <p className="text-xl text-text-secondary mb-8 max-w-2xl mx-auto">
-            Um método prático e testado que já ajudou mais de 2.000 pessoas a começarem do zero e faturarem de verdade.
+            Um método prático para começar do zero ou escalar sua operação no Mercado Livre, com método, comunidade e tecnologia.
           </p>
 
           {/* Trust signals */}
@@ -53,7 +53,6 @@ export default function VSLPage() {
             <span className="flex items-center gap-2"><Shield className="w-4 h-4 text-accent" /> 7 dias de garantia</span>
             <span className="flex items-center gap-2"><Lock className="w-4 h-4 text-accent" /> Pagamento seguro</span>
             <span className="flex items-center gap-2"><Clock className="w-4 h-4 text-accent" /> Assinatura mensal</span>
-            <span className="flex items-center gap-2"><Award className="w-4 h-4 text-accent" /> +2.000 alunos</span>
           </div>
 
           <Link href="/cadastro">
@@ -126,30 +125,22 @@ export default function VSLPage() {
         </div>
       </section>
 
-      {/* Social Proof */}
+      {/* O que você recebe */}
       <section className="py-20 px-4 bg-surface">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-3xl font-bold text-text-primary mb-12">
-            Veja o que nossos alunos dizem
+            O que você recebe dentro da plataforma
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
             {[
-              { name: 'Carlos M.', text: 'Em 3 meses já estava faturando R$ 45k/mês. O método funciona.', metric: 'R$ 45k/mês' },
-              { name: 'Ana B.', text: 'Concilo com a maternidade e tenho meses muito bons. Recomendo.', metric: 'R$ 25k/mês' },
-              { name: 'Pedro O.', text: 'O Assertive E-commerce IA mudou meus anúncios. Conversão subiu 180%.', metric: '+180%' },
+              { title: 'Formação completa', text: 'Módulos do zero ao avançado sobre Mercado Livre, com progresso salvo.' },
+              { title: 'Comunidade + IA', text: 'Chat em tempo real com outros vendedores e o Assertive E-commerce IA em desenvolvimento.' },
+              { title: 'Lives semanais', text: 'Conteúdo ao vivo toda semana, com replay disponível a qualquer momento.' },
             ].map((t, i) => (
               <div key={i} className="p-6 rounded-xl bg-bg border border-border-subtle text-left">
-                <div className="flex items-center gap-0.5 mb-3">
-                  {[...Array(5)].map((_, j) => (
-                    <span key={j} className="text-accent">★</span>
-                  ))}
-                </div>
-                <p className="text-sm text-text-secondary mb-4">&ldquo;{t.text}&rdquo;</p>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-text-primary">{t.name}</span>
-                  <span className="text-xs font-medium text-accent bg-accent/10 px-2 py-1 rounded-full">{t.metric}</span>
-                </div>
+                <h3 className="text-sm font-semibold text-text-primary mb-2">{t.title}</h3>
+                <p className="text-sm text-text-secondary">{t.text}</p>
               </div>
             ))}
           </div>

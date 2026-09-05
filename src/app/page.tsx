@@ -332,58 +332,29 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* 05 — Resultados */}
-      <section className="py-24 px-6 bg-bg" id="resultados" data-animate>
+      {/* 05 — Plataforma real */}
+      <section className="py-24 px-6 bg-bg" id="plataforma" data-animate>
         <div className="max-w-6xl mx-auto">
           <div className="max-w-2xl mb-16">
-            <p className="section-number">05 · Resultados</p>
+            <p className="section-number">05 · Plataforma</p>
             <h2 className="text-3xl sm:text-4xl font-semibold text-text-primary tracking-tight leading-tight">
               Da teoria para a
               <br />
               operação real.
             </h2>
+            <p className="text-text-secondary mt-4">
+              Tudo o que você precisa em um só lugar: formação, comunidade e tecnologia, dentro de uma plataforma própria.
+            </p>
           </div>
           <div className="grid md:grid-cols-3 gap-6">
             {[
-              {
-                name: 'Rafael Mendes',
-                store: 'Mendes Acessórios',
-                metric: 'R$ 14.200/mês',
-                time: 'Há 4 meses',
-                text: 'Comecei do zero sem saber nada de Mercado Livre. Hoje faturei mais de R$ 50 mil nos últimos 4 meses. O método não é mágica, mas funciona.',
-              },
-              {
-                name: 'Camila Ferreira',
-                store: 'Ferreira Pets',
-                metric: 'R$ 8.700/mês',
-                time: 'Há 2 meses',
-                text: 'Tinha uma loja física e queria expandir pro ML. Em 60 dias já estava faturando mais online do que na loja. O suporte da comunidade é incomparável.',
-              },
-              {
-                name: 'Thiago Oliveira',
-                store: 'Casa & Estilo',
-                metric: 'R$ 23.500/mês',
-                time: 'Há 6 meses',
-                text: 'Já tentava vender no ML sozinho e não ia pra frente. Com o método, em 3 meses dobrei meu faturamento. Agora sei exatamente o que fazer.',
-              },
-            ].map((testimonial) => (
-              <div key={testimonial.name} className="bg-surface border border-border rounded-2xl p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <img 
-                    src={`https://i.pravatar.cc/150?img=${testimonial.name === 'Rafael Mendes' ? '11' : testimonial.name === 'Camila Ferreira' ? '5' : '12'}`}
-                    alt={testimonial.name} 
-                    className="w-10 h-10 rounded-full object-cover border border-border"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">{testimonial.name}</p>
-                    <p className="text-xs text-text-muted">{testimonial.store}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="text-lg font-semibold text-accent">{testimonial.metric}</span>
-                  <span className="text-xs text-text-muted">{testimonial.time}</span>
-                </div>
-                <p className="text-sm text-text-secondary leading-relaxed">{testimonial.text}</p>
+              { title: 'Formação estruturada', desc: 'Módulos organizados do zero ao avançado, com progresso salvo e continue-assistindo.' },
+              { title: 'Comunidade ativa', desc: 'Feed, chat em tempo real e troca direta com quem está construindo a mesma jornada.' },
+              { title: 'Lives + replays', desc: 'Conteúdo ao vivo toda semana, sempre disponível depois para assistir quando quiser.' },
+            ].map((item) => (
+              <div key={item.title} className="bg-surface border border-border rounded-2xl p-6">
+                <h3 className="text-sm font-medium text-text-primary mb-2">{item.title}</h3>
+                <p className="text-sm text-text-secondary leading-relaxed">{item.desc}</p>
               </div>
             ))}
           </div>
