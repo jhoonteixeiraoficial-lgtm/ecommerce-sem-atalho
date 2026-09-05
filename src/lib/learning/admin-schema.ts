@@ -10,7 +10,8 @@ const videoUrl = z.union([
   z.literal(''),
   z.string().max(2048).url().refine((value) => value.toLowerCase().startsWith('https://')),
 ])
-const durationSeconds = z.number().int().min(0).max(86_400)
+const durationSeconds = z.number().int().min(0).max(86_400).nullable()
+const thumbnailUrl = z.string().max(2048).nullable()
 
 const courseMetadata = {
   slug,
@@ -22,10 +23,29 @@ const courseMetadata = {
 }
 
 const moduleMetadata = courseMetadata
-const lessonMetadata = {
-  ...courseMetadata,
+
+const lessonCreateMetadata = {
+  slug: slug.optional(),
+  title,
+  description: description.optional().default(''),
+  sortOrder: sortOrder.optional(),
+  isPublished: z.boolean(),
+  releaseAt,
   videoUrl,
-  durationSeconds,
+  durationSeconds: durationSeconds.optional(),
+  thumbnailUrl: thumbnailUrl.optional(),
+}
+
+const lessonUpdateMetadata = {
+  slug: slug.optional(),
+  title: title.optional(),
+  description: description.optional(),
+  sortOrder: sortOrder.optional(),
+  isPublished: z.boolean().optional(),
+  releaseAt: releaseAt.optional(),
+  videoUrl: videoUrl.optional(),
+  durationSeconds: durationSeconds.optional(),
+  thumbnailUrl: thumbnailUrl.optional(),
 }
 
 function updateSchema<T extends z.ZodRawShape>(entity: 'course' | 'module' | 'lesson', shape: T) {
@@ -47,10 +67,10 @@ function deleteSchema(entity: 'course' | 'module' | 'lesson') {
 export const adminLearningActionSchema = z.union([
   z.object({ entity: z.literal('course'), action: z.literal('create'), ...courseMetadata }).strict(),
   z.object({ entity: z.literal('module'), action: z.literal('create'), courseId: id, ...moduleMetadata }).strict(),
-  z.object({ entity: z.literal('lesson'), action: z.literal('create'), moduleId: id, ...lessonMetadata }).strict(),
+  z.object({ entity: z.literal('lesson'), action: z.literal('create'), moduleId: id, ...lessonCreateMetadata }).strict(),
   updateSchema('course', courseMetadata),
   updateSchema('module', moduleMetadata),
-  updateSchema('lesson', lessonMetadata),
+  updateSchema('lesson', lessonUpdateMetadata),
   deleteSchema('course'),
   deleteSchema('module'),
   deleteSchema('lesson'),

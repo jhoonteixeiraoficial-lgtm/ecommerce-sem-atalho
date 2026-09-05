@@ -11,6 +11,7 @@ export interface AdminLessonDto {
   sortOrder: number
   isPublished: boolean
   releaseAt: string | null
+  thumbnailUrl: string | null
   createdAt: string
   updatedAt: string
 }
@@ -57,17 +58,25 @@ export interface CreateModuleInput extends EntityMetadataInput {
   courseId: string
 }
 
-export interface CreateLessonInput extends EntityMetadataInput {
+export interface CreateLessonInput {
   moduleId: string
+  slug?: string
+  title: string
+  description?: string
   videoUrl: string
-  durationSeconds: number
+  durationSeconds?: number | null
+  sortOrder?: number
+  isPublished: boolean
+  releaseAt: string | null
+  thumbnailUrl?: string | null
 }
 
 export type UpdateCourseInput = Partial<EntityMetadataInput>
 export type UpdateModuleInput = Partial<EntityMetadataInput>
 export interface UpdateLessonInput extends Partial<EntityMetadataInput> {
   videoUrl?: string
-  durationSeconds?: number
+  durationSeconds?: number | null
+  thumbnailUrl?: string | null
 }
 
 export type AdminApiErrorKind =

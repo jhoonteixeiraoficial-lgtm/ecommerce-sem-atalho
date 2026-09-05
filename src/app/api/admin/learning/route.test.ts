@@ -64,7 +64,7 @@ describe('GET /api/admin/learning', () => {
           is_published: true, release_at: null, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-02T00:00:00.000Z',
           lessons: [{
             id: LESSON_ID, module_id: MODULE_ID, slug: 'lesson', title: 'Lesson', description: '', video_url: 'https://video.example.test/1',
-            duration_seconds: 300, sort_order: 2, is_published: false, release_at: null,
+            duration_seconds: 300, sort_order: 2, is_published: false, release_at: null, thumbnail_url: null,
             created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-02T00:00:00.000Z', ignored_column: 'never expose',
           }],
         }],
@@ -84,7 +84,7 @@ describe('GET /api/admin/learning', () => {
         isPublished: true, releaseAt: null, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-02T00:00:00.000Z',
         lessons: [{
           id: LESSON_ID, moduleId: MODULE_ID, slug: 'lesson', title: 'Lesson', description: '', videoUrl: 'https://video.example.test/1',
-          durationSeconds: 300, sortOrder: 2, isPublished: false, releaseAt: null,
+          durationSeconds: 300, sortOrder: 2, isPublished: false, releaseAt: null, thumbnailUrl: null,
           createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-02T00:00:00.000Z',
         }],
       }],

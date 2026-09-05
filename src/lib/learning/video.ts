@@ -29,6 +29,10 @@ function extractYouTubeId(url: string): string | null {
   return null
 }
 
+export function extractYouTubeVideoId(url: string): string | null {
+  return extractYouTubeId(url)
+}
+
 /**
  * Converts any recognized YouTube URL shape (watch, youtu.be, embed, shorts)
  * into a canonical embeddable player URL. Returns null when the input is not
@@ -50,4 +54,57 @@ export function isYouTubeUrl(url: string): boolean {
 /** Resolves the URL to embed in an iframe player: YouTube URLs are normalized, everything else passes through untouched. */
 export function resolvePlayerUrl(url: string): string {
   return toYouTubeEmbedUrl(url) ?? url
+}
+
+export function getYouTubeThumbnailUrl(url: string): string | null {
+  const id = extractYouTubeId(url)
+  if (!id) return null
+  return `https://img.youtube.com/vi/${id}/mqdefault.jpg`
+}
+
+export interface YouTubeOEmbedData {
+  title: string
+  thumbnailUrl: string
+  authorName: string
+}
+
+export async function fetchYouTubeOEmbed(url: string): Promise<YouTubeOEmbedData | null> {
+  const id = extractYouTubeId(url)
+  if (!id) return null
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`
+    const res = await fetch(oembedUrl, { next: { revalidate: 86400 } })
+    if (!res.ok) return null
+    const data = await res.json()
+    return {
+      title: data.title ?? '',
+      thumbnailUrl: data.thumbnail_url ?? `https://img.youtube.com/vi/${id}/mqdefault.jpg`,
+      authorName: data.author_name ?? '',
+    }
+  } catch {
+    return null
+  }
+}
+
+const SLUG_MAP: Record<string, string> = {
+  'á': 'a', 'à': 'a', 'ã': 'a', 'â': 'a', 'ä': 'a',
+  'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+  'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+  'ó': 'o', 'ò': 'o', 'õ': 'o', 'ô': 'o', 'ö': 'o',
+  'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+  'ç': 'c', 'ñ': 'n', 'ß': 'ss',
+}
+
+export function slugify(text: string): string {
+  let result = text.toLowerCase()
+  for (const [char, replacement] of Object.entries(SLUG_MAP)) {
+    result = result.replaceAll(char, replacement)
+  }
+  result = result
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100)
+  return result || 'aula'
 }

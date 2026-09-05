@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerGuards } from '@/lib/auth/server-guards'
 import { adminLearningActionSchema, type AdminLearningAction } from '@/lib/learning/admin-schema'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { fetchYouTubeOEmbed, getYouTubeThumbnailUrl } from '@/lib/learning/video'
 
 type Context = { params: Promise<{ entity: string; id: string }> }
 
@@ -85,10 +86,20 @@ export async function PATCH(request: Request, { params }: Context) {
     id,
   })
   if (!parsed.success || parsed.data.action !== 'update') {
-    return NextResponse.json({ error: 'Invalid learning content' }, { status: 400 })
+    console.error('[learning] PATCH validation failed:', JSON.stringify(parsed.error?.flatten()))
+    return NextResponse.json({ error: 'Invalid learning content', details: parsed.error?.flatten() ?? 'Unknown validation error' }, { status: 400 })
   }
 
-  return mutate(parsed.data, authorization.user.id, 'update')
+  const data = parsed.data
+
+  if (data.entity === 'lesson' && 'videoUrl' in data && data.videoUrl && !('thumbnailUrl' in data && data.thumbnailUrl)) {
+    const oembed = await fetchYouTubeOEmbed(data.videoUrl)
+    if (oembed) {
+      ;(data as { thumbnailUrl?: string }).thumbnailUrl = oembed.thumbnailUrl
+    }
+  }
+
+  return mutate(data, authorization.user.id, 'update')
 }
 
 export async function DELETE(_request: Request, { params }: Context) {

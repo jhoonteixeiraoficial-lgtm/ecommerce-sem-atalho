@@ -2,11 +2,12 @@ import { NextResponse } from 'next/server'
 import { createServerGuards } from '@/lib/auth/server-guards'
 import { adminLearningActionSchema, type AdminLearningAction } from '@/lib/learning/admin-schema'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { slugify, fetchYouTubeOEmbed, getYouTubeThumbnailUrl } from '@/lib/learning/video'
 
 type LessonRow = {
   id: string; module_id: string; slug: string; title: string; description: string; video_url: string
   duration_seconds: number; sort_order: number; is_published: boolean; release_at: string | null
-  created_at: string; updated_at: string
+  thumbnail_url: string | null; created_at: string; updated_at: string
 }
 
 type ModuleRow = {
@@ -80,7 +81,7 @@ export async function GET() {
           id, course_id, slug, title, description, sort_order, is_published, release_at, created_at, updated_at,
           lessons:lessons (
             id, module_id, slug, title, description, video_url, duration_seconds, sort_order,
-            is_published, release_at, created_at, updated_at
+            is_published, release_at, thumbnail_url, created_at, updated_at
           )
         )
       `)
@@ -120,6 +121,7 @@ export async function GET() {
           sortOrder: lesson.sort_order,
           isPublished: lesson.is_published,
           releaseAt: lesson.release_at,
+          thumbnailUrl: lesson.thumbnail_url ?? null,
           createdAt: lesson.created_at,
           updatedAt: lesson.updated_at,
         })).sort((a, b) => a.sortOrder - b.sortOrder),
@@ -145,22 +147,66 @@ export async function POST(request: Request) {
 
   const parsed = adminLearningActionSchema.safeParse(body)
   if (!parsed.success || parsed.data.action !== 'create') {
-    return NextResponse.json({ error: 'Invalid learning content' }, { status: 400 })
+    console.error('[learning] Validation failed:', JSON.stringify(parsed.error?.flatten()))
+    return NextResponse.json({ error: 'Invalid learning content', details: parsed.error?.flatten() ?? 'Unknown validation error' }, { status: 400 })
   }
 
+  const data = parsed.data
+  const admin = createAdminClient()
+
   try {
-    const { data, error } = await createAdminClient().rpc(
+    if (data.entity === 'lesson') {
+      let slug = data.slug || slugify(data.title)
+      let thumbnailUrl = data.thumbnailUrl ?? null
+
+      const existingCount = await admin
+        .from('lessons')
+        .select('*', { count: 'exact', head: true })
+        .eq('module_id', data.moduleId)
+
+      const autoSortOrder = data.sortOrder ?? (existingCount.count ?? 0)
+
+      if (!thumbnailUrl && data.videoUrl) {
+        const oembed = await fetchYouTubeOEmbed(data.videoUrl)
+        if (oembed) thumbnailUrl = oembed.thumbnailUrl
+        if (!data.slug && oembed?.title) slug = slugify(oembed.title)
+      }
+
+      const enriched = {
+        ...data,
+        slug,
+        sortOrder: autoSortOrder,
+        thumbnailUrl,
+      }
+
+      const { data: rpcData, error } = await admin.rpc(
+        'admin_learning_action',
+        rpcArguments(authorization.user.id, enriched),
+      )
+      if (error) {
+        console.error('[learning] RPC error creating lesson:', error.code, error.message)
+        return NextResponse.json(
+          { error: 'Unable to create learning content' },
+          { status: mutationErrorStatus(error.code) },
+        )
+      }
+      return NextResponse.json({ id: rpcData }, { status: 201 })
+    }
+
+    const { data: rpcData, error } = await admin.rpc(
       'admin_learning_action',
-      rpcArguments(authorization.user.id, parsed.data),
+      rpcArguments(authorization.user.id, data),
     )
     if (error) {
+      console.error('[learning] RPC error:', error.code, error.message)
       return NextResponse.json(
         { error: 'Unable to create learning content' },
         { status: mutationErrorStatus(error.code) },
       )
     }
-    return NextResponse.json({ id: data }, { status: 201 })
-  } catch {
+    return NextResponse.json({ id: rpcData }, { status: 201 })
+  } catch (e) {
+    console.error('[learning] Unexpected error:', e)
     return NextResponse.json({ error: 'Unable to create learning content' }, { status: 500 })
   }
 }

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Upload, Video, X, CheckCircle, AlertCircle } from 'lucide-react'
+import { Upload, Video, X, CheckCircle, AlertCircle, Loader2, ImageIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Card from '@/components/ui/Card'
@@ -31,12 +31,12 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
   const [videoUrl, setVideoUrl] = useState('')
   const [youtubeInput, setYoutubeInput] = useState('')
   const [youtubeError, setYoutubeError] = useState('')
+  const [fetchingMeta, setFetchingMeta] = useState(false)
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [moduleId, setModuleId] = useState('')
-  const [slug, setSlug] = useState('')
-  const [duration, setDuration] = useState('')
+  const [thumbnailUrl, setThumbnailUrl] = useState('')
   const [saving, setSaving] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -109,9 +109,6 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
       return
     }
 
-    // `course-videos` is a private bucket (subscriber-only RLS); a "public"
-    // URL is never reachable for it. Mint a long-lived signed URL instead so
-    // the stored transitional videoUrl is actually playable by members.
     const TEN_YEARS_SECONDS = 10 * 365 * 24 * 60 * 60
     const { data: signedData, error: signedError } = await supabase.storage
       .from('course-videos')
@@ -130,8 +127,8 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
   }
 
   const handleSave = async () => {
-    if (!title || !moduleId || !slug) {
-      setError('Preencha título, módulo e slug.')
+    if (!title || !moduleId) {
+      setError('Preencha título e módulo.')
       return
     }
     setSaving(true)
@@ -140,12 +137,10 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
     try {
       await createLesson({
         moduleId,
-        slug,
         title,
         description,
         videoUrl,
-        durationSeconds: duration ? parseInt(duration) * 60 : 0,
-        sortOrder: 0,
+        thumbnailUrl: thumbnailUrl || undefined,
         isPublished: false,
         releaseAt: null,
       })
@@ -163,8 +158,7 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
     setTitle('')
     setDescription('')
     setModuleId('')
-    setSlug('')
-    setDuration('')
+    setThumbnailUrl('')
     setVideoUrl('')
     setProgress(0)
     setSaving(false)
@@ -179,37 +173,54 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
     setError('')
   }
 
+  const fetchYouTubeMetadata = async (url: string) => {
+    setFetchingMeta(true)
+    try {
+      const res = await fetch(`/api/youtube/oembed?url=${encodeURIComponent(url)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.title && !title) setTitle(data.title)
+        if (data.thumbnailUrl) setThumbnailUrl(data.thumbnailUrl)
+      }
+    } catch {
+      // metadata fetch is best-effort
+    } finally {
+      setFetchingMeta(false)
+    }
+  }
+
   const handleValidateYoutube = () => {
     setYoutubeError('')
     const embed = toYouTubeEmbedUrl(youtubeInput.trim())
     if (!embed) {
-      setYoutubeError('URL do YouTube inválida. Cole a URL completa do vídeo (não listado).')
+      setYoutubeError('URL do YouTube inválida. Cole a URL completa do vídeo.')
       return
     }
     setVideoUrl(embed)
     setSuccess(true)
+    fetchYouTubeMetadata(youtubeInput.trim())
   }
 
   const resetYoutube = () => {
     setYoutubeInput('')
     setYoutubeError('')
     setVideoUrl('')
+    setThumbnailUrl('')
     setSuccess(false)
   }
 
   const metadataForm = (
     <div className="space-y-3 pt-2 border-t border-border-subtle">
+      {thumbnailUrl && (
+        <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-surface-raised">
+          <img src={thumbnailUrl} alt="Thumbnail" className="w-full h-full object-cover" />
+        </div>
+      )}
       <Input
         label="Título da aula"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Ex: Introdução ao Marketing"
-      />
-      <Input
-        label="Slug"
-        value={slug}
-        onChange={(e) => setSlug(e.target.value)}
-        placeholder="ex: introducao-ao-marketing"
+        placeholder="Título será preenchido automaticamente do YouTube"
       />
       <div>
         <label className="block text-xs font-medium text-text-secondary mb-1.5">Módulo</label>
@@ -225,17 +236,10 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
         </select>
       </div>
       <Input
-        label="Descrição"
+        label="Descrição (opcional)"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Breve descrição da aula"
-      />
-      <Input
-        label="Duração (minutos)"
-        type="number"
-        value={duration}
-        onChange={(e) => setDuration(e.target.value)}
-        placeholder="Ex: 15"
       />
       <Button onClick={handleSave} loading={saving} className="w-full">
         Salvar Aula
@@ -274,7 +278,7 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
           {!videoUrl ? (
             <>
               <Input
-                label="URL do vídeo no YouTube (não listado)"
+                label="URL do vídeo no YouTube"
                 value={youtubeInput}
                 onChange={(e) => setYoutubeInput(e.target.value)}
                 placeholder="https://www.youtube.com/watch?v=..."
@@ -286,7 +290,9 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
                 </div>
               )}
               <Button onClick={handleValidateYoutube} disabled={!youtubeInput.trim()} className="w-full">
-                Validar vídeo
+                {fetchingMeta ? (
+                  <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Buscando dados...</span>
+                ) : 'Validar vídeo'}
               </Button>
             </>
           ) : (
@@ -294,6 +300,7 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
               <div className="flex items-center gap-2 text-success text-sm">
                 <CheckCircle className="w-4 h-4" />
                 Vídeo do YouTube validado!
+                {fetchingMeta && <span className="flex items-center gap-1 text-text-muted"><Loader2 className="w-3 h-3 animate-spin" /> Buscando dados...</span>}
               </div>
               {metadataForm}
             </>
