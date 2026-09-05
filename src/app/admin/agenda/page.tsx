@@ -342,9 +342,26 @@ export default function AdminAgendaPage() {
           <Calendar className="w-5 h-5 text-accent" />
           <h1 className="text-2xl font-semibold text-text-primary tracking-tight">Agenda e Conteúdos</h1>
         </div>
-        <Button onClick={() => { setShowForm(!showForm); setEditingEvent(null); resetForm() }}>
+        <Button onClick={() => {
+          if (showForm) {
+            resetForm()
+          } else {
+            setEditingEvent(null)
+            setForm({
+              title: '',
+              description: '',
+              scheduled_at: '',
+              duration_minutes: 60,
+              type: 'live',
+              status: 'agendada',
+              youtube_url: '',
+              thumbnail_url: '',
+            })
+            setShowForm(true)
+          }
+        }}>
           <Plus className="w-4 h-4" />
-          Novo Evento
+          {showForm ? 'Fechar' : 'Novo Evento'}
         </Button>
       </div>
 
