@@ -1,8 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { BookOpen, Clock, CheckCircle, Play, ArrowLeft, Loader2, AlertCircle } from 'lucide-react'
-import Button from '@/components/ui/Button'
+import { BookOpen, CheckCircle, Play, ArrowLeft, Loader2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { getModule, LearningApiError } from '@/lib/learning/client'
@@ -149,27 +148,64 @@ export default function ModuloPage() {
             const isCompleted = lesson.progress?.completed ?? false
             return (
               <Link key={lesson.id} href={`/membros/aulas/${moduleId}/${lesson.slug}`}>
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-surface border border-border-subtle hover:border-border transition-colors cursor-pointer">
-                  <div className={`p-2 rounded-lg flex-shrink-0 ${
-                    isCompleted ? 'bg-success/15' : 'bg-surface-raised'
-                  }`}>
-                    {isCompleted ? (
-                      <CheckCircle className="w-4 h-4 text-success" />
+                <div className={`flex items-center gap-4 p-3 rounded-xl transition-all cursor-pointer ${
+                  isCompleted
+                    ? 'bg-success/5 border border-success/20'
+                    : 'bg-surface border border-border-subtle hover:bg-surface-raised hover:border-border'
+                }`}>
+                  {/* Thumbnail */}
+                  <div className="flex-shrink-0 w-[120px] sm:w-[140px] aspect-video rounded-lg overflow-hidden bg-surface-raised relative">
+                    {lesson.thumbnailUrl ? (
+                      <img
+                        src={lesson.thumbnailUrl}
+                        alt={lesson.title}
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
                     ) : (
-                      <Play className="w-4 h-4 text-text-muted" />
+                      <div className="w-full h-full flex items-center justify-center">
+                        {isCompleted ? (
+                          <CheckCircle className="w-6 h-6 text-success" />
+                        ) : (
+                          <Play className="w-6 h-6 text-text-muted" />
+                        )}
+                      </div>
+                    )}
+                    {lesson.durationSeconds > 0 && (
+                      <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/70 text-white">
+                        {formatDuration(lesson.durationSeconds)}
+                      </span>
+                    )}
+                    {!isCompleted && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 hover:opacity-100 transition-opacity">
+                        <div className="w-8 h-8 rounded-full bg-accent/90 flex items-center justify-center">
+                          <Play className="w-4 h-4 text-white ml-0.5" />
+                        </div>
+                      </div>
                     )}
                   </div>
+
+                  {/* Content */}
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-sm font-medium text-text-primary">{lesson.title}</h3>
-                    <span className="text-[10px] text-text-muted flex items-center gap-1 mt-0.5">
-                      <Clock className="w-3 h-3" />
-                      {formatDuration(lesson.durationSeconds)}
-                    </span>
+                    <h3 className="text-sm font-medium text-text-primary line-clamp-2 leading-snug">
+                      {lesson.title}
+                    </h3>
+                    {lesson.description && (
+                      <p className="text-xs text-text-muted mt-1 line-clamp-1">
+                        {lesson.description}
+                      </p>
+                    )}
                   </div>
-                  {!isCompleted && (
-                    <Button size="sm" variant="secondary">
-                      Assistir
-                    </Button>
+
+                  {/* Status */}
+                  {isCompleted ? (
+                    <div className="flex-shrink-0 px-2.5 py-1 rounded-full bg-success/15 text-[10px] font-medium text-success">
+                      Concluída
+                    </div>
+                  ) : (
+                    <div className="flex-shrink-0 text-text-muted">
+                      <Play className="w-4 h-4" />
+                    </div>
                   )}
                 </div>
               </Link>

@@ -26,6 +26,7 @@ type LessonRow = {
   title: string
   description: string
   video_url: string
+  thumbnail_url: string | null
   duration_seconds: number
   sort_order: number
   is_published: boolean
@@ -97,7 +98,7 @@ export async function GET(
 
   const { data: lessons, error: lessonsError } = await adminClient
     .from('lessons')
-    .select('id, slug, title, description, video_url, duration_seconds, sort_order, is_published, release_at')
+    .select('id, slug, title, description, video_url, thumbnail_url, duration_seconds, sort_order, is_published, release_at')
     .eq('module_id', moduleDataTyped.id)
     .eq('is_published', true)
     .or(`release_at.is.null,release_at.lte.${now}`)
@@ -142,6 +143,7 @@ export async function GET(
         title: lesson.title,
         description: lesson.description,
         videoUrl: lesson.video_url,
+        thumbnailUrl: lesson.thumbnail_url ?? null,
         durationSeconds: lesson.duration_seconds,
         sortOrder: lesson.sort_order,
         isPublished: lesson.is_published,

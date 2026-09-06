@@ -216,7 +216,7 @@ describe('GET /api/learning/modules/[moduleSlug]', () => {
       isPublished: true, releaseAt: null, courseSlug: 'course-1',
       lessons: [{
         id: 'lesson-1', slug: 'lesson-1', title: 'Lesson 1', description: '', videoUrl: '',
-        durationSeconds: 60, sortOrder: 0, isPublished: true, releaseAt: null,
+        thumbnailUrl: null, durationSeconds: 60, sortOrder: 0, isPublished: true, releaseAt: null,
         moduleSlug: 'module-1', progress: { positionSeconds: 15, completed: false, completedAt: null, lastViewedAt: '2026-09-01T00:00:00.000Z' },
         prevLesson: null, nextLesson: null,
       }],

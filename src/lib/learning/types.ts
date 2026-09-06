@@ -40,6 +40,7 @@ export type LessonDetailDto = {
   title: string
   description: string
   videoUrl: string
+  thumbnailUrl: string | null
   durationSeconds: number
   sortOrder: number
   isPublished: boolean
