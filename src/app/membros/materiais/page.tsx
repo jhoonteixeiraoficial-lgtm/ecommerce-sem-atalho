@@ -24,16 +24,6 @@ function getFileIcon(category: string, fileType: string) {
   }
 }
 
-function getFileExt(url: string): string {
-  try {
-    const pathname = new URL(url).pathname
-    const ext = pathname.split('.').pop()?.toLowerCase() || ''
-    return ext
-  } catch {
-    return ''
-  }
-}
-
 function getFileLabel(ext: string): string {
   const map: Record<string, string> = {
     pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', csv: 'CSV',
@@ -78,6 +68,30 @@ export default function MateriaisPage() {
     return matchesSearch && matchesCategory
   })
 
+  function extractStoragePath(fileUrl: string): string {
+    if (fileUrl.startsWith('http')) {
+      try {
+        const parsed = new URL(fileUrl)
+        const idx = parsed.pathname.indexOf('/storage/v1/object/public/')
+        if (idx !== -1) {
+          return parsed.pathname.slice(idx + '/storage/v1/object/public/'.length)
+            .replace(/^course-materials\//, '')
+        }
+        const signIdx = parsed.pathname.indexOf('/storage/v1/object/sign/')
+        if (signIdx !== -1) {
+          const afterSign = parsed.pathname.slice(signIdx + '/storage/v1/object/sign/'.length)
+          return afterSign.replace(/^course-materials\//, '').split('?')[0]
+        }
+      } catch { /* not a url */ }
+    }
+    return fileUrl
+  }
+
+  function getFileNameFromPath(path: string): string {
+    const parts = path.split('/')
+    return parts[parts.length - 1] || 'arquivo'
+  }
+
   async function handleDownload(material: Material) {
     if (material.file_type === 'link') {
       window.open(material.file_url, '_blank')
@@ -86,10 +100,19 @@ export default function MateriaisPage() {
 
     setDownloadingId(material.id)
     try {
-      const response = await fetch(material.file_url)
+      const path = extractStoragePath(material.file_url)
+      const { data, error } = await supabase.storage
+        .from('course-materials')
+        .createSignedUrl(path, 3600)
+
+      if (error || !data?.signedUrl) throw error
+
+      const response = await fetch(data.signedUrl)
+      if (!response.ok) throw new Error('Download failed')
+
       const blob = await response.blob()
-      const ext = getFileExt(material.file_url)
-      const fileName = `${material.title}.${ext}`
+      const ext = getFileNameFromPath(path).split('.').pop() || ''
+      const fileName = ext ? `${material.title}.${ext}` : material.title
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -177,7 +200,8 @@ export default function MateriaisPage() {
         {filteredMaterials.map((material) => {
           const Icon = getFileIcon(material.category, material.file_type)
           const isLink = material.file_type === 'link'
-          const ext = isLink ? '' : getFileExt(material.file_url)
+          const path = isLink ? '' : extractStoragePath(material.file_url)
+          const ext = path ? getFileNameFromPath(path).split('.').pop()?.toLowerCase() || '' : ''
           const isDownloading = downloadingId === material.id
 
           return (

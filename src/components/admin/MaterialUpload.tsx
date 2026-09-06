@@ -95,8 +95,7 @@ export default function MaterialUpload({ onUploadComplete }: MaterialUploadProps
       return
     }
 
-    const { data } = supabase.storage.from('course-materials').getPublicUrl(filePath)
-    setFileUrl(data.publicUrl)
+    setFileUrl(filePath)
     setProgress(100)
     setUploading(false)
     setSuccess(true)
