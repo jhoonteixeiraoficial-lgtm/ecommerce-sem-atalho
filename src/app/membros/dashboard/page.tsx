@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import Image from 'next/image'
 import { Video, Sparkles, Play, Calendar, Download, Users, Bell, MessageCircle, Heart, Loader2, AlertCircle, FileText, BookOpen, Star } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
@@ -17,6 +16,7 @@ type EventType = 'live' | 'conteudo' | 'aula' | 'material' | 'atualizacao' | 'ev
 interface ProfileData {
   full_name: string | null
   avatar_url: string | null
+  updated_at: string | null
 }
 
 interface LastLesson {
@@ -105,7 +105,7 @@ export default function HomePage() {
           const [profileRes, catalog] = await Promise.all([
             supabase
               .from('profiles')
-              .select('full_name, avatar_url')
+              .select('full_name, avatar_url, updated_at')
               .eq('id', authUser.id)
               .single(),
             (async () => {
@@ -341,7 +341,9 @@ export default function HomePage() {
   }, [])
 
   const displayName = profile?.full_name?.split(' ')[0] || 'Membro'
-  const avatarUrl = profile?.avatar_url || '/fotos/J&T-210.jpg'
+  const avatarUrl = profile?.avatar_url
+    ? `${profile.avatar_url}?v=${profile.updated_at || Date.now()}`
+    : '/fotos/J&T-210.jpg'
 
   if (loading) {
     return (
@@ -378,11 +380,9 @@ export default function HomePage() {
 
       {/* Greeting */}
       <div className="flex items-center gap-4">
-        <Image
+        <img
           src={avatarUrl}
           alt={displayName}
-          width={48}
-          height={48}
           className="w-12 h-12 rounded-full object-cover border-2 border-accent/30"
         />
         <div>

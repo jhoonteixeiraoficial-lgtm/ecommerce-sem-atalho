@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
-import { Search, Bell, Menu, User } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Search, Bell, Menu } from 'lucide-react'
 import Link from 'next/link'
+import { createClient } from '@/lib/supabase/client'
 
 interface HeaderProps {
   onMenuToggle?: () => void
@@ -10,6 +11,27 @@ interface HeaderProps {
 
 export default function Header({ onMenuToggle }: HeaderProps) {
   const [searchQuery, setSearchQuery] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const [userName, setUserName] = useState('')
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('full_name, avatar_url, updated_at')
+          .eq('id', user.id)
+          .single()
+        if (data) {
+          setAvatarUrl(data.avatar_url || null)
+          setUserName(data.full_name?.charAt(0) || user.email?.charAt(0) || 'U')
+        }
+      }
+    }
+    fetchProfile()
+  }, [])
 
   return (
     <header className="h-14 bg-surface border-b border-border-subtle flex items-center justify-between px-4 lg:px-5">
@@ -47,8 +69,12 @@ export default function Header({ onMenuToggle }: HeaderProps) {
         </button>
 
         <Link href="/membros/perfil" className="min-w-[44px] min-h-[44px] flex items-center justify-center">
-          <div className="w-8 h-8 rounded-full bg-surface-raised border border-border flex items-center justify-center text-xs font-medium text-text-secondary hover:border-accent/40 transition-colors cursor-pointer">
-            J
+          <div className="w-8 h-8 rounded-full bg-surface-raised border border-border flex items-center justify-center text-xs font-medium text-text-secondary hover:border-accent/40 transition-colors cursor-pointer overflow-hidden">
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              userName
+            )}
           </div>
         </Link>
       </div>
