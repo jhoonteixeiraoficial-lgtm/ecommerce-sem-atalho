@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { User, Mail, Phone, Lock, CreditCard, LogOut, Check, Shield, Calendar } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { User, Mail, Phone, Lock, CreditCard, LogOut, Check, Shield, Calendar, Camera, Loader2 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import { createClient } from '@/lib/supabase/client'
@@ -10,6 +10,7 @@ import { User as SupabaseUser } from '@supabase/supabase-js'
 interface Profile {
   full_name: string | null
   phone: string | null
+  avatar_url: string | null
 }
 
 interface Subscription {
@@ -30,6 +31,9 @@ export default function PerfilPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [passwordSuccess, setPasswordSuccess] = useState(false)
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const avatarInputRef = useRef<HTMLInputElement>(null)
   const [supabase] = useState(() => createClient())
 
   const fetchData = async () => {
@@ -45,6 +49,7 @@ export default function PerfilPage() {
       setProfile(profileData)
       setFullName(profileData?.full_name || '')
       setPhone(profileData?.phone || '')
+      setAvatarUrl(profileData?.avatar_url || null)
 
       const { data: subData } = await supabase
         .from('subscriptions')
@@ -116,6 +121,43 @@ export default function PerfilPage() {
     window.location.href = '/login'
   }
 
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !user) return
+
+    if (file.size > 5 * 1024 * 1024) {
+      return
+    }
+
+    setUploadingAvatar(true)
+    try {
+      const ext = file.name.split('.').pop()
+      const filePath = `${user.id}/avatar.${ext}`
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, { upsert: true })
+
+      if (uploadError) throw uploadError
+
+      const { data } = supabase.storage.from('avatars').getPublicUrl(filePath)
+      const publicUrl = data.publicUrl
+
+      await supabase
+        .from('profiles')
+        .update({ avatar_url: publicUrl })
+        .eq('id', user.id)
+
+      setAvatarUrl(publicUrl)
+      setProfile(prev => prev ? { ...prev, avatar_url: publicUrl } : prev)
+    } catch {
+      // Upload failed silently
+    } finally {
+      setUploadingAvatar(false)
+      if (avatarInputRef.current) avatarInputRef.current.value = ''
+    }
+  }
+
   return (
     <div className="space-y-6 max-w-lg">
       <div>
@@ -126,9 +168,33 @@ export default function PerfilPage() {
       {/* Avatar & Plan */}
       <div className="p-5 rounded-xl bg-surface border border-border-subtle">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-full bg-accent/10 border-2 border-accent/30 flex items-center justify-center text-xl font-bold text-accent">
-            {profile?.full_name?.charAt(0) || user?.email?.charAt(0) || 'U'}
-          </div>
+          <button
+            onClick={() => avatarInputRef.current?.click()}
+            className="relative w-16 h-16 rounded-full overflow-hidden border-2 border-accent/30 hover:border-accent/60 transition-colors group flex-shrink-0"
+            disabled={uploadingAvatar}
+          >
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-accent/10 flex items-center justify-center text-xl font-bold text-accent">
+                {profile?.full_name?.charAt(0) || user?.email?.charAt(0) || 'U'}
+              </div>
+            )}
+            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              {uploadingAvatar ? (
+                <Loader2 className="w-5 h-5 text-white animate-spin" />
+              ) : (
+                <Camera className="w-5 h-5 text-white" />
+              )}
+            </div>
+          </button>
+          <input
+            ref={avatarInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            onChange={handleAvatarUpload}
+            className="hidden"
+          />
           <div className="flex-1">
             <div className="text-base font-medium text-text-primary">
               {profile?.full_name || 'Usuário'}
