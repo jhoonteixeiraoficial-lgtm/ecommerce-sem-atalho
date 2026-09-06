@@ -90,21 +90,42 @@ export default function AnalisePage() {
     try {
       const res = await fetch('/api/assertive/ml/connect', { method: 'POST' })
       const data = await res.json()
-      if (data.url) {
-        const popup = window.open(data.url, 'ml-connect', 'width=500,height=650')
-        const timer = setInterval(() => {
-          if (popup?.closed) {
-            clearInterval(timer)
-            setConnecting(false)
-            setNeedsMLConnect(false)
-            handleSpy()
-          }
-        }, 800)
-      } else {
+      if (!data.url) {
         setConnecting(false)
+        setSpyError('Não foi possível iniciar a conexão com o Mercado Livre.')
+        return
       }
+
+      const popup = window.open(data.url, 'ml-connect', 'width=500,height=650')
+      let settled = false
+
+      function finish(success: boolean, message?: string) {
+        if (settled) return
+        settled = true
+        clearInterval(timer)
+        window.removeEventListener('message', onMessage)
+        setConnecting(false)
+        if (success) {
+          setNeedsMLConnect(false)
+          handleSpy()
+        } else {
+          setSpyError(message || 'Conexão com o Mercado Livre cancelada ou falhou.')
+        }
+      }
+
+      function onMessage(ev: MessageEvent) {
+        if (ev.data?.type === 'ml-connected') {
+          finish(!!ev.data.ok, ev.data.message)
+        }
+      }
+      window.addEventListener('message', onMessage)
+
+      const timer = setInterval(() => {
+        if (popup?.closed) finish(false, undefined) // treated as cancelled unless message already arrived
+      }, 800)
     } catch {
       setConnecting(false)
+      setSpyError('Erro ao iniciar conexão com o Mercado Livre.')
     }
   }
 
