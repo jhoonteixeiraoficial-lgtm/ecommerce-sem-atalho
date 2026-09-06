@@ -27,6 +27,7 @@ async function requireCanonicalAdmin() {
     const { data: { user }, error } = await serverClient.auth.getUser()
     return { user: await createServerGuards(user, error).requireAdmin(), response: null }
   } catch (error: unknown) {
+    console.error('[learning] requireCanonicalAdmin error:', error)
     const candidate = error && typeof error === 'object' && 'status' in error
       ? (error as { status: number }).status
       : 500

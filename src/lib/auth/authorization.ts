@@ -39,6 +39,13 @@ export async function loadAuthorization(client: AuthorizationClient, userId: str
     !roleResult.data ||
     !statusResult.data
   ) {
+    console.error('[auth] loadAuthorization failed:', {
+      roleError: roleResult.error,
+      statusError: statusResult.error,
+      subscriptionError: subscriptionResult.error,
+      roleData: roleResult.data,
+      statusData: statusResult.data,
+    })
     throw new Error('Authorization service unavailable')
   }
 
