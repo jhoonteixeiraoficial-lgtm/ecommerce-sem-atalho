@@ -39,7 +39,7 @@ describe('PATCH /api/admin/learning/[entity]/[id]', () => {
       p_actor_user_id: ACTOR_ID, p_entity: 'course', p_action: 'update', p_entity_id: COURSE_ID,
       p_parent_id: null, p_slug: null, p_title: 'Updated course', p_description: null,
       p_video_url: null, p_duration_seconds: null, p_sort_order: null, p_is_published: true, p_release_at: null,
-      p_release_at_set: false,
+      p_release_at_set: false, p_thumbnail_url: null,
     })
   })
 
@@ -72,7 +72,7 @@ describe('DELETE /api/admin/learning/[entity]/[id]', () => {
       p_actor_user_id: ACTOR_ID, p_entity: 'course', p_action: 'delete', p_entity_id: COURSE_ID,
       p_parent_id: null, p_slug: null, p_title: null, p_description: null,
       p_video_url: null, p_duration_seconds: null, p_sort_order: null, p_is_published: null, p_release_at: null,
-      p_release_at_set: false,
+      p_release_at_set: false, p_thumbnail_url: null,
     })
   })
 

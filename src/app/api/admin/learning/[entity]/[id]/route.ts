@@ -39,6 +39,7 @@ function rpcArguments(actorId: string, action: AdminLearningAction) {
     p_is_published: metadata?.isPublished ?? null,
     p_release_at: metadata?.releaseAt ?? null,
     p_release_at_set: Boolean(metadata && Object.hasOwn(metadata, 'releaseAt')),
+    p_thumbnail_url: metadata && 'thumbnailUrl' in metadata ? metadata.thumbnailUrl ?? null : null,
   }
 }
 

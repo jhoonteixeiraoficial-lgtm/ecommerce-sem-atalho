@@ -120,7 +120,7 @@ describe('POST /api/admin/learning', () => {
       p_actor_user_id: ACTOR_ID, p_entity: 'lesson', p_action: 'create', p_entity_id: null,
       p_parent_id: MODULE_ID, p_slug: 'lesson', p_title: 'Lesson', p_description: '',
       p_video_url: 'https://video.example.test/1', p_duration_seconds: 300, p_sort_order: 0,
-      p_is_published: false, p_release_at: null, p_release_at_set: true,
+      p_is_published: false, p_release_at: null, p_release_at_set: true, p_thumbnail_url: null,
     })
   })
 
