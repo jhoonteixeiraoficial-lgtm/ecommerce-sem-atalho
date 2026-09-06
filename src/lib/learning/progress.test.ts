@@ -98,6 +98,7 @@ describe('selectContinueWatching', () => {
     title: 'Lesson 1',
     description: '',
     videoUrl: '',
+    thumbnailUrl: null,
     durationSeconds: 120,
     sortOrder: 0,
     isPublished: true,

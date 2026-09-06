@@ -111,6 +111,7 @@ describe('learning API client', () => {
         title: 'Lesson 1',
         description: 'desc',
         videoUrl: 'https://video.test/1',
+        thumbnailUrl: null,
         durationSeconds: 120,
         sortOrder: 0,
         isPublished: true,
