@@ -139,7 +139,7 @@ describe('GET', () => {
         created_at: '2026-09-01T10:00:00.000Z',
         image_url: '',
         user_id: AUTHOR_ID,
-        profile: { full_name: 'Jane Doe', email: 'jane@example.test', is_banned: false },
+        profile: { full_name: 'Jane Doe', email: 'jane@example.test', avatar_url: null, is_banned: false },
       }],
     })
     expect(mocks.adminFrom).toHaveBeenNthCalledWith(1, 'community_posts')

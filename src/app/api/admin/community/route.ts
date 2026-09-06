@@ -7,7 +7,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 const postIdSchema = z.string().uuid()
 
 const POST_COLUMNS = 'id, content, category, created_at, image_url, user_id'
-const PROFILE_COLUMNS = 'id, full_name, email, is_banned'
+const PROFILE_COLUMNS = 'id, full_name, email, avatar_url, is_banned'
 
 function rateLimit(request: Request, operation: string) {
   const ip = request.headers.get('x-forwarded-for') || 'unknown'
@@ -80,6 +80,7 @@ export async function GET(request: Request) {
         profile: {
           full_name: profile?.full_name ?? '',
           email: profile?.email ?? '',
+          avatar_url: profile?.avatar_url ?? null,
           is_banned: profile?.is_banned ?? false,
         },
       }

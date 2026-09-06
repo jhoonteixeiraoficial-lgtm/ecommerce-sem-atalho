@@ -17,6 +17,7 @@ interface CommunityPost {
   profile: {
     full_name: string
     email: string
+    avatar_url: string | null
     is_banned: boolean
   }
 }
@@ -166,8 +167,12 @@ export default function AdminCommunityPage() {
           <Card key={post.id} className="space-y-3">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center text-sm font-medium text-accent">
-                  {post.profile?.full_name?.charAt(0) || '?'}
+                <div className="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center text-sm font-medium text-accent overflow-hidden">
+                  {post.profile?.avatar_url ? (
+                    <img src={post.profile.avatar_url} alt={post.profile?.full_name || ''} className="w-full h-full object-cover" />
+                  ) : (
+                    post.profile?.full_name?.charAt(0) || '?'
+                  )}
                 </div>
                 <div>
                   <div className="text-sm font-medium text-text-primary">

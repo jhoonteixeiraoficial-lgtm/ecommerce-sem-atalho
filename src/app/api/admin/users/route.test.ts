@@ -92,6 +92,7 @@ describe('GET /api/admin/users', () => {
       id: USER_ID,
       full_name: 'Jane Doe',
       email: 'jane@example.test',
+      avatar_url: null,
       role: 'member',
       status: 'active',
       is_banned: false,

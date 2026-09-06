@@ -10,6 +10,7 @@ interface UserProfile {
   id: string
   full_name: string
   email: string
+  avatar_url: string | null
   role: string
   status: string
   is_banned: boolean
@@ -230,10 +231,14 @@ export default function AdminUsersPage() {
         <div className="divide-y divide-border-subtle">
           {users.map((user) => (
             <div key={user.id} className="p-4 flex items-center gap-4 hover:bg-surface-raised transition-colors">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 overflow-hidden ${
                 user.is_banned ? 'bg-error/10 text-error' : 'bg-accent/10 text-accent'
               }`}>
-                {user.full_name?.charAt(0) || user.email?.charAt(0) || '?'}
+                {user.avatar_url ? (
+                  <img src={user.avatar_url} alt={user.full_name || ''} className="w-full h-full object-cover" />
+                ) : (
+                  user.full_name?.charAt(0) || user.email?.charAt(0) || '?'
+                )}
               </div>
 
               <div className="flex-1 min-w-0">

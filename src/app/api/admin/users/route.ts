@@ -28,7 +28,7 @@ export async function GET(request: Request) {
 
   let query = admin
     .from('profiles')
-    .select('id, full_name, email, created_at, updated_at', { count: 'exact' })
+    .select('id, full_name, email, avatar_url, created_at, updated_at', { count: 'exact' })
     .order('created_at', { ascending: false })
 
   if (search) {
@@ -81,6 +81,7 @@ export async function GET(request: Request) {
     id: p.id,
     full_name: p.full_name,
     email: p.email,
+    avatar_url: p.avatar_url || null,
     role: roleMap.get(p.id) ?? 'member',
     status: statusMap.get(p.id)?.status ?? 'active',
     is_banned: statusMap.get(p.id)?.status === 'banned',
