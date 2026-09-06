@@ -66,8 +66,28 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [supabase] = useState(() => createClient())
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const [userName, setUserName] = useState('')
   const closeForNavigation = useEffectEvent(onClose)
   const groups = isAdmin ? [...navGroups, adminGroup] : navGroups
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('full_name, avatar_url, updated_at')
+          .eq('id', user.id)
+          .single()
+        if (data) {
+          setAvatarUrl(data.avatar_url ? `${data.avatar_url}?v=${data.updated_at || Date.now()}` : null)
+          setUserName(data.full_name?.charAt(0) || user.email?.charAt(0) || 'U')
+        }
+      }
+    }
+    fetchProfile()
+  }, [supabase])
 
   const handleLogout = useCallback(async () => {
     await supabase.auth.signOut()
@@ -135,7 +155,17 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
           ))}
         </nav>
 
-        <div className="p-2 border-t border-border-subtle">
+        <div className="p-2 border-t border-border-subtle space-y-2">
+          <Link href="/membros/perfil" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-surface-raised transition-colors">
+            <div className="w-8 h-8 rounded-full bg-accent/10 border border-accent/30 flex items-center justify-center text-xs font-medium text-accent overflow-hidden flex-shrink-0">
+              {avatarUrl ? (
+                <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+              ) : (
+                userName
+              )}
+            </div>
+            <span className="text-sm text-text-secondary truncate">Meu Perfil</span>
+          </Link>
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-text-muted hover:text-text-secondary rounded-lg hover:bg-surface-raised transition-colors"
@@ -187,7 +217,30 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
           ))}
         </nav>
 
-        <div className="p-2 border-t border-border-subtle">
+        <div className="p-2 border-t border-border-subtle space-y-2">
+          {!collapsed && (
+            <Link href="/membros/perfil" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-surface-raised transition-colors">
+              <div className="w-8 h-8 rounded-full bg-accent/10 border border-accent/30 flex items-center justify-center text-xs font-medium text-accent overflow-hidden flex-shrink-0">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  userName
+                )}
+              </div>
+              <span className="text-sm text-text-secondary truncate">Meu Perfil</span>
+            </Link>
+          )}
+          {collapsed && (
+            <Link href="/membros/perfil" className="flex items-center justify-center py-2">
+              <div className="w-8 h-8 rounded-full bg-accent/10 border border-accent/30 flex items-center justify-center text-xs font-medium text-accent overflow-hidden">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  userName
+                )}
+              </div>
+            </Link>
+          )}
           <button
             onClick={() => setCollapsed(!collapsed)}
             className="w-full flex items-center justify-center gap-2 text-text-muted hover:text-text-secondary py-2 rounded-lg hover:bg-surface-raised transition-colors"

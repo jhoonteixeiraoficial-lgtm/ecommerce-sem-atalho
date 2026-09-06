@@ -25,7 +25,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
           .eq('id', user.id)
           .single()
         if (data) {
-          setAvatarUrl(data.avatar_url || null)
+          setAvatarUrl(data.avatar_url ? `${data.avatar_url}?v=${data.updated_at || Date.now()}` : null)
           setUserName(data.full_name?.charAt(0) || user.email?.charAt(0) || 'U')
         }
       }
