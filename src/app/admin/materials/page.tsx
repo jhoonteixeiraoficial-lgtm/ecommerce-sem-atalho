@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { FileText, Plus, Trash2, Pencil, ExternalLink, X, Check } from 'lucide-react'
+import { FileText, Plus, Trash2, Pencil, ExternalLink, X, Check, Link as LinkIcon, Upload } from 'lucide-react'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -14,6 +14,7 @@ interface Material {
   title: string
   description: string
   file_url: string
+  file_type: string
   category: string
   is_premium: boolean
   download_count: number
@@ -137,6 +138,9 @@ export default function AdminMaterials() {
                       <option value="template">Template</option>
                       <option value="ebook">E-book</option>
                       <option value="checklist">Checklist</option>
+                      <option value="guia">Guia</option>
+                      <option value="documento">Documento</option>
+                      <option value="imagem">Imagem</option>
                     </select>
                   </div>
                   <div className="flex gap-2">
@@ -152,13 +156,19 @@ export default function AdminMaterials() {
                 </div>
               ) : (
                 <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
-                    <FileText className="w-5 h-5 text-accent" />
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
+                    m.file_type === 'link' ? 'bg-blue-500/10' : 'bg-accent/10'
+                  }`}>
+                    {m.file_type === 'link' ? (
+                      <LinkIcon className="w-5 h-5 text-blue-400" />
+                    ) : (
+                      <Upload className="w-5 h-5 text-accent" />
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-text-primary truncate">{m.title}</div>
                     <div className="text-xs text-text-muted">
-                      {m.category} · {m.is_premium ? 'Premium' : 'Grátis'} · {m.download_count} downloads
+                      {m.category} · {m.file_type === 'link' ? 'Link externo' : 'Arquivo'} · {m.is_premium ? 'Premium' : 'Grátis'} · {m.download_count} downloads
                     </div>
                   </div>
                   <div className="flex items-center gap-1">

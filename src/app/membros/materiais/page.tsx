@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { Download, FileText, Image, FileSpreadsheet, Search } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Download, FileText, Image, FileSpreadsheet, Search, Link as LinkIcon, ExternalLink, Loader2 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { createClient } from '@/lib/supabase/client'
 
@@ -11,14 +11,37 @@ interface Material {
   description: string
   category: string
   file_url: string
+  file_type: string
   downloads: number
 }
 
-const categoryIcons: Record<string, typeof FileText> = {
-  Planilhas: FileSpreadsheet,
-  Checklists: FileText,
-  Guias: FileText,
-  Templates: FileText,
+function getFileIcon(category: string, fileType: string) {
+  if (fileType === 'link') return LinkIcon
+  switch (category) {
+    case 'planilha': return FileSpreadsheet
+    case 'imagem': return Image
+    default: return FileText
+  }
+}
+
+function getFileExt(url: string): string {
+  try {
+    const pathname = new URL(url).pathname
+    const ext = pathname.split('.').pop()?.toLowerCase() || ''
+    return ext
+  } catch {
+    return ''
+  }
+}
+
+function getFileLabel(ext: string): string {
+  const map: Record<string, string> = {
+    pdf: 'PDF', xlsx: 'Excel', xls: 'Excel', csv: 'CSV',
+    docx: 'Word', doc: 'Word', pptx: 'PowerPoint', ppt: 'PowerPoint',
+    png: 'PNG', jpg: 'JPG', jpeg: 'JPEG', heic: 'HEIC', heif: 'HEIF', webp: 'WebP',
+    zip: 'ZIP', rar: 'RAR',
+  }
+  return map[ext] || ext.toUpperCase() || 'Arquivo'
 }
 
 export default function MateriaisPage() {
@@ -26,6 +49,7 @@ export default function MateriaisPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('Todos')
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [supabase] = useState(() => createClient())
 
   useEffect(() => {
@@ -54,9 +78,35 @@ export default function MateriaisPage() {
     return matchesSearch && matchesCategory
   })
 
-  function handleDownload(url: string) {
-    if (url) {
-      window.open(url, '_blank')
+  async function handleDownload(material: Material) {
+    if (material.file_type === 'link') {
+      window.open(material.file_url, '_blank')
+      return
+    }
+
+    setDownloadingId(material.id)
+    try {
+      const response = await fetch(material.file_url)
+      const blob = await response.blob()
+      const ext = getFileExt(material.file_url)
+      const fileName = `${material.title}.${ext}`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      await supabase
+        .from('materials')
+        .update({ download_count: (material.downloads || 0) + 1 })
+        .eq('id', material.id)
+    } catch {
+      window.open(material.file_url, '_blank')
+    } finally {
+      setDownloadingId(null)
     }
   }
 
@@ -125,24 +175,53 @@ export default function MateriaisPage() {
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {filteredMaterials.map((material) => {
-          const Icon = categoryIcons[material.category] || FileText
+          const Icon = getFileIcon(material.category, material.file_type)
+          const isLink = material.file_type === 'link'
+          const ext = isLink ? '' : getFileExt(material.file_url)
+          const isDownloading = downloadingId === material.id
+
           return (
             <div key={material.id} className="p-5 rounded-xl bg-surface border border-border-subtle hover:border-border transition-colors">
               <div className="flex items-start gap-3">
-                <div className="p-2 rounded-lg bg-surface-raised flex-shrink-0">
-                  <Icon className="w-4 h-4 text-text-muted" />
+                <div className={`p-2 rounded-lg flex-shrink-0 ${
+                  isLink ? 'bg-blue-500/10' : 'bg-surface-raised'
+                }`}>
+                  <Icon className={`w-4 h-4 ${isLink ? 'text-blue-400' : 'text-text-muted'}`} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[10px] text-accent font-medium uppercase tracking-wider">{material.category}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-accent font-medium uppercase tracking-wider">{material.category}</span>
+                    {ext && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-raised text-text-muted font-medium">
+                        {getFileLabel(ext)}
+                      </span>
+                    )}
+                    {isLink && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-medium">
+                        Link
+                      </span>
+                    )}
+                  </div>
                   <h3 className="text-sm font-medium text-text-primary mt-1">{material.title}</h3>
                   <p className="text-xs text-text-muted mt-1">{material.description}</p>
                 </div>
               </div>
               <div className="flex items-center justify-between mt-4 pt-3 border-t border-border-subtle">
                 <span className="text-[10px] text-text-muted">{material.downloads} downloads</span>
-                <Button size="sm" variant="secondary" onClick={() => handleDownload(material.file_url)}>
-                  <Download className="w-3.5 h-3.5" />
-                  Baixar
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => handleDownload(material)}
+                  disabled={isDownloading}
+                >
+                  {isDownloading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : isLink ? (
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  {isLink ? 'Acessar' : 'Baixar'}
                 </Button>
               </div>
             </div>
