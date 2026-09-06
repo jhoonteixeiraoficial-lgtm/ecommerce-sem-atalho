@@ -65,14 +65,18 @@ export async function PATCH(request: Request) {
   }
 
   const admin = createAdminClient()
+  const updatePayload: Record<string, unknown> = {
+    full_name: parsed.data.fullName,
+    phone: parsed.data.phone,
+    updated_at: new Date().toISOString(),
+  }
+  if (parsed.data.avatarUrl !== undefined) {
+    updatePayload.avatar_url = parsed.data.avatarUrl || null
+  }
+
   const { error } = await admin
     .from('profiles')
-    .update({
-      full_name: parsed.data.fullName,
-      phone: parsed.data.phone,
-      avatar_url: parsed.data.avatarUrl ?? null,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .eq('id', authUser.id)
 
   if (error) {

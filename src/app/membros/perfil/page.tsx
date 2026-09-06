@@ -77,7 +77,7 @@ export default function PerfilPage() {
       const res = await fetch('/api/account/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fullName, phone }),
+        body: JSON.stringify({ fullName, phone, avatarUrl: avatarUrl || undefined }),
       })
 
       if (res.ok) {
@@ -143,15 +143,21 @@ export default function PerfilPage() {
       const { data } = supabase.storage.from('avatars').getPublicUrl(filePath)
       const publicUrl = data.publicUrl
 
-      await supabase
-        .from('profiles')
-        .update({ avatar_url: publicUrl })
-        .eq('id', user.id)
+      const res = await fetch('/api/account/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fullName, phone, avatarUrl: publicUrl }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Erro ao salvar avatar' }))
+        throw new Error(err.error || 'Erro ao salvar avatar')
+      }
 
       setAvatarUrl(publicUrl)
       setProfile(prev => prev ? { ...prev, avatar_url: publicUrl } : prev)
-    } catch {
-      // Upload failed silently
+    } catch (err) {
+      console.error('[avatar] upload failed:', err)
     } finally {
       setUploadingAvatar(false)
       if (avatarInputRef.current) avatarInputRef.current.value = ''
