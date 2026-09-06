@@ -300,12 +300,32 @@ export default function VideoUpload({ modules, onUploadComplete }: VideoUploadPr
         <div className="space-y-3">
           {!videoUrl ? (
             <>
-              <Input
-                label="URL do vídeo no YouTube"
-                value={youtubeInput}
-                onChange={(e) => setYoutubeInput(e.target.value)}
-                placeholder="Cole a URL — detectamos automaticamente"
-              />
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <Input
+                    label="URL do vídeo no YouTube"
+                    value={youtubeInput}
+                    onChange={(e) => setYoutubeInput(e.target.value)}
+                    onPaste={(e) => {
+                      const pasted = e.clipboardData?.getData('text') || ''
+                      if (pasted.trim()) {
+                        setTimeout(() => activateYouTube(pasted.trim()), 50)
+                      }
+                    }}
+                    placeholder="Cole a URL — detectamos automaticamente"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    if (youtubeInput.trim()) activateYouTube(youtubeInput.trim())
+                  }}
+                  className="mb-[1px]"
+                >
+                  Buscar
+                </Button>
+              </div>
               {fetchingMeta && (
                 <div className="flex items-center gap-2 text-accent text-sm">
                   <Loader2 className="w-4 h-4 animate-spin" />

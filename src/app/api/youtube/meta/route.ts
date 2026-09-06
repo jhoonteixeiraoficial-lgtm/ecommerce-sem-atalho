@@ -8,7 +8,11 @@ function extractVideoId(url: string): string | null {
       return parsed.pathname.slice(1).split('/')[0] || null
     }
     if (host === 'm.youtube.com' || host === 'youtube.com') {
-      return parsed.searchParams.get('v')
+      const v = parsed.searchParams.get('v')
+      if (v) return v
+      const pathMatch = parsed.pathname.match(/\/shorts\/([a-zA-Z0-9_-]{11})/)
+      if (pathMatch) return pathMatch[1]
+      return null
     }
     return null
   } catch {
