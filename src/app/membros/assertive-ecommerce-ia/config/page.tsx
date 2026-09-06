@@ -1,217 +1,341 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { Settings, Save, Loader2, Check, X, Zap, Key } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
+import {
+  Save, Loader2, Check, X, Key, ArrowLeft, Eye, Plug, Trash2, Info,
+} from 'lucide-react'
 
-interface Config {
+interface ProviderInfo {
+  id: string
+  models: string[]
+  vision: boolean
+}
+
+interface ConfigState {
   provider: string
-  api_key: string
+  api_key_masked: string | null
+  has_api_key: boolean
   base_url: string
   model: string
-  default_variations: number
   default_tone: string
   default_margin: number
-  auto_publish: boolean
+  providers: ProviderInfo[]
+  system_vision_available: boolean
+}
+
+const PROVIDER_LABELS: Record<string, { label: string; desc: string }> = {
+  gemini: { label: 'Google Gemini', desc: 'Analisa fotos e texto. Recomendado.' },
+  groq: { label: 'Groq', desc: 'Muito rápido para texto. Não analisa imagens.' },
+  openai: { label: 'OpenAI', desc: 'GPT-4o. Analisa fotos e texto.' },
+  claude: { label: 'Anthropic Claude', desc: 'Alta qualidade de texto.' },
+  custom: { label: 'Personalizado', desc: 'Qualquer API compatível com OpenAI.' },
 }
 
 export default function ConfigPage() {
-  const [config, setConfig] = useState<Config>({
-    provider: 'groq', api_key: '', base_url: '', model: '',
-    default_variations: 3, default_tone: 'profissional',
-    default_margin: 30, auto_publish: false,
-  })
+  const [config, setConfig] = useState<ConfigState | null>(null)
+  const [provider, setProvider] = useState('gemini')
+  const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [model, setModel] = useState('')
+  const [tone, setTone] = useState('profissional')
+
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
   const [saved, setSaved] = useState(false)
-  const supabase = createClient()
+
+  const [ml, setMl] = useState<{ connected: boolean; nickname?: string; account_model?: string } | null>(null)
+
+  const load = useCallback(async () => {
+    const [cfg, mlStatus] = await Promise.all([
+      fetch('/api/assertive/ai/config').then(r => r.json()),
+      fetch('/api/assertive/ml/status').then(r => r.json()).catch(() => ({ connected: false })),
+    ])
+    setConfig(cfg)
+    setProvider(cfg.provider || 'gemini')
+    setBaseUrl(cfg.base_url || '')
+    setModel(cfg.model || '')
+    setTone(cfg.default_tone || 'profissional')
+    setMl(mlStatus)
+    setLoading(false)
+  }, [])
+
+  // load() é assíncrono: o primeiro setState só ocorre após o await, nunca durante o render.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    async function load() {
-      const { data } = await supabase.from('assertive_ai_config').select('*').single()
-      if (data) setConfig(data)
-      setLoading(false)
+    function onMessage(e: MessageEvent) {
+      if (e.origin !== window.location.origin) return
+      if (e.data?.type === 'ml-connected') load()
     }
-    load()
-  }, [supabase])
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [load])
 
   async function handleSave() {
     setSaving(true)
-    await fetch('/api/assertive/ai/config', {
+    const res = await fetch('/api/assertive/ai/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
+      body: JSON.stringify({
+        provider,
+        // chave em branco mantém a que já está salva
+        api_key: apiKey.trim() || undefined,
+        base_url: baseUrl.trim() || undefined,
+        model: model.trim() || undefined,
+        default_tone: tone,
+      }),
     })
+    if (res.ok) {
+      const data = await res.json()
+      setConfig(data)
+      setApiKey('')
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2200)
+    }
     setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   async function handleTest() {
-    if (!config.api_key) return
     setTesting(true)
     setTestResult(null)
     const res = await fetch('/api/assertive/ai/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
+      body: JSON.stringify({
+        provider,
+        api_key: apiKey.trim() || undefined,
+        base_url: baseUrl.trim() || undefined,
+        model: model.trim() || undefined,
+      }),
     })
-    const data = await res.json()
-    setTestResult(data)
+    setTestResult(await res.json())
     setTesting(false)
   }
 
-  const providers = [
-    { value: 'groq', label: 'Groq (Grátis)', desc: 'Llama 3.1 — rápido e gratuito' },
-    { value: 'gemini', label: 'Gemini (Grátis)', desc: 'Google Gemini Flash — gratuito' },
-    { value: 'claude', label: 'Claude', desc: 'Anthropic Claude — API key necessária' },
-    { value: 'openai', label: 'OpenAI', desc: 'GPT-4o — API key necessária' },
-    { value: 'custom', label: 'Personalizado', desc: 'Qualquer API compatível com OpenAI' },
-  ]
+  async function connectML() {
+    const res = await fetch('/api/assertive/ml/connect', { method: 'POST' })
+    const data = await res.json()
+    if (data.url) window.open(data.url, 'ml-oauth', 'width=520,height=720')
+  }
 
-  if (loading) {
+  async function disconnectML() {
+    await fetch('/api/assertive/ml/status', { method: 'DELETE' })
+    load()
+  }
+
+  if (loading || !config) {
     return (
       <div className="min-h-screen bg-[#0c0c0c] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-amber-500 animate-spin" />
+        <Loader2 className="w-7 h-7 text-amber-500 animate-spin" />
       </div>
     )
   }
 
-  return (
-    <div className="min-h-screen bg-[#0c0c0c] p-6">
-      <div className="max-w-2xl mx-auto">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
-            <Settings className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-white">Configurações de IA</h1>
-            <p className="text-gray-400 text-sm">Configure o provedor de IA para gerar anúncios</p>
-          </div>
-        </div>
+  const selectedProvider = config.providers?.find(p => p.id === provider)
+  const providerHasVision = selectedProvider?.vision ?? false
 
-        <div className="space-y-6">
-          <div className="bg-[#141414] border border-[#1c1c1c] rounded-xl p-6">
-            <h2 className="text-white font-bold mb-4 flex items-center gap-2">
-              <Zap className="w-5 h-5 text-amber-500" />
-              Provedor de IA
-            </h2>
-            <div className="grid grid-cols-1 gap-3">
-              {providers.map(p => (
+  return (
+    <div className="min-h-screen bg-[#0c0c0c] px-4 py-6 sm:p-6">
+      <div className="max-w-2xl mx-auto">
+        <Link
+          href="/membros/assertive-ecommerce-ia"
+          className="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-5 transition"
+        >
+          <ArrowLeft className="w-4 h-4" /> Assertive IA
+        </Link>
+
+        <h1 className="text-xl sm:text-2xl font-bold text-white mb-6">Configurações</h1>
+
+        {/* Mercado Livre */}
+        <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 mb-5">
+          <h2 className="text-white font-semibold flex items-center gap-2 mb-4">
+            <Plug className="w-4 h-4 text-amber-500" /> Conta do Mercado Livre
+          </h2>
+
+          {ml?.connected ? (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-emerald-400 text-sm font-medium flex items-center gap-2">
+                  <Check className="w-4 h-4" /> {ml.nickname || 'Conectado'}
+                </p>
+                {ml.account_model && (
+                  <p className="text-gray-500 text-xs mt-1">
+                    Modelo da conta: {ml.account_model === 'user_product' ? 'novo (user products)' : 'clássico'}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={disconnectML}
+                className="inline-flex items-center gap-1.5 text-gray-400 hover:text-red-400 text-sm transition"
+              >
+                <Trash2 className="w-4 h-4" /> Desconectar
+              </button>
+            </div>
+          ) : (
+            <div>
+              <p className="text-gray-400 text-sm mb-3">
+                Necessário para pesquisar a concorrência e publicar anúncios na sua conta.
+              </p>
+              <button
+                onClick={connectML}
+                className="bg-amber-500 text-black text-sm font-semibold px-4 py-2 rounded-lg hover:bg-amber-400 transition"
+              >
+                Conectar Mercado Livre
+              </button>
+            </div>
+          )}
+        </section>
+
+        {/* IA */}
+        <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 mb-5">
+          <h2 className="text-white font-semibold flex items-center gap-2 mb-4">
+            <Key className="w-4 h-4 text-amber-500" /> Inteligência artificial
+          </h2>
+
+          <label className="block text-gray-400 text-xs mb-2">Provedor</label>
+          <div className="space-y-2 mb-5">
+            {(config.providers || []).map(p => {
+              const info = PROVIDER_LABELS[p.id]
+              if (!info) return null
+              return (
                 <button
-                  key={p.value}
-                  onClick={() => setConfig({ ...config, provider: p.value })}
-                  className={`p-4 rounded-xl text-left transition border ${
-                    config.provider === p.value
-                      ? 'bg-amber-500/10 border-amber-500/50 text-white'
-                      : 'bg-[#1c1c1c] border-[#2a2a2a] text-gray-400 hover:text-white'
+                  key={p.id}
+                  onClick={() => { setProvider(p.id); setTestResult(null) }}
+                  className={`w-full text-left rounded-lg px-3 py-2.5 border transition ${
+                    provider === p.id
+                      ? 'bg-amber-500/10 border-amber-500/40'
+                      : 'bg-[#1a1a1a] border-[#242424] hover:border-[#333]'
                   }`}
                 >
-                  <p className="font-medium">{p.label}</p>
-                  <p className="text-sm opacity-60">{p.desc}</p>
+                  <div className="flex items-center justify-between">
+                    <span className={`text-sm font-medium ${provider === p.id ? 'text-amber-300' : 'text-gray-200'}`}>
+                      {info.label}
+                    </span>
+                    {p.vision && (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400/80">
+                        <Eye className="w-3 h-3" /> analisa fotos
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-gray-500 text-xs mt-0.5">{info.desc}</p>
                 </button>
-              ))}
-            </div>
+              )
+            })}
           </div>
 
-          {config.provider !== 'groq' && config.provider !== 'gemini' && (
-            <div className="bg-[#141414] border border-[#1c1c1c] rounded-xl p-6">
-              <h2 className="text-white font-bold mb-4 flex items-center gap-2">
-                <Key className="w-5 h-5 text-amber-500" />
-                Credenciais
-              </h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-gray-400 text-sm mb-1 block">API Key</label>
-                  <input
-                    type="password"
-                    value={config.api_key}
-                    onChange={e => setConfig({ ...config, api_key: e.target.value })}
-                    placeholder="sk-..."
-                    className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
-                  />
-                </div>
-                {config.provider === 'custom' && (
-                  <>
-                    <div>
-                      <label className="text-gray-400 text-sm mb-1 block">Base URL</label>
-                      <input
-                        type="url"
-                        value={config.base_url}
-                        onChange={e => setConfig({ ...config, base_url: e.target.value })}
-                        placeholder="https://api.example.com/v1"
-                        className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-gray-400 text-sm mb-1 block">Modelo</label>
-                      <input
-                        type="text"
-                        value={config.model}
-                        onChange={e => setConfig({ ...config, model: e.target.value })}
-                        placeholder="gpt-4o"
-                        className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-3 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
-                      />
-                    </div>
-                  </>
-                )}
-                <button
-                  onClick={handleTest}
-                  disabled={!config.api_key || testing}
-                  className="flex items-center gap-2 bg-[#1c1c1c] border border-[#2a2a2a] text-white px-4 py-2 rounded-lg text-sm hover:bg-[#222] transition disabled:opacity-40"
-                >
-                  {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                  Testar Conexão
-                </button>
-                {testResult && (
-                  <div className={`p-3 rounded-lg flex items-center gap-2 ${testResult.ok ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-                    {testResult.ok ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-                    {testResult.ok ? 'Conexão OK!' : testResult.error}
-                  </div>
-                )}
+          {!providerHasVision && config.system_vision_available && (
+            <div className="flex gap-2 bg-blue-500/10 border border-blue-500/25 rounded-lg p-3 mb-4">
+              <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+              <p className="text-blue-200/80 text-xs leading-relaxed">
+                Este provedor não analisa imagens. O Assertive usa automaticamente o Gemini para a
+                identificação por foto e mantém sua escolha para os textos.
+              </p>
+            </div>
+          )}
+
+          <label className="block text-gray-400 text-xs mb-1.5">
+            Chave de API {config.has_api_key && <span className="text-emerald-500/70">(salva: {config.api_key_masked})</span>}
+          </label>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={e => { setApiKey(e.target.value); setTestResult(null) }}
+            placeholder={config.has_api_key ? 'Deixe em branco para manter a atual' : 'Cole sua chave de API'}
+            autoComplete="off"
+            className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+          />
+          <p className="text-gray-600 text-[11px] mt-1.5">
+            A chave é criptografada no servidor e nunca volta para o navegador.
+          </p>
+
+          {provider === 'custom' && (
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="block text-gray-400 text-xs mb-1.5">URL base</label>
+                <input
+                  value={baseUrl}
+                  onChange={e => setBaseUrl(e.target.value)}
+                  placeholder="https://api.exemplo.com/v1"
+                  className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-400 text-xs mb-1.5">Modelo</label>
+                <input
+                  value={model}
+                  onChange={e => setModel(e.target.value)}
+                  placeholder="nome-do-modelo"
+                  className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                />
               </div>
             </div>
           )}
 
-          <div className="bg-[#141414] border border-[#1c1c1c] rounded-xl p-6">
-            <h2 className="text-white font-bold mb-4">Preferências Padrão</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-gray-400 text-sm mb-1 block">Variações por anúncio</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={config.default_variations}
-                  onChange={e => setConfig({ ...config, default_variations: Number(e.target.value) })}
-                  className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-3 text-white focus:outline-none focus:border-amber-500/50"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-sm mb-1 block">Margem (%)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={90}
-                  value={config.default_margin}
-                  onChange={e => setConfig({ ...config, default_margin: Number(e.target.value) })}
-                  className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-3 text-white focus:outline-none focus:border-amber-500/50"
-                />
-              </div>
+          {provider !== 'custom' && (selectedProvider?.models.length ?? 0) > 0 && (
+            <div className="mt-4">
+              <label className="block text-gray-400 text-xs mb-1.5">Modelo (opcional)</label>
+              <select
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-amber-500/50"
+              >
+                <option value="">Automático (recomendado)</option>
+                {selectedProvider!.models.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
             </div>
-          </div>
+          )}
 
           <button
-            onClick={handleSave}
-            disabled={saving}
-            className="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-black py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition disabled:opacity-40"
+            onClick={handleTest}
+            disabled={testing || (!apiKey.trim() && !config.has_api_key)}
+            className="w-full mt-4 bg-[#1c1c1c] text-white py-2.5 rounded-lg font-medium text-sm flex items-center justify-center gap-2 hover:bg-[#242424] transition disabled:opacity-40"
           >
-            {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : saved ? <Check className="w-5 h-5" /> : <Save className="w-5 h-5" />}
-            {saving ? 'Salvando...' : saved ? 'Salvo!' : 'Salvar Configurações'}
+            {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+            {testing ? 'Testando...' : 'Testar conexão'}
           </button>
-        </div>
+
+          {testResult && (
+            <div className={`mt-3 rounded-lg p-3 flex items-start gap-2 ${
+              testResult.ok ? 'bg-emerald-500/10 border border-emerald-500/25' : 'bg-red-500/10 border border-red-500/25'
+            }`}>
+              {testResult.ok
+                ? <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                : <X className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />}
+              <p className={`text-xs ${testResult.ok ? 'text-emerald-300' : 'text-red-300'}`}>
+                {testResult.ok ? 'Conexão funcionando.' : testResult.error}
+              </p>
+            </div>
+          )}
+        </section>
+
+        {/* preferências */}
+        <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 mb-5">
+          <h2 className="text-white font-semibold mb-4">Preferências de escrita</h2>
+          <label className="block text-gray-400 text-xs mb-1.5">Tom do anúncio</label>
+          <select
+            value={tone}
+            onChange={e => setTone(e.target.value)}
+            className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-amber-500/50"
+          >
+            <option value="profissional">Profissional</option>
+            <option value="técnico">Técnico</option>
+            <option value="direto">Direto</option>
+            <option value="acolhedor">Acolhedor</option>
+          </select>
+        </section>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-black py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition disabled:opacity-40"
+        >
+          {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : saved ? <Check className="w-5 h-5" /> : <Save className="w-5 h-5" />}
+          {saving ? 'Salvando...' : saved ? 'Salvo!' : 'Salvar configurações'}
+        </button>
       </div>
     </div>
   )

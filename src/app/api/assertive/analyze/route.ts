@@ -1,13 +1,19 @@
 import { NextRequest } from 'next/server'
-import { requireCommunityUser, invalidInput, readJson } from '@/app/api/community/helpers'
-import { analyzeFromDescription, analyzeFromPhoto, analyzeFromUrl } from '@/lib/assertive/analyzer'
+import { requireCommunityUser, readJson } from '@/app/api/community/helpers'
+import { identifyFromDescription, identifyFromPhotos, identifyFromUrl } from '@/lib/assertive/truth'
 import { getValidMLToken } from '@/lib/assertive/publisher'
+import { getUserAIConfig } from '@/lib/assertive/pipeline'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { z } from 'zod'
 
-const analyzeSchema = z.object({
+export const runtime = 'nodejs'
+export const maxDuration = 120
+
+const schema = z.object({
   input_type: z.enum(['photo', 'description', 'url']),
-  input_value: z.string().min(1),
+  description: z.string().max(4000).optional(),
+  url: z.string().url().max(1000).optional(),
+  photos: z.array(z.string().url()).max(8).optional(),
 })
 
 export async function POST(req: NextRequest) {
@@ -17,70 +23,80 @@ export async function POST(req: NextRequest) {
 
   const body = await readJson(req)
   if (body.response) return body.response
-  const parsed = analyzeSchema.safeParse(body.body)
-  if (!parsed.success) return invalidInput()
 
-  const { input_type, input_value } = parsed.data
+  const parsed = schema.safeParse(body.body)
+  if (!parsed.success) {
+    return Response.json({ error: 'Dados inválidos para iniciar a análise.' }, { status: 400 })
+  }
+
+  const { input_type, description, url, photos } = parsed.data
+
+  if (input_type === 'photo' && (!photos || photos.length === 0)) {
+    return Response.json({ error: 'Envie pelo menos uma foto do produto.' }, { status: 400 })
+  }
+  if (input_type === 'description' && !description?.trim()) {
+    return Response.json({ error: 'Descreva o produto para continuar.' }, { status: 400 })
+  }
+  if (input_type === 'url' && !url) {
+    return Response.json({ error: 'Informe a URL do anúncio.' }, { status: 400 })
+  }
+
   const supabase = createAdminClient()
 
-  const { data: analysis } = await supabase
+  const { data: analysis, error: insertError } = await supabase
     .from('assertive_analyses')
     .insert({
       user_id: authorizedUser.id,
-      product_name: 'Processando...',
+      product_name: 'Identificando...',
       input_type,
-      input_data: input_type === 'photo' ? { image_url: input_value } : input_type === 'url' ? { ml_url: input_value } : { description: input_value },
-      status: 'analyzing',
+      input_data: { description: description ?? null, ml_url: url ?? null },
+      photos: photos ?? [],
+      status: 'identifying',
     })
-    .select()
+    .select('id')
     .single()
 
-  if (!analysis) return new Response('Erro ao criar análise', { status: 500 })
+  if (insertError || !analysis) {
+    return Response.json({ error: 'Não foi possível iniciar a análise.' }, { status: 500 })
+  }
 
   try {
-    const configRes = await supabase
-      .from('assertive_ai_config')
-      .select('*')
-      .eq('user_id', authorizedUser.id)
-      .single()
+    const config = await getUserAIConfig(authorizedUser.id)
 
-    const config = configRes.data
-
-    let identified
-    if (input_type === 'photo') {
-      identified = await analyzeFromPhoto(config, input_value)
-    } else if (input_type === 'url') {
-      const mlToken = await getValidMLToken(authorizedUser.id).catch(() => null)
-      identified = await analyzeFromUrl(config, input_value, mlToken)
-    } else {
-      identified = await analyzeFromDescription(config, input_value)
-    }
+    const truth =
+      input_type === 'photo'
+        ? await identifyFromPhotos(config, photos!, description)
+        : input_type === 'url'
+          ? await identifyFromUrl(config, url!, await getValidMLToken(authorizedUser.id))
+          : await identifyFromDescription(config, description!)
 
     await supabase
       .from('assertive_analyses')
       .update({
-        product_name: identified.name,
-        identified_data: identified,
-        category_id: identified.category_id || null,
-        status: 'ready',
+        product_name: truth.name,
+        product_truth: truth,
+        status: 'researching',
+        error_message: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', analysis.id)
+      .eq('user_id', authorizedUser.id)
 
-    return Response.json({ ...analysis, product_name: identified.name, identified_data: identified, status: 'ready' })
+    return Response.json({ id: analysis.id, product_truth: truth, status: 'researching' })
   } catch (e) {
+    const raw = e instanceof Error ? e.message : 'Falha na identificação'
+    const message = /Nenhuma IA/i.test(raw)
+      ? raw
+      : /HTTP 4\d\d/.test(raw) && /api key|unauthorized|401|403/i.test(raw)
+        ? 'A chave de API da IA foi recusada. Verifique em Configurações.'
+        : raw
+
     await supabase
       .from('assertive_analyses')
-      .update({ status: 'error', updated_at: new Date().toISOString() })
+      .update({ status: 'failed', error_message: message, updated_at: new Date().toISOString() })
       .eq('id', analysis.id)
+      .eq('user_id', authorizedUser.id)
 
-    const msg = e instanceof Error ? e.message : 'Erro na análise'
-    const friendly = msg.includes('Invalid API Key') || msg.includes('invalid_api_key')
-      ? 'API Key inválida. Configure uma chave válida em Configurações.'
-      : msg.includes('Todas as IAs falharam')
-        ? 'Nenhuma IA disponível. Configure uma chave de API em Configurações.'
-        : msg
-
-    return Response.json({ error: friendly }, { status: 500 })
+    return Response.json({ id: analysis.id, error: message }, { status: 500 })
   }
 }
