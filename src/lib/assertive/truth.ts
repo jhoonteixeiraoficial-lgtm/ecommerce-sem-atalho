@@ -2,14 +2,51 @@ import type { AIConfig } from './types'
 import { generateJson, toDataUri } from './ai'
 import { mlGet } from './ml-api'
 
-export type TruthSource = 'user' | 'photo' | 'description' | 'ml_item' | 'ml_catalog' | 'inference'
+export type TruthSource =
+  | 'user'
+  | 'photo'
+  | 'description'
+  | 'ml_item'
+  | 'ml_catalog'
+  | 'exact_product'
+  | 'manufacturer'
+  | 'manual'
+  | 'datasheet'
+  | 'derived'
+  | 'inference'
 export type TruthConfidence = 'confirmed' | 'high' | 'low'
+
+/**
+ * Status do dado. UNKNOWN e NOT_APPLICABLE são coisas diferentes:
+ *   UNKNOWN        -> existe para este produto, mas não foi encontrado
+ *   NOT_APPLICABLE -> não se aplica a este produto
+ * Nunca usar NOT_APPLICABLE para inflar completude.
+ */
+export type DataStatus =
+  | 'CONFIRMED'
+  | 'AUTO_FILLED'
+  | 'NEEDS_CONFIRMATION'
+  | 'UNKNOWN'
+  | 'NOT_APPLICABLE'
+  | 'CONFLICT'
+  | 'USER_OVERRIDE'
 
 export interface TruthField {
   value: string
   confidence: TruthConfidence
   source: TruthSource
   evidence: string
+  status?: DataStatus
+  source_url?: string
+  retrieved_at?: string
+  /** valores divergentes encontrados em fontes confiáveis */
+  conflict?: Array<{ value: string; source: TruthSource; source_url?: string }>
+}
+
+/** USER_OVERRIDE e CONFIRMED nunca podem ser sobrescritos por enriquecimento. */
+export function isProtectedField(field: TruthField | undefined): boolean {
+  if (!field) return false
+  return field.status === 'USER_OVERRIDE' || field.source === 'user'
 }
 
 export interface PendingQuestion {

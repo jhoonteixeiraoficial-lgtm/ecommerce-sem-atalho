@@ -61,7 +61,7 @@ export function extractDNA(research: ResearchResult): WinningListingDNA {
 
   // ---- títulos
   const titlePatterns: string[] = []
-  const strongest = [...refs].sort((a, b) => b.strength_score - a.strength_score).slice(0, 5)
+  const strongest = [...refs].sort((a, b) => b.competitive_reference_strength - a.competitive_reference_strength).slice(0, 5)
   for (const r of strongest) {
     if (r.title) titlePatterns.push(r.title)
   }
@@ -103,7 +103,7 @@ export function extractDNA(research: ResearchResult): WinningListingDNA {
 
   // atributos mais presentes no topo do que no fim do ranking = diferencial competitivo
   const topHalf = strongest
-  const bottomHalf = [...refs].sort((a, b) => a.strength_score - b.strength_score).slice(0, 5)
+  const bottomHalf = [...refs].sort((a, b) => a.competitive_reference_strength - b.competitive_reference_strength).slice(0, 5)
   const inTop = new Map<string, number>()
   const inBottom = new Map<string, number>()
   for (const r of topHalf) for (const id of Object.keys(r.attributes)) inTop.set(id, (inTop.get(id) || 0) + 1)
@@ -229,18 +229,16 @@ export function dnaToPrompt(dna: WinningListingDNA, refs: CompetitorDossier[]): 
     lines.push(`\nTERMOS RELEVANTES (busca real + títulos fortes): ${dna.important_keywords.slice(0, 14).join(', ')}`)
   }
 
+  // ATENÇÃO: enviamos apenas QUAIS atributos os concorrentes preenchem, nunca os
+  // VALORES deles. Valor de concorrente comparável virando fato é contaminação.
   if (dna.must_have_attributes.length) {
-    lines.push('\nATRIBUTOS PRESENTES NA MAIORIA:')
-    dna.must_have_attributes.slice(0, 12).forEach(a =>
-      lines.push(`- ${a.id} (${a.presence_pct}%): ex. ${a.common_values.slice(0, 2).join(' | ')}`)
-    )
+    lines.push('\nATRIBUTOS QUE A MAIORIA DAS REFERÊNCIAS PREENCHE (preencha com dados DESTE produto):')
+    dna.must_have_attributes.slice(0, 12).forEach(a => lines.push(`- ${a.id} (${a.presence_pct}%)`))
   }
 
   if (dna.high_value_attributes.length) {
-    lines.push('\nATRIBUTOS QUE DIFERENCIAM OS MAIS FORTES:')
-    dna.high_value_attributes.slice(0, 8).forEach(a =>
-      lines.push(`- ${a.id}: ex. ${a.common_values.slice(0, 2).join(' | ')}`)
-    )
+    lines.push('\nATRIBUTOS QUE DIFERENCIAM AS REFERÊNCIAS MAIS FORTES:')
+    dna.high_value_attributes.slice(0, 8).forEach(a => lines.push(`- ${a.id}`))
   }
 
   if (dna.price_context) {
@@ -258,13 +256,19 @@ export function dnaToPrompt(dna: WinningListingDNA, refs: CompetitorDossier[]): 
     dna.common_weaknesses.forEach(w => lines.push(`- ${w}`))
   }
 
-  const descSamples = refs
+  // Estrutura da descrição sem expor especificações de outro produto.
+  const descShapes = refs
     .filter(r => r.short_description)
-    .slice(0, 2)
-    .map(r => r.short_description!.slice(0, 400))
-  if (descSamples.length) {
-    lines.push('\nAMOSTRA DE DESCRIÇÃO DAS REFERÊNCIAS (apenas para entender estrutura, NÃO copiar):')
-    descSamples.forEach((d, i) => lines.push(`[${i + 1}] ${d}`))
+    .slice(0, 3)
+    .map(r => {
+      const text = r.short_description!
+      const bullets = (text.match(/^\s*[-•*]/gm) || []).length
+      const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 30).length
+      return `${text.length} caracteres, ${paragraphs} bloco(s), ${bullets} tópico(s)`
+    })
+  if (descShapes.length) {
+    lines.push('\nFORMATO DAS DESCRIÇÕES DAS REFERÊNCIAS (só estrutura — o conteúdo deve ser original):')
+    descShapes.forEach((d, i) => lines.push(`[${i + 1}] ${d}`))
   }
 
   return lines.join('\n')

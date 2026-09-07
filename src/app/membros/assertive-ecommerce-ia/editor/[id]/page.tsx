@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, use, useRef } from 'react'
 import Link from 'next/link'
 import {
   Loader2, AlertCircle, CheckCircle2, ArrowLeft, ShieldCheck, Upload, X,
-  Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera,
+  Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera, Search,
   ExternalLink, Sparkles, TrendingUp, Truck, Store, ChevronDown, Plug,
 } from 'lucide-react'
 
@@ -15,6 +15,17 @@ interface ListingAttribute {
   value_id?: string
   tier: string
   source: string
+  status?: string
+  evidence?: string
+  source_url?: string
+}
+
+const STATUS_BADGE: Record<string, { label: string; className: string }> = {
+  CONFIRMED: { label: 'confirmado', className: 'text-emerald-400/80' },
+  USER_OVERRIDE: { label: 'você informou', className: 'text-blue-300/80' },
+  AUTO_FILLED: { label: 'pesquisado', className: 'text-amber-400/70' },
+  NEEDS_CONFIRMATION: { label: 'confira', className: 'text-orange-400/80' },
+  CONFLICT: { label: 'fontes divergem', className: 'text-red-400/80' },
 }
 
 interface PendingQuestion {
@@ -46,6 +57,21 @@ interface Listing {
     improvements?: string[]
     price_rationale?: string
     missing?: PendingQuestion[]
+    autofill?: {
+      applicable: number
+      already_filled: number
+      from_exact_product: number
+      from_derivation: number
+      from_web: number
+      inferred_needs_confirmation: number
+      not_applicable: number
+      unknown: number
+      user_input_required: number
+      auto_fill_percent: number
+    }
+    research_sources?: Array<{ title: string; url: string }>
+    web_research?: { used: boolean; reason?: string }
+    reasoning_provider?: string
   }
   image_plan: Array<{ order: number; title: string; description: string; required: boolean }>
   completeness: {
@@ -75,7 +101,9 @@ interface Listing {
 interface Competitor {
   title: string
   price: number | null
-  strength_score: number
+  competitive_reference_strength: number
+  product_match_confidence: number
+  match_class: 'EXACT_PRODUCT' | 'COMPARABLE_PRODUCT' | 'CATEGORY_REFERENCE'
   strength_evidence: string[]
   highlight_position: number | null
   attribute_count: number
@@ -87,6 +115,8 @@ interface Competitor {
 interface Research {
   category_name?: string
   competitors?: Competitor[]
+  exact_product_count?: number
+  price_basis?: 'EXACT_PRODUCT' | 'COMPARABLE_PRODUCT' | 'NONE'
   price_stats?: { min: number; max: number; median: number; sample_size: number } | null
   regional?: { status: string; note: string; states: Array<{ state: string; count: number }>; fulfillment_pct: number; free_shipping_pct: number }
   warnings?: string[]
@@ -496,7 +526,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
               {research?.price_stats && (
                 <div className="mt-4 bg-[#1a1a1a] rounded-lg p-3">
                   <p className="text-gray-400 text-xs mb-2">
-                    Preços reais de {research.price_stats.sample_size} ofertas analisadas
+                    {research.price_basis === 'EXACT_PRODUCT'
+                      ? `Preços de ${research.price_stats.sample_size} ofertas do produto exato`
+                      : `Faixa baseada em ${research.price_stats.sample_size} produtos comparáveis`}
                   </p>
                   <div className="flex items-center justify-between text-sm">
                     <div><span className="text-gray-500 text-xs block">Menor</span><span className="text-white">{brl(research.price_stats.min)}</span></div>
@@ -539,17 +571,30 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
               {attrs.length > 0 ? (
                 <div className="divide-y divide-[#1f1f1f]">
-                  {attrs.map(a => (
-                    <div key={a.id} className="flex items-start justify-between gap-4 py-2.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-gray-400 text-sm truncate">{a.name}</span>
-                        {(a.tier === 'required' || a.tier === 'catalog_required') && (
-                          <span className="text-[10px] text-amber-500/70 shrink-0">obrigatório</span>
-                        )}
+                  {attrs.map(a => {
+                    const badge = a.status ? STATUS_BADGE[a.status] : undefined
+                    return (
+                      <div key={a.id} className="flex items-start justify-between gap-4 py-2.5">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-400 text-sm truncate">{a.name}</span>
+                            {(a.tier === 'required' || a.tier === 'catalog_required') && (
+                              <span className="text-[10px] text-amber-500/70 shrink-0">obrigatório</span>
+                            )}
+                          </div>
+                          {a.evidence && (
+                            <p className="text-gray-600 text-[11px] mt-0.5 line-clamp-1">{a.evidence}</p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0 max-w-[55%]">
+                          <span className="text-white text-sm">{a.value_name}</span>
+                          {badge && (
+                            <span className={`block text-[10px] ${badge.className}`}>{badge.label}</span>
+                          )}
+                        </div>
                       </div>
-                      <span className="text-white text-sm text-right shrink-0 max-w-[55%]">{a.value_name}</span>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               ) : (
                 <p className="text-gray-500 text-sm">Nenhum atributo preenchido ainda.</p>
@@ -602,6 +647,62 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 </p>
               </div>
             </section>
+
+            {/* o que o Assertive descobriu */}
+            {listing.attributes?.autofill && (
+              <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
+                <h2 className="text-white font-semibold flex items-center gap-2 mb-1">
+                  <Search className="w-4 h-4 text-amber-500" /> O que o Assertive preencheu
+                </h2>
+                <p className="text-gray-500 text-xs mb-4">
+                  {listing.attributes.autofill.auto_fill_percent}% da ficha resolvido automaticamente
+                </p>
+
+                <div className="space-y-2 text-xs">
+                  {[
+                    ['Do produto no catálogo', listing.attributes.autofill.from_exact_product, 'text-emerald-400'],
+                    ['Da pesquisa na web', listing.attributes.autofill.from_web, 'text-emerald-400'],
+                    ['Deduzido de dados confirmados', listing.attributes.autofill.from_derivation, 'text-emerald-400'],
+                    ['Sugerido — confira', listing.attributes.autofill.inferred_needs_confirmation, 'text-orange-400'],
+                    ['Não se aplica a este produto', listing.attributes.autofill.not_applicable, 'text-gray-500'],
+                    ['Precisa de você', listing.attributes.autofill.user_input_required, 'text-amber-400'],
+                  ]
+                    .filter(([, n]) => (n as number) > 0)
+                    .map(([label, n, color]) => (
+                      <div key={label as string} className="flex items-center justify-between">
+                        <span className="text-gray-400">{label as string}</span>
+                        <span className={color as string}>{n as number}</span>
+                      </div>
+                    ))}
+                </div>
+
+                {listing.attributes.web_research && !listing.attributes.web_research.used && (
+                  <p className="text-gray-600 text-[11px] mt-4 leading-relaxed border-t border-[#1f1f1f] pt-3">
+                    Pesquisa na web indisponível: {listing.attributes.web_research.reason}
+                  </p>
+                )}
+
+                {(listing.attributes.research_sources?.length ?? 0) > 0 && (
+                  <div className="mt-4 pt-3 border-t border-[#1f1f1f]">
+                    <p className="text-gray-400 text-xs font-medium mb-2">Fontes consultadas</p>
+                    <ul className="space-y-1">
+                      {listing.attributes.research_sources!.slice(0, 5).map((s, i) => (
+                        <li key={i}>
+                          <a
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-amber-400/70 hover:text-amber-400 text-[11px] line-clamp-1 transition"
+                          >
+                            {s.title || s.url}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* campos faltantes */}
             {missing.length > 0 && !isPublished && (
@@ -727,22 +828,46 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <h2 className="text-white font-semibold flex items-center gap-2 mb-1">
                   <Trophy className="w-4 h-4 text-amber-500" /> Referências analisadas
                 </h2>
-                <p className="text-gray-500 text-xs mb-4">
-                  {competitors.length} anúncios fortes {research?.category_name ? `em ${research.category_name}` : ''}
+                <p className="text-gray-500 text-xs mb-1">
+                  {competitors.length} referências {research?.category_name ? `em ${research.category_name}` : ''}
+                  {research?.exact_product_count ? ` · ${research.exact_product_count} do produto exato` : ''}
+                </p>
+                <p className="text-gray-600 text-[10px] mb-4 leading-relaxed">
+                  Ranking oficial de mais vendidos da categoria. A API do Mercado Livre não informa
+                  se a exposição é paga, por isso não classificamos orgânico ou patrocinado.
                 </p>
 
                 <div className="space-y-3">
                   {competitors.slice(0, 5).map((c, i) => (
                     <div key={i} className="bg-[#1a1a1a] rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-2 mb-1.5">
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
+                            c.match_class === 'EXACT_PRODUCT'
+                              ? 'bg-emerald-500/15 text-emerald-400'
+                              : c.match_class === 'COMPARABLE_PRODUCT'
+                                ? 'bg-blue-500/15 text-blue-300'
+                                : 'bg-gray-500/15 text-gray-400'
+                          }`}
+                        >
+                          {c.match_class === 'EXACT_PRODUCT'
+                            ? 'produto exato'
+                            : c.match_class === 'COMPARABLE_PRODUCT'
+                              ? 'comparável'
+                              : 'referência'}
+                        </span>
+                        {c.highlight_position !== null && (
+                          <span className="text-[10px] text-emerald-400/80 shrink-0">
+                            #{c.highlight_position} mais vendidos
+                          </span>
+                        )}
+                      </div>
+
                       <p className="text-gray-200 text-xs leading-snug line-clamp-2">{c.title}</p>
+
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         {c.price !== null && (
                           <span className="text-amber-400 text-sm font-medium">{brl(c.price)}</span>
-                        )}
-                        {c.highlight_position !== null && (
-                          <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded">
-                            #{c.highlight_position} mais vendidos
-                          </span>
                         )}
                         {c.shipping?.fulfillment && (
                           <span className="text-[10px] bg-blue-500/15 text-blue-300 px-1.5 py-0.5 rounded flex items-center gap-1">
@@ -750,6 +875,18 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                           </span>
                         )}
                       </div>
+
+                      <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-[#242424]">
+                        <div>
+                          <p className="text-gray-600 text-[9px] uppercase tracking-wide">Mesmo produto</p>
+                          <p className="text-gray-300 text-[11px]">{c.product_match_confidence}/100</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-600 text-[9px] uppercase tracking-wide">Força competitiva</p>
+                          <p className="text-gray-300 text-[11px]">{c.competitive_reference_strength}</p>
+                        </div>
+                      </div>
+
                       <p className="text-gray-500 text-[10px] mt-1.5">
                         {c.attribute_count} atributos · {c.picture_count} fotos
                         {c.seller?.power_seller_status ? ` · ${c.seller.power_seller_status}` : ''}

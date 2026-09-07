@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import {
   Sparkles, Settings, Plus, ExternalLink, Target, Package,
-  CheckCircle2, Loader2, AlertCircle, Plug, ChevronRight, Store,
+  CheckCircle2, Loader2, AlertCircle, Plug, Store, Trash2,
 } from 'lucide-react'
 
 interface Analysis {
@@ -59,6 +59,8 @@ export default function AssertiveDashboard() {
   const [listings, setListings] = useState<Listing[]>([])
   const [ml, setMl] = useState<{ connected: boolean; nickname?: string } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const [dataRes, mlRes] = await Promise.all([
@@ -88,6 +90,18 @@ export default function AssertiveDashboard() {
     const res = await fetch('/api/assertive/ml/connect', { method: 'POST' })
     const data = await res.json()
     if (data.url) window.open(data.url, 'ml-oauth', 'width=520,height=720')
+  }
+
+  async function deleteAnalysis(id: string) {
+    setDeleting(id)
+    // a rota valida a posse no servidor: ninguém apaga projeto de outro usuário
+    const res = await fetch(`/api/assertive/analyses/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      setAnalyses(prev => prev.filter(a => a.id !== id))
+      setListings(prev => prev.filter(l => l.analysis_id !== id))
+    }
+    setDeleting(null)
+    setConfirmDelete(null)
   }
 
   const published = listings.filter(l => l.status === 'published')
@@ -192,10 +206,17 @@ export default function AssertiveDashboard() {
                   {listings.map(l => {
                     const b = badge(l.status)
                     return (
+                      <div key={l.id} className="relative group">
+                      <button
+                        onClick={() => setConfirmDelete({ id: l.analysis_id, name: l.title })}
+                        aria-label="Excluir projeto"
+                        className="absolute top-2 right-2 z-10 p-1.5 rounded-lg text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-black/40 transition"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                       <Link
-                        key={l.id}
                         href={`/membros/assertive-ecommerce-ia/editor/${l.id}`}
-                        className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 hover:border-amber-500/30 transition group"
+                        className="block bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 hover:border-amber-500/30 transition"
                       >
                         <div className="flex gap-3">
                           {l.photos?.[0] ? (
@@ -206,10 +227,8 @@ export default function AssertiveDashboard() {
                               <Package className="w-5 h-5 text-gray-600" />
                             </div>
                           )}
-                          <div className="min-w-0 flex-1">
-                            <p className="text-white text-sm line-clamp-2 group-hover:text-amber-400 transition">
-                              {l.title}
-                            </p>
+                          <div className="min-w-0 flex-1 pr-6">
+                            <p className="text-white text-sm line-clamp-2">{l.title}</p>
                             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${b.className}`}>{b.label}</span>
                               <span className="text-amber-400 text-xs font-medium">{brl(l.price)}</span>
@@ -218,13 +237,12 @@ export default function AssertiveDashboard() {
                               )}
                             </div>
                           </div>
-                          {l.ml_permalink ? (
+                          {l.ml_permalink && (
                             <ExternalLink className="w-4 h-4 text-gray-600 shrink-0" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4 text-gray-600 shrink-0" />
                           )}
                         </div>
                       </Link>
+                      </div>
                     )
                   })}
                 </div>
@@ -238,10 +256,17 @@ export default function AssertiveDashboard() {
                   {pending.map(a => {
                     const b = badge(a.status)
                     return (
+                      <div key={a.id} className="relative group">
+                      <button
+                        onClick={() => setConfirmDelete({ id: a.id, name: a.product_name })}
+                        aria-label="Excluir projeto"
+                        className="absolute top-1/2 -translate-y-1/2 right-2 z-10 p-1.5 rounded-lg text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-black/40 transition"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                       <Link
-                        key={a.id}
                         href={`/membros/assertive-ecommerce-ia/analise/${a.id}`}
-                        className="flex items-center gap-3 bg-[#141414] border border-[#1f1f1f] rounded-xl p-3.5 hover:border-amber-500/30 transition group"
+                        className="flex items-center gap-3 bg-[#141414] border border-[#1f1f1f] rounded-xl p-3.5 hover:border-amber-500/30 transition"
                       >
                         {a.photos?.[0] ? (
                           // eslint-disable-next-line @next/next/no-img-element
@@ -251,10 +276,8 @@ export default function AssertiveDashboard() {
                             <Target className="w-4 h-4 text-gray-600" />
                           </div>
                         )}
-                        <div className="min-w-0 flex-1">
-                          <p className="text-white text-sm truncate group-hover:text-amber-400 transition">
-                            {a.product_name}
-                          </p>
+                        <div className="min-w-0 flex-1 pr-6">
+                          <p className="text-white text-sm truncate">{a.product_name}</p>
                           <div className="flex items-center gap-2 mt-1">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded ${b.className}`}>{b.label}</span>
                             {a.error_message && (
@@ -265,8 +288,8 @@ export default function AssertiveDashboard() {
                             )}
                           </div>
                         </div>
-                        <ChevronRight className="w-4 h-4 text-gray-600 shrink-0" />
                       </Link>
+                      </div>
                     )
                   })}
                 </div>
@@ -275,6 +298,36 @@ export default function AssertiveDashboard() {
           </div>
         )}
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-6 max-w-sm w-full">
+            <h3 className="text-white font-bold text-lg mb-2">Excluir este projeto?</h3>
+            <p className="text-gray-400 text-sm leading-relaxed mb-4">
+              A análise, o anúncio gerado e as informações da pesquisa serão removidos.
+              Anúncios já publicados no Mercado Livre continuam no ar.
+            </p>
+            <p className="text-gray-300 text-sm bg-[#1a1a1a] rounded-lg px-3 py-2 mb-5 line-clamp-2">
+              {confirmDelete.name}
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="flex-1 bg-[#1c1c1c] text-gray-300 py-2.5 rounded-lg font-medium text-sm hover:bg-[#242424] transition"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => deleteAnalysis(confirmDelete.id)}
+                disabled={deleting === confirmDelete.id}
+                className="flex-1 bg-red-500 text-white py-2.5 rounded-lg font-bold text-sm hover:bg-red-400 transition disabled:opacity-50"
+              >
+                {deleting === confirmDelete.id ? 'Excluindo...' : 'Excluir'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

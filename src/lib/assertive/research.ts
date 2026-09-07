@@ -1,5 +1,7 @@
 import { mlGet, mapLimitSettled, SITE_ID } from './ml-api'
 import { discoverDomain, getCategoryTrends } from './taxonomy'
+import { evaluateMatch, buildCompetitorMatrix, type MatchClass, type MatrixKey } from './matching'
+import type { ProductTruth } from './truth'
 
 const HOUR = 3600
 const SIX_HOURS = 21600
@@ -108,9 +110,23 @@ export interface CompetitorDossier {
   /** posição no resultado de relevância da busca de catálogo. */
   search_position: number | null
   catalog_required: boolean
-  /** score interno do Assertive — NÃO é número oficial de vendas. */
-  strength_score: number
+  /**
+   * Força como REFERÊNCIA COMPETITIVA (quanto ensina sobre como vender).
+   * Score interno do Assertive — NÃO é número oficial de vendas.
+   */
+  competitive_reference_strength: number
   strength_evidence: string[]
+  /** Certeza de ser o MESMO produto. Independente da força competitiva. */
+  product_match_confidence: number
+  match_class: MatchClass
+  match_reasons: string[]
+  /** true somente quando pode alimentar ProductTruth/ficha técnica */
+  usable_as_fact_source: boolean
+  /**
+   * A API oficial de catálogo não informa se a exposição é paga.
+   * Sem essa informação, não afirmamos orgânico nem patrocinado.
+   */
+  exposure: 'ORGANIC' | 'SPONSORED' | 'UNKNOWN'
 }
 
 export interface RegionalRadar {
@@ -137,6 +153,10 @@ export interface ResearchResult {
     avg: number
     sample_size: number
   } | null
+  /** de onde vieram os preços: produto exato é muito mais confiável */
+  price_basis: 'EXACT_PRODUCT' | 'COMPARABLE_PRODUCT' | 'NONE'
+  exact_product_count: number
+  competitor_matrix: Partial<Record<MatrixKey, { product_id: string; title: string; value: string }>>
   regional: RegionalRadar
   warnings: string[]
 }
@@ -328,12 +348,17 @@ function buildDossier(
     highlight_position: highlightPos,
     search_position: searchPos,
     catalog_required: product.settings?.listing_strategy === 'catalog_required',
-    strength_score: 0,
+    competitive_reference_strength: 0,
     strength_evidence: [],
+    product_match_confidence: 0,
+    match_class: 'CATEGORY_REFERENCE',
+    match_reasons: [],
+    usable_as_fact_source: false,
+    exposure: 'UNKNOWN',
   }
 
   const { score, evidence } = scoreDossier(dossier)
-  dossier.strength_score = score
+  dossier.competitive_reference_strength = score
   dossier.strength_evidence = evidence
   return dossier
 }
@@ -379,6 +404,8 @@ export interface ResearchOptions {
   /** quantos candidatos entram na fase 2 (análise profunda) */
   deepLimit?: number
   categoryHint?: string | null
+  /** usado para classificar EXACT vs COMPARABLE. Sem ele, nada vira fonte de fato. */
+  truth?: ProductTruth | null
 }
 
 /**
@@ -444,6 +471,9 @@ export async function researchMarket(
       competitors: [],
       candidates_found: 0,
       price_stats: null,
+      price_basis: 'NONE',
+      exact_product_count: 0,
+      competitor_matrix: {},
       regional: buildRegionalRadar([]),
       warnings: [
         'Nenhuma referência de catálogo encontrada para este produto no Mercado Livre. Isso pode indicar um nicho pouco explorado ou que o nome do produto precisa ser mais específico.',
@@ -483,7 +513,24 @@ export async function researchMarket(
   })
 
   const valid = dossiers.filter((d): d is CompetitorDossier => d !== null)
-  valid.sort((a, b) => b.strength_score - a.strength_score)
+
+  // Classifica identidade: separa quem pode virar FATO de quem é só referência.
+  if (opts.truth) {
+    for (const d of valid) {
+      const evaluation = evaluateMatch(opts.truth, {
+        title: d.title,
+        attributes: d.attributes,
+        catalog_product_id: d.product_id,
+      })
+      d.match_class = evaluation.match_class
+      d.product_match_confidence = evaluation.product_match_confidence
+      d.match_reasons = evaluation.reasons
+      d.usable_as_fact_source = evaluation.usable_as_fact_source
+    }
+  }
+
+  // Ordenação por força COMPETITIVA — não por estar no catálogo.
+  valid.sort((a, b) => b.competitive_reference_strength - a.competitive_reference_strength)
   const competitors = valid.slice(0, deepLimit)
 
   if (competitors.length && competitors.every(c => c.price === null)) {
@@ -492,7 +539,10 @@ export async function researchMarket(
     )
   }
 
-  const prices = competitors.map(c => c.price).filter((p): p is number => typeof p === 'number' && p > 0)
+  // Preço prioriza produto EXATO; comparáveis só entram se não houver exato.
+  const exactPriced = competitors.filter(c => c.match_class === 'EXACT_PRODUCT' && c.price)
+  const priceBasis = exactPriced.length >= 2 ? exactPriced : competitors
+  const prices = priceBasis.map(c => c.price).filter((p): p is number => typeof p === 'number' && p > 0)
   const keywords = categoryId
     ? (await getCategoryTrends(token, categoryId)).map(t => t.keyword).slice(0, 25)
     : []
@@ -515,6 +565,26 @@ export async function researchMarket(
           sample_size: prices.length,
         }
       : null,
+    price_basis: !prices.length
+      ? 'NONE'
+      : exactPriced.length >= 2
+        ? 'EXACT_PRODUCT'
+        : 'COMPARABLE_PRODUCT',
+    exact_product_count: competitors.filter(c => c.match_class === 'EXACT_PRODUCT').length,
+    competitor_matrix: buildCompetitorMatrix(
+      competitors.map(c => ({
+        product_id: c.product_id,
+        title: c.title,
+        price: c.price,
+        picture_count: c.picture_count,
+        attribute_count: c.attribute_count,
+        short_description: c.short_description,
+        competitive_reference_strength: c.competitive_reference_strength,
+        highlight_position: c.highlight_position,
+        shipping: c.shipping,
+        seller: c.seller,
+      }))
+    ),
     regional: buildRegionalRadar(competitors),
     warnings,
   }

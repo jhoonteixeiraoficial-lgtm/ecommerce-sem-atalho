@@ -13,7 +13,8 @@ import {
   type ClassifiedAttribute,
   type CategoryInfo,
 } from './taxonomy'
-import { generateListing, type GeneratedListing } from './generator'
+import { generateListing, type GeneratedListing, type ListingAttribute } from './generator'
+import { enrichAttributes } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
 import { requireMLToken, getSellerCapabilities, type SellerCapabilities } from './publisher'
 import { searchQueryFor } from './truth'
@@ -143,17 +144,19 @@ export async function runResearch(
   const research = await researchMarket(token, query, {
     deepLimit: 8,
     categoryHint: opts.categoryOverride || null,
+    // permite classificar EXACT vs COMPARABLE
+    truth,
   })
 
   await updateAnalysis(analysis.id, analysis.user_id, { status: 'analyzing' })
 
   const dna = extractDNA(research)
 
-  // herda a ficha do produto de catálogo equivalente, quando marca e modelo batem
+  // Só produto EXATO alimenta a ficha. Comparável jamais vira fato.
   let enriched = truth
-  const best = research.competitors[0]
-  if (best) {
-    enriched = enrichFromCatalog(truth, best.attributes, best.title)
+  for (const ref of research.competitors) {
+    if (!ref.usable_as_fact_source) continue
+    enriched = enrichFromCatalog(enriched, ref.attributes, ref.title)
   }
 
   await updateAnalysis(analysis.id, analysis.user_id, {
@@ -185,6 +188,20 @@ export async function runGeneration(
 
   await updateAnalysis(analysis.id, analysis.user_id, { status: 'generating', error_message: null })
 
+  // Preserva o que o vendedor já editou: regenerar não apaga trabalho dele.
+  const supabasePrev = createAdminClient()
+  const { data: previous } = await supabasePrev
+    .from('assertive_listings')
+    .select('attributes, photos, price, title, description')
+    .eq('analysis_id', analysis.id)
+    .eq('user_id', analysis.user_id)
+    .is('ml_item_id', null)
+    .maybeSingle()
+
+  const userOverrides = ((previous?.attributes?.list || []) as ListingAttribute[]).filter(
+    a => a.source === 'user'
+  )
+
   const generated = await generateListing({
     config,
     truth,
@@ -195,12 +212,28 @@ export async function runGeneration(
     tone: config?.default_tone,
   })
 
-  const completeness = computeCompleteness(attributes, generated.attributes)
+  // AUTOFILL-FIRST: resolve tudo que for pesquisável antes de perguntar ao vendedor.
+  const enrichment = await enrichAttributes({
+    config,
+    truth,
+    schema: attributes,
+    exactProductAttributes: research.competitors
+      .filter(c => c.usable_as_fact_source)
+      .map(c => ({ title: c.title, attributes: c.attributes })),
+    current: [...userOverrides, ...generated.attributes],
+  })
+
+  const finalAttributes = enrichment.attributes
+  const completeness = computeCompleteness(attributes, finalAttributes)
+  const photos = (previous?.photos as string[] | undefined)?.length
+    ? (previous!.photos as string[])
+    : analysis.photos || []
+
   const scores = computeScores({
     title: generated.title,
     description: generated.description,
-    photos: analysis.photos || [],
-    attributes: generated.attributes,
+    photos,
+    attributes: finalAttributes,
     schema: attributes,
     completeness,
     dna,
@@ -231,13 +264,18 @@ export async function runGeneration(
       category_id: generated.category_id,
       family_name: generated.family_name,
       attributes: {
-        list: generated.attributes,
+        list: finalAttributes,
         alternatives: generated.title_alternatives,
         improvements: generated.improvements,
         price_rationale: generated.price_rationale,
-        missing: generated.missing_attributes,
+        // apenas o que o autofill não conseguiu resolver
+        missing: enrichment.remaining,
+        autofill: enrichment.stats,
+        research_sources: enrichment.web.sources,
+        web_research: { used: enrichment.web.used, reason: enrichment.web.reason },
+        reasoning_provider: enrichment.reasoning_provider,
       },
-      photos: analysis.photos || [],
+      photos,
       image_plan: generated.image_plan,
       completeness,
       scores,
