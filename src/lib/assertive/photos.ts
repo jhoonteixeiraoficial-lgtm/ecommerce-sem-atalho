@@ -73,7 +73,6 @@ export interface CollectPhotosResult {
     from_competitor: number
     classified: number
     deduplicated: number
-    fallback_level?: 'exact' | 'comparable' | 'category_reference'
   }
 }
 
@@ -93,7 +92,8 @@ export async function collectAndClassifyPhotos(
   const seen = new Set<string>()
   const candidates: Array<{ url: string; ref: string; matchClass: string }> = []
 
-  // Phase 1: collect from EXACT_PRODUCT (safest — same product)
+  // FASE 1: coleta SOMENTE de EXACT_PRODUCT (mesma marca + mesmo modelo).
+  // COMPARABLE e CATEGORY_REFERENCE NUNCA entram na galeria final.
   for (const c of byStrength.filter(c => c.match_class === 'EXACT_PRODUCT')) {
     for (const u of c.pictures) {
       if (!seen.has(u)) {
@@ -103,36 +103,17 @@ export async function collectAndClassifyPhotos(
     }
   }
 
-  // Phase 2: fallback to COMPARABLE_PRODUCT when no exact photos exist and no user photos
-  // These are clearly marked so the editor can distinguish them.
-  if (candidates.length === 0 && userPhotos.length === 0) {
-    for (const c of byStrength.filter(c => c.match_class === 'COMPARABLE_PRODUCT')) {
-      for (const u of c.pictures) {
-        if (!seen.has(u)) {
-          seen.add(u)
-          candidates.push({ url: u, ref: c.title, matchClass: c.match_class })
-        }
-      }
-    }
-  }
-
-  // Phase 3: last resort — CATEGORY_REFERENCE (same category, different product line)
-  if (candidates.length === 0 && userPhotos.length === 0) {
-    for (const c of byStrength.filter(c => c.match_class === 'CATEGORY_REFERENCE')) {
-      for (const u of c.pictures) {
-        if (!seen.has(u)) {
-          seen.add(u)
-          candidates.push({ url: u, ref: c.title, matchClass: c.match_class })
-        }
-      }
-    }
-  }
-
   const totalFound = candidates.length
   if (totalFound === 0 && userPhotos.length === 0) {
     return {
       photos: [],
-      stats: { total_found: 0, from_exact_product: 0, from_competitor: 0, classified: 0, deduplicated: 0 },
+      stats: {
+        total_found: 0,
+        from_exact_product: 0,
+        from_competitor: 0,
+        classified: 0,
+        deduplicated: 0,
+      },
     }
   }
 
@@ -239,11 +220,6 @@ export async function collectAndClassifyPhotos(
 
   const fromCompetitor = final.filter(p => p.source === 'COMPETITOR').length
 
-  // Determine fallback level for stats transparency
-  const hasExact = candidates.some(c => c.matchClass === 'EXACT_PRODUCT')
-  const hasComparable = candidates.some(c => c.matchClass === 'COMPARABLE_PRODUCT')
-  const fallbackLevel = hasExact ? 'exact' : hasComparable ? 'comparable' : 'category_reference'
-
   return {
     photos: final,
     stats: {
@@ -252,7 +228,6 @@ export async function collectAndClassifyPhotos(
       from_competitor: fromCompetitor,
       classified: classifications.length,
       deduplicated: dedupCount,
-      fallback_level: fallbackLevel as 'exact' | 'comparable' | 'category_reference',
     },
   }
 }
