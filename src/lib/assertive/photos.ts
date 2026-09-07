@@ -2,6 +2,7 @@ import type { AIConfig } from './types'
 import type { ResearchResult } from './research'
 import type { ProductTruth } from './truth'
 import { runTaskJson } from './ai-router'
+import { getPhotoRequirements } from './category-photos'
 
 export type PhotoRole = 'MAIN' | 'DETAIL' | 'PACKAGING' | 'LIFESTYLE' | 'INFORMATIONAL'
 export type PhotoSource = 'USER' | 'COMPETITOR' | 'AI_ENHANCED' | 'AI_GENERATED'
@@ -63,6 +64,7 @@ export interface CollectPhotosInput {
   truth: ProductTruth | null
   config: AIConfig | null
   userPhotos?: string[]
+  domainId?: string | null
 }
 
 export interface CollectPhotosResult {
@@ -74,12 +76,25 @@ export interface CollectPhotosResult {
     classified: number
     deduplicated: number
   }
+  category_requirements: {
+    background: string
+    min_photos: number
+    recommended_photos: number
+    shot_types: string[]
+  }
+  fidelity_check?: {
+    passed: boolean
+    reason: string
+  }
 }
 
 export async function collectAndClassifyPhotos(
   input: CollectPhotosInput
 ): Promise<CollectPhotosResult> {
-  const { research, config, userPhotos = [] } = input
+  const { research, config, userPhotos = [], domainId } = input
+
+  // Requisitos da categoria para fotos
+  const catReqs = getPhotoRequirements(domainId ?? research.domain_id ?? null)
 
   // 1. Gather URLs ONLY from EXACT_PRODUCT competitors.
   //    COMPARABLE/CATEGORY_REFERENCE may inform strategy but must NOT
@@ -113,6 +128,12 @@ export async function collectAndClassifyPhotos(
         from_competitor: 0,
         classified: 0,
         deduplicated: 0,
+      },
+      category_requirements: {
+        background: catReqs.background,
+        min_photos: catReqs.min_photos,
+        recommended_photos: catReqs.recommended_photos,
+        shot_types: catReqs.shot_types.map(s => s.label),
       },
     }
   }
@@ -228,6 +249,20 @@ export async function collectAndClassifyPhotos(
       from_competitor: fromCompetitor,
       classified: classifications.length,
       deduplicated: dedupCount,
+    },
+    category_requirements: {
+      background: catReqs.background,
+      min_photos: catReqs.min_photos,
+      recommended_photos: catReqs.recommended_photos,
+      shot_types: catReqs.shot_types.map(s => s.label),
+    },
+    fidelity_check: {
+      passed: fromExact > 0 || userPhotos.length > 0,
+      reason: fromExact > 0
+        ? `${fromExact} fotos do produto exato verificadas`
+        : userPhotos.length > 0
+          ? 'Fotos do usuário são a referência'
+          : 'Nenhuma foto do produto exato encontrada',
     },
   }
 }

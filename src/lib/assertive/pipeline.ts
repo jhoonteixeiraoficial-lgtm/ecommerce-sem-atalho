@@ -239,6 +239,7 @@ export async function runGeneration(
       truth,
       config,
       userPhotos,
+      domainId: research.domain_id,
     })
   } catch {
     photoResult = {
@@ -251,6 +252,7 @@ export async function runGeneration(
         position: i,
       })),
       stats: { total_found: 0, from_exact_product: 0, from_competitor: 0, classified: 0, deduplicated: 0 },
+      category_requirements: { background: 'white_pure', min_photos: 4, recommended_photos: 6, shot_types: [] },
     }
   }
 
