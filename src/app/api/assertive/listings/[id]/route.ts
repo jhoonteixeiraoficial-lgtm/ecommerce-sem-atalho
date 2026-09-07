@@ -46,7 +46,8 @@ const patchSchema = z.object({
   category_id: z.string().max(30).optional(),
   family_name: z.string().max(120).optional(),
   photos: z.array(z.string().url()).max(12).optional(),
-  attributes: z.array(attributeSchema).max(120).optional(),
+  // attributes pode vir como array (substituição da lista) ou como objeto (merge de campos aninhados)
+  attributes: z.union([z.array(attributeSchema).max(120), z.record(z.unknown())]).optional(),
   photo_metadata: z.array(z.object({
     url: z.string(),
     role: z.enum(['MAIN', 'DETAIL', 'PACKAGING', 'LIFESTYLE', 'INFORMATIONAL']),
@@ -90,8 +91,13 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
 
   if (attributes) {
-    patch.attributes = { ...(current.attributes || {}), list: attributes }
-    // qualquer alteração invalida a validação anterior
+    if (Array.isArray(attributes)) {
+      // envio como array = substitui a lista inteira
+      patch.attributes = { ...(current.attributes || {}), list: attributes }
+    } else {
+      // envio como objeto = merge de campos aninhados (ex: { photo_metadata: [...] })
+      patch.attributes = { ...(current.attributes || {}), ...attributes }
+    }
     patch.validation = {}
   }
   if (photo_metadata) {

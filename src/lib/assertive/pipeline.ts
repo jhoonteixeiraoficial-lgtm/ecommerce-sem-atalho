@@ -268,7 +268,8 @@ export async function runGeneration(
     titleLimit: maxTitleLength(category),
   })
 
-  const status = completeness.missing_required.length > 0 ? 'needs_input' : 'ready'
+  const hasRealBlockers = !generated.title?.trim() || !generated.price || generated.price <= 0 || photos.length === 0
+  const status = hasRealBlockers ? 'needs_input' : 'ready'
 
   const supabase = createAdminClient()
 
@@ -373,10 +374,13 @@ export async function recomputeListing(listingId: string, userId: string) {
     titleLimit: maxTitleLength(category),
   })
 
+  // Status: não rebaixa status de 'ready_to_publish' por schema interno.
+  // 'needs_input' só quando faltam dados reais do ML (título, preço, foto).
+  const hasRealBlockers = !listing.title?.trim() || !listing.price || Number(listing.price) <= 0 || !listing.photos?.length
   const status =
     listing.status === 'published' || listing.status === 'publishing'
       ? listing.status
-      : completeness.missing_required.length > 0
+      : hasRealBlockers
         ? 'needs_input'
         : 'ready'
 

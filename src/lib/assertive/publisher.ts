@@ -174,13 +174,45 @@ export interface MLItemPayload {
   family_name?: string
 }
 
+/**
+ * Remove atributos com valores inválidos que a API do ML rejeita.
+ * "Na", "N/A", "não informado", etc. não são valores aceitos.
+ */
+function sanitizeAttributes(attrs: ListingAttribute[]): Array<{ id: string; value_id?: string; value_name: string }> {
+  const INVALID = /^(na|n\/a|não informado|nao informado|n\/a\.?|indefinido|indisponivel|indisponível|desconhecido)$/i
+  const PACKAGING_NUM = /^SELLER_PACKAGE_(HEIGHT|WIDTH|LENGTH|WEIGHT)$/
+
+  return attrs
+    .filter(a => {
+      const v = a.value_name?.trim()
+      if (!v) return false
+      if (INVALID.test(v)) return false
+      // SELLER_PACKAGE_* must be positive numbers
+      if (PACKAGING_NUM.test(a.id)) {
+        const n = parseFloat(v.replace(',', '.'))
+        if (!Number.isFinite(n) || n <= 0) return false
+      }
+      return true
+    })
+    .map(a => {
+      let v = a.value_name!.trim()
+      // Normalize packaging dimensions: ensure consistent format for ML
+      if (PACKAGING_NUM.test(a.id)) {
+        const n = parseFloat(v.replace(',', '.'))
+        v = String(Math.round(n * 100) / 100) // 2 decimal places
+      }
+      if (a.value_id) {
+        return { id: a.id, value_id: a.value_id, value_name: v }
+      }
+      return { id: a.id, value_name: v }
+    })
+}
+
 export function buildItemPayload(
   input: ListingPayloadInput,
   capabilities: SellerCapabilities | null
 ): MLItemPayload {
-  const attributes = input.attributes
-    .filter(a => a.value_name?.trim())
-    .map(a => (a.value_id ? { id: a.id, value_id: a.value_id } : { id: a.id, value_name: a.value_name }))
+  const attributes = sanitizeAttributes(input.attributes.filter(a => a.value_name?.trim()))
 
   const sale_terms: Array<{ id: string; value_name: string }> = []
   if (input.warranty_type) sale_terms.push({ id: 'WARRANTY_TYPE', value_name: input.warranty_type })

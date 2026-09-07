@@ -78,7 +78,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         .from('assertive_listings')
         .update({
           validation: { valid: false, checked_at: new Date().toISOString(), issues: validation.issues },
-          status: 'needs_input',
           updated_at: new Date().toISOString(),
         })
         .eq('id', id)

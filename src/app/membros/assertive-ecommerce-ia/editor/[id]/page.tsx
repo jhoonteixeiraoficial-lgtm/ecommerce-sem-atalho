@@ -361,7 +361,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const comp = listing.completeness
   const validation = listing.validation
   const isPublished = listing.status === 'published'
-  const readyToPublish = validation?.valid === true && !isPublished
+  // Publicar só exige: não publicado ainda + dados mínimos reais do ML (título, preço, foto, categoria)
+  const canPublish = !isPublished && !!listing.title?.trim() && !!listing.price && listing.price > 0
+    && Array.isArray(listing.photos) && listing.photos.length > 0 && !!listing.category_id
   const competitors = research?.competitors || []
   const blockingCount = comp?.missing_required?.length || 0
 
@@ -931,16 +933,20 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
                   <button
                     onClick={() => setShowConfirm(true)}
-                    disabled={!readyToPublish || publishing}
+                    disabled={!canPublish || publishing}
                     className="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-black py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 hover:opacity-90 transition disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     {publishing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Store className="w-4 h-4" />}
                     {publishing ? 'Publicando...' : 'Publicar no Mercado Livre'}
                   </button>
 
-                  {!readyToPublish && (
+                  {!canPublish && !isPublished && (
                     <p className="text-gray-500 text-xs text-center pt-1">
-                      Valide o anúncio para liberar a publicação
+                      {!listing.title?.trim() ? 'Defina um título' :
+                       !listing.price || listing.price <= 0 ? 'Defina um preço' :
+                       !listing.photos?.length ? 'Adicione pelo menos uma foto' :
+                       !listing.category_id ? 'Categoria não definida' :
+                       'Preencha os campos obrigatórios para publicar'}
                     </p>
                   )}
                 </div>
