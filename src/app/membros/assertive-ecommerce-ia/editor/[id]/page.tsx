@@ -114,6 +114,30 @@ interface Listing {
     checked_at?: string
     issues?: Array<{ code: string; message: string; severity: string }>
   }
+  publication_requirements?: {
+    requirements: Array<{
+      attribute_id: string
+      name: string
+      level: 'blocking_required' | 'recommended' | 'optional' | 'not_applicable'
+      source: string
+      ml_message?: string
+      suggested_value?: { value_id?: string; value_name?: string }
+      is_blocker: boolean
+      current_value?: string
+    }>
+    blockers: Array<{
+      attribute_id: string
+      name: string
+      level: string
+      ml_message?: string
+      suggested_value?: { value_id?: string; value_name?: string }
+    }>
+    recommended_missing: Array<{ attribute_id: string; name: string }>
+    all_clear: boolean
+    total_attributes: number
+    filled_count: number
+    blocker_count: number
+  }
 }
 
 interface Competitor {
@@ -178,6 +202,10 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [price, setPrice] = useState('')
   const [quantity, setQuantity] = useState('1')
 
+  // Gallery states
+  const [lightbox, setLightbox] = useState<{ open: boolean; index: number }>({ open: false, index: 0 })
+  const [dragState, setDragState] = useState<{ dragging: number | null; over: number | null }>({ dragging: null, over: null })
+
   const load = useCallback(async () => {
     const res = await fetch(`/api/assertive/listings/${id}`)
     if (!res.ok) { setError('Anúncio não encontrado.'); setLoading(false); return }
@@ -208,6 +236,17 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [])
+
+  useEffect(() => {
+    if (!lightbox.open) return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setLightbox({ open: false, index: 0 })
+      else if (e.key === 'ArrowLeft') moveLightbox('prev')
+      else if (e.key === 'ArrowRight') moveLightbox('next')
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [lightbox.open])
 
   async function connectML() {
     const res = await fetch('/api/assertive/ml/connect', { method: 'POST' })
@@ -304,6 +343,57 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     await save({ photos: newPhotos })
   }
 
+  function handleDragStart(e: React.PointerEvent, index: number) {
+    e.preventDefault()
+    setDragState({ dragging: index, over: null })
+  }
+
+  function handleDragOver(e: React.PointerEvent, index: number) {
+    e.preventDefault()
+    setDragState(prev => ({ ...prev, over: index }))
+  }
+
+  async function handleDragEnd() {
+    if (!listing || dragState.dragging === null || dragState.over === null || dragState.dragging === dragState.over) {
+      setDragState({ dragging: null, over: null })
+      return
+    }
+    const newPhotos = [...listing.photos]
+    const [moved] = newPhotos.splice(dragState.dragging, 1)
+    newPhotos.splice(dragState.over, 0, moved)
+    setDragState({ dragging: null, over: null })
+    await save({ photos: newPhotos })
+  }
+
+  async function downloadImage(url: string, index: number) {
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg'
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = `assertive-${(listing?.family_name || 'produto').toLowerCase().replace(/\s+/g, '-')}-${String(index + 1).padStart(2, '0')}.${ext}`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(link.href)
+    } catch {
+      window.open(url, '_blank')
+    }
+  }
+
+  function moveLightbox(direction: 'prev' | 'next') {
+    if (!listing) return
+    const total = listing.photos.length
+    if (total <= 1) return
+    setLightbox(prev => ({
+      open: true,
+      index: direction === 'prev'
+        ? (prev.index - 1 + total) % total
+        : (prev.index + 1) % total,
+    }))
+  }
+
   async function validate() {
     setValidating(true)
     setError(null)
@@ -357,6 +447,10 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
   const attrs = listing.attributes?.list || []
   const missing = listing.attributes?.missing || []
+  const pubReqs = listing.publication_requirements
+  const blockers = pubReqs?.blockers || []
+  const recommendedMissing = pubReqs?.recommended_missing || []
+  const blockerCount = blockers.length || pubReqs?.blocker_count || 0
   const scores = listing.scores
   const comp = listing.completeness
   const validation = listing.validation
@@ -364,6 +458,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   // Publicar só exige: não publicado ainda + dados mínimos reais do ML (título, preço, foto, categoria)
   const canPublish = !isPublished && !!listing.title?.trim() && !!listing.price && listing.price > 0
     && Array.isArray(listing.photos) && listing.photos.length > 0 && !!listing.category_id
+    && (!pubReqs || pubReqs.all_clear)
   const competitors = research?.competitors || []
   const blockingCount = comp?.missing_required?.length || 0
 
@@ -468,10 +563,26 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 {listing.photos.map((url, i) => {
                   const meta = listing.attributes.photo_metadata?.find(m => m.url === url)
                   const isMain = meta?.role === 'MAIN' || i === 0
+                  const isDragging = dragState.dragging === i
+                  const isOver = dragState.over === i
                   return (
-                    <div key={url} className="relative aspect-square rounded-lg overflow-hidden bg-[#1c1c1c] group">
+                    <div
+                      key={url}
+                      className={`relative aspect-square rounded-lg overflow-hidden bg-[#1c1c1c] group touch-none select-none transition-transform ${
+                        isDragging ? 'opacity-50 scale-95' : ''
+                      } ${isOver && dragState.dragging !== null ? 'ring-2 ring-amber-500 scale-105' : ''}`}
+                      onPointerDown={e => handleDragStart(e, i)}
+                      onPointerOver={e => handleDragOver(e, i)}
+                      onPointerUp={handleDragEnd}
+                      onPointerLeave={() => setDragState(prev => prev.dragging !== null ? { ...prev, over: null } : prev)}
+                    >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt={`Foto ${i + 1}`} className="w-full h-full object-cover" />
+                      <img
+                        src={url}
+                        alt={`Foto ${i + 1}`}
+                        className="w-full h-full object-cover pointer-events-none"
+                        draggable={false}
+                      />
 
                       {/* role badge */}
                       {meta && (
@@ -498,23 +609,26 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                         <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition flex items-end justify-between">
                           <div className="flex gap-0.5">
                             {i > 0 && (
-                              <button onClick={() => movePhoto(url, 'up')} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para cima">
+                              <button onClick={e => { e.stopPropagation(); movePhoto(url, 'up') }} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para cima">
                                 <ArrowUp className="w-3 h-3" />
                               </button>
                             )}
                             {i < listing.photos.length - 1 && (
-                              <button onClick={() => movePhoto(url, 'down')} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para baixo">
+                              <button onClick={e => { e.stopPropagation(); movePhoto(url, 'down') }} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para baixo">
                                 <ArrowDown className="w-3 h-3" />
                               </button>
                             )}
                             {!isMain && (
-                              <button onClick={() => setPrincipalPhoto(url)} className="p-1 rounded bg-black/50 text-amber-400 hover:bg-amber-500/20 transition" title="Tornar principal">
+                              <button onClick={e => { e.stopPropagation(); setPrincipalPhoto(url) }} className="p-1 rounded bg-black/50 text-amber-400 hover:bg-amber-500/20 transition" title="Tornar principal">
                                 <Star className="w-3 h-3" />
                               </button>
                             )}
+                            <button onClick={e => { e.stopPropagation(); downloadImage(url, i) }} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Baixar imagem">
+                              <ArrowDown className="w-3 h-3 rotate-180" />
+                            </button>
                           </div>
                           <button
-                            onClick={() => removePhoto(url)}
+                            onClick={e => { e.stopPropagation(); removePhoto(url) }}
                             aria-label="Remover"
                             className="p-1 rounded bg-black/50 text-white hover:bg-red-500 transition"
                           >
@@ -533,6 +647,14 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                           <X className="w-3 h-3" />
                         </button>
                       )}
+
+                      {/* click to open lightbox */}
+                      <button
+                        onClick={() => setLightbox({ open: true, index: i })}
+                        className="absolute inset-0 z-10"
+                        tabIndex={-1}
+                        aria-label={`Ampliar foto ${i + 1}`}
+                      />
                     </div>
                   )
                 })}
@@ -546,6 +668,57 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   </button>
                 )}
               </div>
+
+              {/* lightbox */}
+              {lightbox.open && listing.photos[lightbox.index] && (
+                <div
+                  className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center"
+                  onClick={() => setLightbox({ open: false, index: 0 })}
+                >
+                  <button
+                    onClick={() => setLightbox({ open: false, index: 0 })}
+                    className="absolute top-4 right-4 text-white/70 hover:text-white z-10"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
+
+                  {listing.photos.length > 1 && (
+                    <>
+                      <button
+                        onClick={e => { e.stopPropagation(); moveLightbox('prev') }}
+                        className="absolute left-4 text-white/70 hover:text-white z-10 p-2"
+                      >
+                        <ArrowUp className="w-6 h-6 rotate-[-90deg]" />
+                      </button>
+                      <button
+                        onClick={e => { e.stopPropagation(); moveLightbox('next') }}
+                        className="absolute right-4 text-white/70 hover:text-white z-10 p-2"
+                      >
+                        <ArrowDown className="w-6 h-6 rotate-[-90deg]" />
+                      </button>
+                    </>
+                  )}
+
+                  <div className="max-w-[90vw] max-h-[85vh]" onClick={e => e.stopPropagation()}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={listing.photos[lightbox.index]}
+                      alt={`Foto ${lightbox.index + 1}`}
+                      className="max-w-full max-h-[85vh] object-contain rounded-lg"
+                    />
+                  </div>
+
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-4 text-white/70 text-sm">
+                    <span>{lightbox.index + 1} de {listing.photos.length}</span>
+                    <button
+                      onClick={e => { e.stopPropagation(); downloadImage(listing.photos[lightbox.index], lightbox.index) }}
+                      className="flex items-center gap-1 hover:text-white transition"
+                    >
+                      <ArrowDown className="w-4 h-4 rotate-180" /> Baixar
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {listing.image_plan?.length > 0 && (
                 <details className="mt-4 group">
@@ -832,60 +1005,93 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             )}
 
             {/* campos faltantes */}
-            {missing.length > 0 && !isPublished && (
-              <section className="bg-[#141414] border border-amber-500/20 rounded-xl p-5">
+            {(blockers.length > 0 || (missing.length > 0 && !pubReqs)) && !isPublished && (
+              <section className="bg-[#141414] border border-amber-500/20 rounded-xl p-5 max-h-[60vh] flex flex-col">
                 <button
                   onClick={() => setOpenSection(openSection === 'missing' ? null : 'missing')}
-                  className="w-full flex items-center justify-between mb-1"
+                  className="w-full flex items-center justify-between mb-1 shrink-0"
                 >
                   <h2 className="text-white font-semibold text-left flex items-center gap-2">
                     <AlertCircle className="w-4 h-4 text-amber-500" />
-                    Faltam {missing.length} informações
+                    {blockers.length > 0
+                      ? `Precisamos de ${blockers.length} informação(ões)`
+                      : `Faltam ${missing.length} informações`}
                   </h2>
                   <ChevronDown className={`w-4 h-4 text-gray-500 transition ${openSection === 'missing' ? 'rotate-180' : ''}`} />
                 </button>
 
-                {blockingCount > 0 && (
-                  <p className="text-amber-400/80 text-xs mb-3">
-                    {blockingCount} obrigatória(s) para publicar
+                {blockerCount > 0 && (
+                  <p className="text-amber-400/80 text-xs mb-3 shrink-0">
+                    {blockerCount} obrigatória(s) para publicar
+                  </p>
+                )}
+
+                {pubReqs && !pubReqs.all_clear && (
+                  <p className="text-gray-400 text-xs mb-3 shrink-0">
+                    O Assertive já resolveu {pubReqs.filled_count} de {pubReqs.total_attributes} informações automaticamente.
                   </p>
                 )}
 
                 {openSection === 'missing' && (
                   <>
-                    <div className="space-y-3 mt-3">
-                      {missing.slice(0, 10).map(q => (
-                        <div key={q.field}>
-                          <label className="block text-gray-300 text-sm mb-1">
-                            {q.label}
-                            {comp?.missing_required?.includes(q.label) && (
-                              <span className="text-amber-500 ml-1">*</span>
-                            )}
-                          </label>
-                          {q.options && q.options.length > 0 ? (
-                            <select
-                              value={answers[q.field] ?? ''}
-                              onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
-                              className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500/50"
-                            >
-                              <option value="">Selecione</option>
-                              {q.options.map(o => <option key={o} value={o}>{o}</option>)}
-                            </select>
-                          ) : (
-                            <input
-                              value={answers[q.field] ?? ''}
-                              onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
-                              placeholder={q.suggestion || q.why}
-                              className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
-                            />
-                          )}
+                    <div className="space-y-3 mt-3 overflow-y-auto flex-1 min-h-0">
+                      {blockers.length > 0 && (
+                        <div className="mb-2">
+                          <h3 className="text-amber-400/80 text-xs font-semibold uppercase tracking-wider mb-2">Obrigatórios</h3>
+                          {blockers.map(q => (
+                            <div key={q.attribute_id} className="mb-3">
+                              <label className="block text-gray-300 text-sm mb-1">
+                                {q.name}
+                                <span className="text-amber-500 ml-1">*</span>
+                              </label>
+                              {q.suggested_value && (
+                                <p className="text-gray-500 text-xs mb-1">Sugerido: {q.suggested_value.value_name}</p>
+                              )}
+                              <input
+                                value={answers[q.attribute_id] ?? ''}
+                                onChange={e => setAnswers(a => ({ ...a, [q.attribute_id]: e.target.value }))}
+                                placeholder={q.ml_message || `Informe ${q.name}`}
+                                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                              />
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
+
+                      {blockers.length === 0 && missing.length > 0 && !pubReqs && (
+                        missing.slice(0, 10).map(q => (
+                          <div key={q.field}>
+                            <label className="block text-gray-300 text-sm mb-1">
+                              {q.label}
+                              {comp?.missing_required?.includes(q.label) && (
+                                <span className="text-amber-500 ml-1">*</span>
+                              )}
+                            </label>
+                            {q.options && q.options.length > 0 ? (
+                              <select
+                                value={answers[q.field] ?? ''}
+                                onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
+                                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500/50"
+                              >
+                                <option value="">Selecione</option>
+                                {q.options.map(o => <option key={o} value={o}>{o}</option>)}
+                              </select>
+                            ) : (
+                              <input
+                                value={answers[q.field] ?? ''}
+                                onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
+                                placeholder={q.suggestion || q.why}
+                                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                              />
+                            )}
+                          </div>
+                        ))
+                      )}
                     </div>
                     <button
                       onClick={submitAnswers}
                       disabled={saving || !Object.values(answers).some(v => v.trim())}
-                      className="w-full mt-4 bg-amber-500 text-black py-2.5 rounded-lg font-semibold text-sm hover:bg-amber-400 transition disabled:opacity-40"
+                      className="w-full mt-4 bg-amber-500 text-black py-2.5 rounded-lg font-semibold text-sm hover:bg-amber-400 transition disabled:opacity-40 shrink-0"
                     >
                       {saving ? 'Salvando...' : 'Salvar informações'}
                     </button>

@@ -14,12 +14,14 @@ import {
   type CategoryInfo,
 } from './taxonomy'
 import { generateListing, type GeneratedListing, type ListingAttribute } from './generator'
-import { enrichAttributes } from './enrichment'
+import { enrichAttributes, type EnrichedAttribute } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
-import { requireMLToken, getSellerCapabilities, type SellerCapabilities } from './publisher'
+import { requireMLToken, getSellerCapabilities, buildItemPayload, validateListing, type SellerCapabilities } from './publisher'
 import { searchQueryFor } from './truth'
 import { decrypt } from './encryption'
 import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
+import { computeEffectiveRequirements, type PublicationRequirements } from './publication-requirements'
+import { targetedAttributeResearch } from './targeted-research'
 
 export type AnalysisStage =
   | 'input'
@@ -270,7 +272,88 @@ export async function runGeneration(
     titleLimit: maxTitleLength(category),
   })
 
+  // PRE-PUBLISH VALIDATION: montar payload e validar no ML automaticamente
+  let publicationRequirements: PublicationRequirements | null = null
+  let resolvedAttributes = [...finalAttributes]
+
+  if (generated.title?.trim() && generated.price && generated.price > 0 && photos.length > 0) {
+    try {
+      const token = await requireMLToken(analysis.user_id)
+      const capabilities = await getSellerCapabilities(token).catch(() => null)
+      const catId = generated.category_id || research.category_id || ''
+
+      const payload = buildItemPayload({
+        title: generated.title,
+        family_name: generated.family_name,
+        category_id: catId,
+        price: Number(generated.price),
+        available_quantity: 1,
+        condition: 'new',
+        listing_type_id: 'gold_special',
+        attributes: resolvedAttributes,
+        pictures: photos,
+      }, capabilities)
+
+      let validation = await validateListing(token, payload)
+
+      // se ML retornou blockers, tentar targeted research para cada um
+      if (!validation.valid && validation.issues.length) {
+        const exactProducts = research.competitors
+          .filter(c => c.usable_as_fact_source)
+          .map(c => ({ title: c.title, attributes: c.attributes }))
+
+        for (const issue of validation.issues) {
+          if (issue.severity !== 'error') continue
+          for (const attrId of issue.attribute_ids || []) {
+            if (resolvedAttributes.some(a => a.id === attrId && a.value_name?.trim())) continue
+
+            const spec = attributes.find(a => a.id === attrId)
+            if (!spec) continue
+
+            const result = await targetedAttributeResearch(config, truth, spec, exactProducts)
+            if (result?.value) {
+              const existing = resolvedAttributes.find(a => a.id === attrId)
+              if (existing) {
+                existing.value_name = result.value
+                existing.source = 'catalog'
+              } else {
+                resolvedAttributes.push({
+                  id: attrId,
+                  name: spec.name,
+                  value_name: result.value,
+                  source: 'catalog',
+                  tier: spec.tier,
+                  status: 'AUTO_FILLED',
+                })
+              }
+            }
+          }
+        }
+
+        // revalidar após targeted research
+        const payload2 = buildItemPayload({
+          title: generated.title,
+          family_name: generated.family_name,
+          category_id: catId,
+          price: Number(generated.price),
+          available_quantity: 1,
+          condition: 'new',
+          listing_type_id: 'gold_special',
+          attributes: resolvedAttributes,
+          pictures: photos,
+        }, capabilities)
+
+        validation = await validateListing(token, payload2)
+      }
+
+      publicationRequirements = computeEffectiveRequirements(attributes, validation.issues, resolvedAttributes)
+    } catch {
+      // pre-publish validation falhou: segue sem — o usuário poderá revalidar manualmente
+    }
+  }
+
   const hasRealBlockers = !generated.title?.trim() || !generated.price || generated.price <= 0 || photos.length === 0
+    || (publicationRequirements && publicationRequirements.blocker_count > 0)
   const status = hasRealBlockers ? 'needs_input' : 'ready'
 
   const supabase = createAdminClient()
@@ -295,7 +378,7 @@ export async function runGeneration(
       category_id: generated.category_id,
       family_name: generated.family_name,
       attributes: {
-        list: finalAttributes,
+        list: resolvedAttributes,
         alternatives: generated.title_alternatives,
         improvements: generated.improvements,
         price_rationale: generated.price_rationale,
@@ -308,6 +391,8 @@ export async function runGeneration(
         // photo pipeline
         photo_metadata: photoMetadata,
         photo_stats: photoResult.stats,
+        // pre-publish validation
+        publication_requirements: publicationRequirements,
       },
       photos,
       image_plan: generated.image_plan,
