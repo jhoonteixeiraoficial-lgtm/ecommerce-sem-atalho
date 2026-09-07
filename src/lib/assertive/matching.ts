@@ -34,14 +34,13 @@ function modelEquivalent(a: string, b: string): boolean {
   const nb = norm(b)
   if (!na || !nb) return false
   if (na === nb) return true
-  // Sufixo de cor/variação: "ka250" == "ka250b" (letra), "ka250" == "ka250v2" (variante)
+  // Sufixo de cor/variação: "ka250" == "ka250b" (letra), "k21" == "k21id02" (sufoxes)
   // NÃO aceita sufixo puramente numérico: "ka250" != "ka2503" (modelo diferente)
-  if (na.length >= 4 && nb.startsWith(na)) {
+  if (nb.startsWith(na)) {
     const suffix = nb.slice(na.length)
-    // Sufixo inválido: começa com número = extensão de modelo diferente
     return suffix.length > 0 && /^[a-z]/.test(suffix)
   }
-  if (nb.length >= 4 && na.startsWith(nb)) {
+  if (na.startsWith(nb)) {
     const suffix = na.slice(nb.length)
     return suffix.length > 0 && /^[a-z]/.test(suffix)
   }
