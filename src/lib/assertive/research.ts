@@ -446,10 +446,15 @@ export async function researchMarket(
   for (const r of searchResults) {
     if (r.domain_id) domainCount.set(r.domain_id, (domainCount.get(r.domain_id) || 0) + 1)
   }
+  // Só usa o domain do discoverDomain se ele realmente aparece nos resultados.
+  // Caso contrário, usa o domínio mais frequente da busca.
+  const primaryDomainInResults = primary?.domain_id && domainCount.has(primary.domain_id)
   const dominantDomain =
-    primary?.domain_id ||
-    [...domainCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
-    null
+    primaryDomainInResults
+      ? primary!.domain_id
+      : [...domainCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
+        primary?.domain_id ||
+        null
 
   const candidateIds = new Set<string>()
   for (const r of searchResults.slice(0, 16)) {
