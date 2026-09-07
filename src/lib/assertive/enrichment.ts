@@ -75,6 +75,24 @@ const SELLER_ONLY = new Set([
   'SELLER_PACKAGE_WEIGHT',
 ])
 
+function normalizeUnitValue(
+  rawValue: string,
+  spec: ClassifiedAttribute
+): string {
+  if (spec.value_type !== 'number_unit') return rawValue
+  const allowedIds = (spec.allowed_units || []).map(u => u.id.toLowerCase())
+  const defaultUnit = spec.default_unit || ''
+  const numPart = rawValue.replace(/[^0-9.,]/g, '').trim()
+  if (!numPart) return rawValue
+  const lower = rawValue.toLowerCase()
+  for (const u of spec.allowed_units || []) {
+    if (lower.includes(u.id.toLowerCase()) || lower.includes(u.name.toLowerCase())) {
+      return `${numPart} ${u.id}`
+    }
+  }
+  return defaultUnit ? `${numPart} ${defaultUnit}` : numPart
+}
+
 function put(
   out: Map<string, EnrichedAttribute>,
   spec: ClassifiedAttribute,
@@ -97,9 +115,12 @@ function put(
       value_id = match.id
       value_name = match.name
     } else if (spec.fixedValues) {
-      // valor fora da lista oficial: o ML recusaria. Não preenche.
       return false
     }
+  }
+
+  if (spec.value_type === 'number_unit' && !value_name.match(/[a-z]/i)) {
+    value_name = normalizeUnitValue(value_name, spec)
   }
 
   if (spec.value_max_length && value_name.length > spec.value_max_length) {
@@ -280,10 +301,25 @@ export async function enrichAttributes(input: EnrichmentInput): Promise<Enrichme
     }
   }
 
-  // ---- 4. derivação determinística
+  // ---- 4. GTIN resolver dedicado
+  if (!out.has('GTIN') && byId.has('GTIN')) {
+    const gtinResult = await resolveGTIN({
+      truth,
+      exactProductAttributes,
+      config,
+    })
+    if (gtinResult.value) {
+      const gtinSpec = byId.get('GTIN')!
+      if (put(out, gtinSpec, gtinResult.value, gtinResult.status, gtinResult.source, gtinResult.evidence, gtinResult.source_url)) {
+        stats.from_web++
+      }
+    }
+  }
+
+  // ---- 5. derivação determinística
   stats.from_derivation += deriveDeterministic(out, applicableSchema)
 
-  // ---- 5. retrieval web + raciocínio sobre as fontes
+  // ---- 6. retrieval web + raciocínio sobre as fontes
   const notApplicable = new Set<string>()
   const web: EnrichmentResult['web'] = { used: false, sources: [], queries: [] }
   let reasoning_provider = 'nenhum'
@@ -476,4 +512,110 @@ ${describeAttributes(afterWeb)}`,
     web,
     reasoning_provider,
   }
+}
+
+// ---------------------------------------------------------------- GTIN resolver
+
+interface GTINResult {
+  value: string | null
+  status: DataStatus
+  source: ListingAttribute['source']
+  evidence?: string
+  source_url?: string
+}
+
+function validateGTIN(gtin: string): boolean {
+  const digits = gtin.replace(/[^0-9]/g, '')
+  if (digits.length !== 8 && digits.length !== 12 && digits.length !== 13 && digits.length !== 14) return false
+  if (/^0+$/.test(digits)) return false
+  if (/^(.)\1+$/.test(digits)) return false
+  return true
+}
+
+async function resolveGTIN(input: {
+  truth: ProductTruth
+  exactProductAttributes: Array<{ title: string; attributes: Record<string, string> }>
+  config: AIConfig | null
+}): Promise<GTINResult> {
+  const { truth, exactProductAttributes, config } = input
+  const INVALID = /^(na|n\/a|não informado|nao informado|0+|n\/a\.?|indefinido|indisponivel|indisponível|desconhecido)$/i
+
+  // 1. Truth já tem GTIN?
+  const truthGTIN = truth.fields.gtin?.value
+  if (truthGTIN && !INVALID.test(truthGTIN) && validateGTIN(truthGTIN)) {
+    return {
+      value: truthGTIN,
+      status: 'CONFIRMED',
+      source: 'truth',
+      evidence: truth.fields.gtin?.evidence,
+      source_url: truth.fields.gtin?.source_url,
+    }
+  }
+
+  // 2. EXACT_PRODUCT catalog attributes
+  for (const exact of exactProductAttributes) {
+    const gtinVal = exact.attributes['GTIN'] || exact.attributes['EAN'] || exact.attributes['UPC']
+    if (gtinVal && !INVALID.test(gtinVal) && validateGTIN(gtinVal)) {
+      return {
+        value: gtinVal,
+        status: 'AUTO_FILLED',
+        source: 'catalog',
+        evidence: `GTIN do produto exato no catálogo ML: "${exact.title}"`,
+      }
+    }
+  }
+
+  // 3. Web search specifically for GTIN
+  if (config) {
+    try {
+      const brand = truth.fields.brand?.value || ''
+      const model = truth.fields.model?.value || ''
+      const name = truth.name || ''
+      const query = `GTIN EAN "${brand}" "${model}" ${name}`.trim()
+
+      const { searchWeb } = await import('./websearch')
+      const search = await searchWeb(query)
+
+      if (search.available) {
+        const sourcesBlock = search.sources
+          .map((s, i) => `[${i + 1}] ${s.title || s.url}\nURL: ${s.url}\n${s.snippet}`)
+          .join('\n\n')
+
+        const extracted = await runTaskJson<{ gtin?: string }>(
+          'attribute_enrichment',
+          config,
+          `Você é um pesquisador de GTIN/EAN. Extraia o código de barras EXATO do produto das fontes fornecidas.
+
+REGRAS:
+1. GTIN deve ter 8, 12, 13 ou 14 dígitos numéricos.
+2. NÃO invente GTIN. Só use se estiver EXPLÍCITO nas fontes.
+3. Confirme que o GTIN pertence ao produto certo (mesma marca, modelo, variante, capacidade, cor).
+4. Se não encontrar, retorne {"gtin": null}.
+
+Responda SOMENTE JSON: {"gtin": "código" ou null}`,
+          `PRODUTO: ${name}
+Marca: ${brand}
+Modelo: ${model}
+
+FONTES:
+${sourcesBlock.slice(0, 3000)}`,
+          { maxTokens: 500 }
+        )
+
+        if (extracted.gtin && validateGTIN(extracted.gtin) && !INVALID.test(extracted.gtin)) {
+          return {
+            value: extracted.gtin,
+            status: 'AUTO_FILLED',
+            source: 'catalog',
+            evidence: `GTIN encontrado via pesquisa web`,
+            source_url: search.sources[0]?.url,
+          }
+        }
+      }
+    } catch {
+      // GTIN web search failed: segue sem
+    }
+  }
+
+  return { value: null, status: 'UNKNOWN', source: 'ai' }
 }

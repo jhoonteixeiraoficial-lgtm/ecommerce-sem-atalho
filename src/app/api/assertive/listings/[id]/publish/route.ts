@@ -8,6 +8,9 @@ import {
   validateListing,
   publishListing,
   MLNotConnectedError,
+  type MLItemPayload,
+  type SellerCapabilities,
+  type ValidationIssue,
 } from '@/lib/assertive/publisher'
 import type { ListingAttribute } from '@/lib/assertive/generator'
 import { z } from 'zod'
@@ -72,7 +75,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
 
     // valida imediatamente antes de criar: garante que nada mudou desde a última checagem
-    const validation = await validateListing(token, payload)
+    let validation = await validateListing(token, payload)
+
+    // AUTO-RESOLVE: tenta corrigir automaticamente os blockers antes de pedir ao usuário
+    if (!validation.valid) {
+      const autoFixed = await autoResolveBlockers(token, payload, validation.issues, capabilities)
+      if (autoFixed.changed) {
+        validation = await validateListing(token, payload)
+      }
+    }
+
     if (!validation.valid) {
       await supabase
         .from('assertive_listings')
@@ -83,8 +95,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         .eq('id', id)
         .eq('user_id', authorizedUser.id)
 
+      const friendlyIssues = validation.issues.map(i => ({
+        attribute_id: i.attribute_id,
+        message: i.message,
+        severity: i.severity,
+      }))
+
       return Response.json(
-        { error: 'O anúncio não passou na validação do Mercado Livre.', issues: validation.issues },
+        { error: 'O anúncio não passou na validação do Mercado Livre.', issues: friendlyIssues },
         { status: 422 }
       )
     }
@@ -147,4 +165,62 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .eq('user_id', authorizedUser.id)
     return Response.json({ error: message }, { status: 500 })
   }
+}
+
+// ---------------------------------------------------------------- auto-resolve blockers
+
+const EMPTY_GTIN_REASONS = [
+  'O produto não possui código de barras',
+  'Produto artesanal sem código de barras',
+  'Produto importado sem registro no Brasil',
+]
+
+async function autoResolveBlockers(
+  token: string,
+  payload: MLItemPayload,
+  issues: ValidationIssue[],
+  capabilities: SellerCapabilities
+): Promise<{ changed: boolean }> {
+  let changed = false
+
+  for (const issue of issues) {
+    if (issue.severity !== 'error') continue
+
+    // GTIN missing: tentar EMPTY_GTIN_REASON se disponível
+    if (
+      (issue.code?.includes('GTIN') || issue.attribute_ids?.includes('GTIN')) &&
+      !payload.attributes.some(a => a.id === 'GTIN' && a.value_name && !['Na', 'N/A', ''].includes(a.value_name))
+    ) {
+      const gtinAttr = payload.attributes.find(a => a.id === 'GTIN')
+      if (!gtinAttr || !gtinAttr.value_name || /^(na|n\/a|0+)$/i.test(gtinAttr.value_name)) {
+        payload.attributes = payload.attributes.filter(a => a.id !== 'GTIN')
+        payload.attributes.push({
+          id: 'EMPTY_GTIN_REASON',
+          value_name: EMPTY_GTIN_REASONS[0],
+        })
+        changed = true
+      }
+    }
+
+    // Seller package missing: tentar inferir do produto se não for obrigatório do vendedor
+    if (issue.attribute_ids?.some(id => id.startsWith('SELLER_PACKAGE_')) && capabilities.user_product_model) {
+      // seller_package é obrigatório nesta conta mas não temos dados → não podemos resolver
+      continue
+    }
+
+    // Qualquer outro atributo_required com suggested_value: usar o sugerido
+    if (issue.suggested_value && issue.attribute_id) {
+      const existing = payload.attributes.find(a => a.id === issue.attribute_id)
+      if (!existing || !existing.value_name) {
+        payload.attributes.push({
+          id: issue.attribute_id,
+          value_id: issue.suggested_value.value_id,
+          value_name: issue.suggested_value.value_name,
+        })
+        changed = true
+      }
+    }
+  }
+
+  return { changed }
 }
