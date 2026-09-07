@@ -6,6 +6,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, ArrowLeft, ShieldCheck, Upload, X,
   Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera, Search,
   ExternalLink, Sparkles, TrendingUp, Truck, Store, ChevronDown, Plug,
+  ArrowUp, ArrowDown, Star,
 } from 'lucide-react'
 
 interface ListingAttribute {
@@ -72,6 +73,23 @@ interface Listing {
     research_sources?: Array<{ title: string; url: string }>
     web_research?: { used: boolean; reason?: string }
     reasoning_provider?: string
+    photo_metadata?: Array<{
+      url: string
+      role: 'MAIN' | 'DETAIL' | 'PACKAGING' | 'LIFESTYLE' | 'INFORMATIONAL'
+      source: 'USER' | 'COMPETITOR' | 'AI_ENHANCED' | 'AI_GENERATED'
+      source_ref?: string
+      source_url?: string
+      score: number
+      ai_enhanced: boolean
+      position: number
+    }>
+    photo_stats?: {
+      total_found: number
+      from_exact_product: number
+      from_competitor: number
+      classified: number
+      deduplicated: number
+    }
   }
   image_plan: Array<{ order: number; title: string; description: string; required: boolean }>
   completeness: {
@@ -246,7 +264,44 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
   async function removePhoto(url: string) {
     if (!listing) return
-    await save({ photos: listing.photos.filter(p => p !== url) })
+    const newPhotos = listing.photos.filter(p => p !== url)
+    const meta = listing.attributes.photo_metadata?.filter(m => m.url !== url)
+    await save({ photos: newPhotos })
+    if (meta) {
+      await fetch(`/api/assertive/listings/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attributes: { photo_metadata: meta } }),
+      })
+    }
+  }
+
+  async function setPrincipalPhoto(url: string) {
+    if (!listing) return
+    const meta = listing.attributes.photo_metadata
+    if (!meta) return
+    const newMeta = meta.map(m => ({
+      ...m,
+      role: m.url === url ? 'MAIN' : m.role === 'MAIN' ? 'DETAIL' : m.role,
+    }))
+    const newPhotos = [url, ...listing.photos.filter(p => p !== url)]
+    await save({ photos: newPhotos })
+    await fetch(`/api/assertive/listings/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attributes: { photo_metadata: newMeta } }),
+    })
+  }
+
+  async function movePhoto(url: string, direction: 'up' | 'down') {
+    if (!listing) return
+    const idx = listing.photos.indexOf(url)
+    if (idx < 0) return
+    const newIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (newIdx < 0 || newIdx >= listing.photos.length) return
+    const newPhotos = [...listing.photos]
+    ;[newPhotos[idx], newPhotos[newIdx]] = [newPhotos[newIdx], newPhotos[idx]]
+    await save({ photos: newPhotos })
   }
 
   async function validate() {
@@ -379,6 +434,25 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <span className="text-gray-500 text-xs">{listing.photos.length}/12</span>
               </div>
 
+              {/* photo stats summary */}
+              {listing.attributes.photo_stats && listing.attributes.photo_stats.total_found > 0 && (
+                <div className="mb-4 bg-[#1a1a1a] rounded-lg p-3 text-xs space-y-1">
+                  <p className="text-gray-400 font-medium">Coleta automática</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-gray-500">
+                    <span>{listing.attributes.photo_stats.total_found} fotos encontradas</span>
+                    {listing.attributes.photo_stats.from_exact_product > 0 && (
+                      <span className="text-emerald-400/70">{listing.attributes.photo_stats.from_exact_product} do produto exato</span>
+                    )}
+                    {listing.attributes.photo_stats.from_competitor > 0 && (
+                      <span>{listing.attributes.photo_stats.from_competitor} de concorrentes</span>
+                    )}
+                    {listing.attributes.photo_stats.deduplicated > 0 && (
+                      <span>{listing.attributes.photo_stats.deduplicated} duplicatas removidas</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <input
                 ref={uploadRef}
                 type="file"
@@ -389,26 +463,77 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
               />
 
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                {listing.photos.map((url, i) => (
-                  <div key={url} className="relative aspect-square rounded-lg overflow-hidden bg-[#1c1c1c]">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={url} alt={`Foto ${i + 1}`} className="w-full h-full object-cover" />
-                    {i === 0 && (
-                      <span className="absolute bottom-1 left-1 bg-black/70 text-amber-400 text-[10px] px-1.5 py-0.5 rounded">
-                        Principal
-                      </span>
-                    )}
-                    {!isPublished && (
-                      <button
-                        onClick={() => removePhoto(url)}
-                        aria-label="Remover"
-                        className="absolute top-1 right-1 bg-black/70 text-white rounded-full p-1 hover:bg-red-500 transition"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                ))}
+                {listing.photos.map((url, i) => {
+                  const meta = listing.attributes.photo_metadata?.find(m => m.url === url)
+                  const isMain = meta?.role === 'MAIN' || i === 0
+                  return (
+                    <div key={url} className="relative aspect-square rounded-lg overflow-hidden bg-[#1c1c1c] group">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={url} alt={`Foto ${i + 1}`} className="w-full h-full object-cover" />
+
+                      {/* role badge */}
+                      {meta && (
+                        <span className={`absolute top-1 left-1 text-[9px] px-1 py-0.5 rounded ${
+                          isMain ? 'bg-amber-500/90 text-black font-bold' :
+                          meta.role === 'DETAIL' ? 'bg-blue-500/80 text-white' :
+                          meta.role === 'PACKAGING' ? 'bg-purple-500/80 text-white' :
+                          meta.role === 'LIFESTYLE' ? 'bg-emerald-500/80 text-white' :
+                          'bg-gray-500/80 text-white'
+                        }`}>
+                          {isMain ? 'Principal' : meta.role === 'DETAIL' ? 'Detalhe' : meta.role === 'PACKAGING' ? 'Embalagem' : meta.role === 'LIFESTYLE' ? 'Uso' : 'Info'}
+                        </span>
+                      )}
+
+                      {/* source badge */}
+                      {meta && meta.source !== 'USER' && (
+                        <span className="absolute top-1 right-1 text-[9px] px-1 py-0.5 rounded bg-black/60 text-gray-300">
+                          {meta.source === 'COMPETITOR' ? 'Ref.' : meta.source === 'AI_ENHANCED' ? 'IA' : 'Gen.IA'}
+                        </span>
+                      )}
+
+                      {/* actions overlay */}
+                      {!isPublished && (
+                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition flex items-end justify-between">
+                          <div className="flex gap-0.5">
+                            {i > 0 && (
+                              <button onClick={() => movePhoto(url, 'up')} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para cima">
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                            )}
+                            {i < listing.photos.length - 1 && (
+                              <button onClick={() => movePhoto(url, 'down')} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para baixo">
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                            )}
+                            {!isMain && (
+                              <button onClick={() => setPrincipalPhoto(url)} className="p-1 rounded bg-black/50 text-amber-400 hover:bg-amber-500/20 transition" title="Tornar principal">
+                                <Star className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => removePhoto(url)}
+                            aria-label="Remover"
+                            className="p-1 rounded bg-black/50 text-white hover:bg-red-500 transition"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* static remove button for mobile (always visible) */}
+                      {!isPublished && (
+                        <button
+                          onClick={() => removePhoto(url)}
+                          aria-label="Remover"
+                          className="absolute top-1 right-1 bg-black/70 text-white rounded-full p-1 hover:bg-red-500 transition sm:hidden"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
                 {!isPublished && listing.photos.length < 12 && (
                   <button
                     onClick={() => uploadRef.current?.click()}

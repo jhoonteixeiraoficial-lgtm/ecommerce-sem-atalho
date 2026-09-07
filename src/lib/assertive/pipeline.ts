@@ -19,6 +19,7 @@ import { computeCompleteness, computeScores } from './scoring'
 import { requireMLToken, getSellerCapabilities, type SellerCapabilities } from './publisher'
 import { searchQueryFor } from './truth'
 import { decrypt } from './encryption'
+import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
 
 export type AnalysisStage =
   | 'input'
@@ -225,9 +226,36 @@ export async function runGeneration(
 
   const finalAttributes = enrichment.attributes
   const completeness = computeCompleteness(attributes, finalAttributes)
-  const photos = (previous?.photos as string[] | undefined)?.length
+
+  // PHOTO PIPELINE: coleta fotos de concorrentes, classifica e deduplica
+  const userPhotos = ((previous?.photos as string[] | undefined)?.length
     ? (previous!.photos as string[])
-    : analysis.photos || []
+    : analysis.photos || []) as string[]
+
+  let photoResult: Awaited<ReturnType<typeof collectAndClassifyPhotos>>
+  try {
+    photoResult = await collectAndClassifyPhotos({
+      research,
+      truth,
+      config,
+      userPhotos,
+    })
+  } catch {
+    photoResult = {
+      photos: userPhotos.map((url, i) => ({
+        url,
+        role: (i === 0 ? 'MAIN' : 'DETAIL') as PhotoMeta['role'],
+        source: 'USER' as PhotoMeta['source'],
+        score: 100,
+        ai_enhanced: false,
+        position: i,
+      })),
+      stats: { total_found: 0, from_exact_product: 0, from_competitor: 0, classified: 0, deduplicated: 0 },
+    }
+  }
+
+  const photos = photoResult.photos.map(p => p.url)
+  const photoMetadata = photoResult.photos
 
   const scores = computeScores({
     title: generated.title,
@@ -274,6 +302,9 @@ export async function runGeneration(
         research_sources: enrichment.web.sources,
         web_research: { used: enrichment.web.used, reason: enrichment.web.reason },
         reasoning_provider: enrichment.reasoning_provider,
+        // photo pipeline
+        photo_metadata: photoMetadata,
+        photo_stats: photoResult.stats,
       },
       photos,
       image_plan: generated.image_plan,

@@ -47,6 +47,16 @@ const patchSchema = z.object({
   family_name: z.string().max(120).optional(),
   photos: z.array(z.string().url()).max(12).optional(),
   attributes: z.array(attributeSchema).max(120).optional(),
+  photo_metadata: z.array(z.object({
+    url: z.string(),
+    role: z.enum(['MAIN', 'DETAIL', 'PACKAGING', 'LIFESTYLE', 'INFORMATIONAL']),
+    source: z.enum(['USER', 'COMPETITOR', 'AI_ENHANCED', 'AI_GENERATED']),
+    source_ref: z.string().optional(),
+    source_url: z.string().optional(),
+    score: z.number(),
+    ai_enhanced: z.boolean(),
+    position: z.number(),
+  })).max(12).optional(),
 })
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -76,12 +86,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return Response.json({ error: 'Este anúncio já foi publicado e não pode ser editado aqui.' }, { status: 409 })
   }
 
-  const { attributes, ...rest } = parsed.data
+  const { attributes, photo_metadata, ...rest } = parsed.data
   const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
 
   if (attributes) {
     patch.attributes = { ...(current.attributes || {}), list: attributes }
     // qualquer alteração invalida a validação anterior
+    patch.validation = {}
+  }
+  if (photo_metadata) {
+    patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }
     patch.validation = {}
   }
   if (rest.title || rest.description || rest.photos || rest.category_id) {
