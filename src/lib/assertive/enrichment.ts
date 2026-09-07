@@ -77,11 +77,11 @@ const SELLER_ONLY = new Set([
 
 function normalizeUnitValue(
   rawValue: string,
-  spec: ClassifiedAttribute
+  spec: ClassifiedAttribute,
+  hasSemanticEvidence: boolean
 ): string {
   if (spec.value_type !== 'number_unit') return rawValue
-  const allowedIds = (spec.allowed_units || []).map(u => u.id.toLowerCase())
-  const defaultUnit = spec.default_unit || ''
+  if (!hasSemanticEvidence) return rawValue
   const numPart = rawValue.replace(/[^0-9.,]/g, '').trim()
   if (!numPart) return rawValue
   const lower = rawValue.toLowerCase()
@@ -90,7 +90,10 @@ function normalizeUnitValue(
       return `${numPart} ${u.id}`
     }
   }
-  return defaultUnit ? `${numPart} ${defaultUnit}` : numPart
+  if (spec.default_unit) {
+    return `${numPart} ${spec.default_unit}`
+  }
+  return rawValue
 }
 
 function put(
@@ -120,7 +123,8 @@ function put(
   }
 
   if (spec.value_type === 'number_unit' && !value_name.match(/[a-z]/i)) {
-    value_name = normalizeUnitValue(value_name, spec)
+    const hasSemanticEvidence = status === 'CONFIRMED' || status === 'USER_OVERRIDE' || source === 'catalog' || source === 'truth'
+    value_name = normalizeUnitValue(value_name, spec, hasSemanticEvidence)
   }
 
   if (spec.value_max_length && value_name.length > spec.value_max_length) {

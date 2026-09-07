@@ -169,12 +169,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
 // ---------------------------------------------------------------- auto-resolve blockers
 
-const EMPTY_GTIN_REASONS = [
-  'O produto não possui código de barras',
-  'Produto artesanal sem código de barras',
-  'Produto importado sem registro no Brasil',
-]
-
 async function autoResolveBlockers(
   token: string,
   payload: MLItemPayload,
@@ -186,25 +180,21 @@ async function autoResolveBlockers(
   for (const issue of issues) {
     if (issue.severity !== 'error') continue
 
-    // GTIN missing: tentar EMPTY_GTIN_REASON se disponível
+    // GTIN missing: NÃO usar EMPTY_GTIN_REASON como fallback
+    // Só remover o valor inválido; ML decide se aceita ausência naquela categoria
     if (
       (issue.code?.includes('GTIN') || issue.attribute_ids?.includes('GTIN')) &&
       !payload.attributes.some(a => a.id === 'GTIN' && a.value_name && !['Na', 'N/A', ''].includes(a.value_name))
     ) {
       const gtinAttr = payload.attributes.find(a => a.id === 'GTIN')
       if (!gtinAttr || !gtinAttr.value_name || /^(na|n\/a|0+)$/i.test(gtinAttr.value_name)) {
-        payload.attributes = payload.attributes.filter(a => a.id !== 'GTIN')
-        payload.attributes.push({
-          id: 'EMPTY_GTIN_REASON',
-          value_name: EMPTY_GTIN_REASONS[0],
-        })
+        payload.attributes = payload.attributes.filter(a => a.id !== 'GTIN' && a.id !== 'EMPTY_GTIN_REASON')
         changed = true
       }
     }
 
-    // Seller package missing: tentar inferir do produto se não for obrigatório do vendedor
+    // Seller package missing: não podemos inventar medidas de embalagem
     if (issue.attribute_ids?.some(id => id.startsWith('SELLER_PACKAGE_')) && capabilities.user_product_model) {
-      // seller_package é obrigatório nesta conta mas não temos dados → não podemos resolver
       continue
     }
 
