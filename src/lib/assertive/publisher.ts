@@ -263,6 +263,7 @@ export interface ValidationIssue {
 export interface ValidationResult {
   valid: boolean
   issues: ValidationIssue[]
+  status_code?: number
   raw?: unknown
 }
 
@@ -377,7 +378,7 @@ export async function validateListing(
   const { ok, status, data } = await mlSend<unknown>('/items/validate', token, 'POST', payload)
 
   // 204/200 = payload aceito
-  if (ok) return { valid: true, issues: [], raw: data }
+  if (ok) return { valid: true, issues: [], status_code: status, raw: data }
 
   if (status === 401 || status === 403) {
     return {
@@ -389,6 +390,7 @@ export async function validateListing(
           severity: 'error',
         },
       ],
+      status_code: status,
       raw: data,
     }
   }
@@ -399,6 +401,7 @@ export async function validateListing(
     issues: issues.length
       ? issues
       : [{ code: `http_${status}`, message: `O Mercado Livre recusou o anúncio (HTTP ${status}).`, severity: 'error' }],
+    status_code: status,
     raw: data,
   }
 }

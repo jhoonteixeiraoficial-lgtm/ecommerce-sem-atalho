@@ -55,10 +55,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
   }
 
+  // IDEMPOTÊNCIA: verificar se já existe publicação em andamento
+  if (listing.status === 'publishing') {
+    return Response.json(
+      { error: 'Publicação já em andamento. Aguarde ou recarregue a página.' },
+      { status: 409 }
+    )
+  }
+
   try {
     const token = await requireMLToken(authorizedUser.id)
     const capabilities = await getSellerCapabilities(token)
 
+    // construir payload UMA VEZ — o mesmo validado será usado na publicação
     const payload = buildItemPayload(
       {
         title: listing.title,
@@ -113,6 +122,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
 
+    // usar EXATAMENTE o mesmo payload validado — não reconstruir
     const result = await publishListing(token, payload, listing.description || '')
 
     if (!result.success) {
@@ -136,6 +146,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ml_item_id: result.item_id,
         ml_permalink: result.permalink,
         published_at: new Date().toISOString(),
+        published_payload: payload,
+        ml_response: result,
+        publication_status: result.status || 'active',
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)

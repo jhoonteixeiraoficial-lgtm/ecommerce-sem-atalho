@@ -99,13 +99,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       patch.attributes = { ...(current.attributes || {}), ...attributes }
     }
     patch.validation = {}
+    patch.publication_requirements = null
   }
   if (photo_metadata) {
     patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }
     patch.validation = {}
+    patch.publication_requirements = null
   }
   if (rest.title || rest.description || rest.photos || rest.category_id) {
     patch.validation = {}
+    patch.publication_requirements = null
   }
 
   await supabase.from('assertive_listings').update(patch).eq('id', id).eq('user_id', authorizedUser.id)
