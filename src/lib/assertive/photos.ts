@@ -81,7 +81,10 @@ export async function collectAndClassifyPhotos(
 ): Promise<CollectPhotosResult> {
   const { research, config, userPhotos = [] } = input
 
-  // 1. Gather URLs from competitors, sorted by strength
+  // 1. Gather URLs ONLY from EXACT_PRODUCT competitors.
+  //    COMPARABLE/CATEGORY_REFERENCE may inform strategy but must NOT
+  //    provide reference images for the gallery — wrong model photos
+  //    would contaminate the listing.
   const byStrength = [...research.competitors].sort(
     (a, b) => b.competitive_reference_strength - a.competitive_reference_strength
   )
@@ -89,18 +92,8 @@ export async function collectAndClassifyPhotos(
   const seen = new Set<string>()
   const candidates: Array<{ url: string; ref: string; matchClass: string }> = []
 
-  // 1a. Exact product first (highest priority for reference)
+  // Only EXACT_PRODUCT photos are safe for auto-fill
   for (const c of byStrength.filter(c => c.match_class === 'EXACT_PRODUCT')) {
-    for (const u of c.pictures) {
-      if (!seen.has(u)) {
-        seen.add(u)
-        candidates.push({ url: u, ref: c.title, matchClass: c.match_class })
-      }
-    }
-  }
-
-  // 1b. Then other competitors by strength
-  for (const c of byStrength.filter(c => c.match_class !== 'EXACT_PRODUCT')) {
     for (const u of c.pictures) {
       if (!seen.has(u)) {
         seen.add(u)
