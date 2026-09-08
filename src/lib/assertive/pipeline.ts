@@ -3,6 +3,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import type { AIConfig } from './types'
 import type { ProductTruth } from './truth'
 import { enrichFromCatalog } from './truth'
+
+type Mutable<T> = { -readonly [P in keyof T]: T[P] }
 import { researchMarket, type ResearchResult } from './research'
 import { extractDNA, type WinningListingDNA } from './dna'
 import {
@@ -136,16 +138,21 @@ export async function resolveCategoryContext(
  * Verifica se os atributos required/catalog_required da categoria são
  * semanticamente compatíveis com o produto identificado.
  * Ex: produto automotivo NÃO deve ter atributos "SABOR", "FORMATO_DO_SUCO".
+ *
+ * Retorna:
+ * - ok: true se sem mismatch
+ * - mismatches: lista de problemas encontrados
+ * - hasHardMismatch: true se cross-domain mismatch claro (ex: cadeira vs sucos)
  */
 export function checkCategorySanity(
   categoryAttributes: Array<{ id: string; name?: string; tier?: string }>,
   productName: string,
-): { ok: boolean; mismatches: string[] } {
+): { ok: boolean; mismatches: string[]; hasHardMismatch: boolean } {
   const REQUIRED = categoryAttributes.filter(a => a.tier === 'required' || a.tier === 'catalog_required')
-  const requiredNames = REQUIRED.map(a => (a.name || a.id).toLowerCase())
   const requiredIds = REQUIRED.map(a => a.id.toUpperCase())
 
   const mismatches: string[] = []
+  let hardMismatchCount = 0
 
   // Domínios de atributos que são clear signal de categoria errada
   const DOMAIN_SIGNALS: Record<string, string[]> = {
@@ -154,26 +161,32 @@ export function checkCategorySanity(
     REAL_ESTATE: ['TIPO_DE_IMOVEL', 'AREA_TOTAL', 'QUARTOS', 'VAGAS'],
     FASHION: ['GENDER', 'TAMANHO', 'COMPRIMENTO_DA LENGUA', 'FECHO'],
     PET: ['ANIMAL', 'PORCAO', 'TIPO_DE_ANIMAL'],
+    FURNITURE: ['TIPO_DE_MOSTRA', 'MATERIAL_DO_ESTOFADO', 'RECLINAVEL', 'AJUSTE_DE_ALTURA'],
   }
 
   const productLower = productName.toLowerCase()
-  const isChair = /cadeira|poltrona|ergonom/i.test(productLower)
-  const isElectronic = /notebook|computador|celular|smartphone|monitor|teclado|mouse|headphone|fone/i.test(productLower)
-  const isFood = /suco|leite|cafe|cha|acucar|arroz|feijao|oleo|molho|condimento|concentrado|bebida/i.test(productLower)
+  const isChair = /cadeira|poltrona|ergonom|escritorio|diretor|gamer/i.test(productLower)
+  const isElectronic = /notebook|computador|celular|smartphone|monitor|teclado|mouse|headphone|fone|ssd|memoria|placa/i.test(productLower)
+  const isFood = /suco|leite|cafe|cha|acucar|arroz|feijao|oleo|molho|condimento|concentrado|bebida|pó/i.test(productLower)
+  const isAutomotive = /automotiv|carro|moto|pneu|oleo|motor|freio|suspensao/i.test(productLower)
 
-  // Se o produto é claramente de uma categoria, verificar se os atributos da categoria conflitam
-  if (isChair || isElectronic) {
-    for (const id of requiredIds) {
-      if (DOMAIN_SIGNALS.FOOD_BEVERAGE.includes(id)) {
-        mismatches.push(`Atributo "${id}" (alimentício) não se aplica a "${productName}"`)
-      }
-    }
+  // Mapeamento de produto → domínios proibidos
+  const PROHIBITED_DOMAINS: string[][] = []
+  if (isChair || isElectronic) PROHIBITED_DOMAINS.push(DOMAIN_SIGNALS.FOOD_BEVERAGE)
+  if (isFood) {
+    PROHIBITED_DOMAINS.push(DOMAIN_SIGNALS.AUTOMOTIVE)
+    PROHIBITED_DOMAINS.push(DOMAIN_SIGNALS.FURNITURE)
+  }
+  if (isAutomotive) {
+    PROHIBITED_DOMAINS.push(DOMAIN_SIGNALS.FOOD_BEVERAGE)
+    PROHIBITED_DOMAINS.push(DOMAIN_SIGNALS.FURNITURE)
   }
 
-  if (isFood) {
+  for (const prohibited of PROHIBITED_DOMAINS) {
     for (const id of requiredIds) {
-      if (DOMAIN_SIGNALS.AUTOMOTIVE.includes(id)) {
-        mismatches.push(`Atributo "${id}" (automotivo) não se aplica a "${productName}"`)
+      if (prohibited.includes(id)) {
+        mismatches.push(`Atributo "${id}" não se aplica a "${productName}"`)
+        hardMismatchCount++
       }
     }
   }
@@ -182,17 +195,21 @@ export function checkCategorySanity(
   for (const [domain, ids] of Object.entries(DOMAIN_SIGNALS)) {
     const overlap = requiredIds.filter(id => ids.includes(id))
     if (overlap.length >= 2) {
-      // 2+ atributos do mesmo domínio conflitante = sinal forte
       const otherDomains = Object.entries(DOMAIN_SIGNALS)
         .filter(([d]) => d !== domain)
         .some(([, otherIds]) => requiredIds.some(id => otherIds.includes(id)))
       if (otherDomains) {
         mismatches.push(`Categoria contém ${overlap.length} atributos do domínio "${domain}": ${overlap.join(', ')}`)
+        hardMismatchCount++
       }
     }
   }
 
-  return { ok: mismatches.length === 0, mismatches }
+  return {
+    ok: mismatches.length === 0,
+    mismatches,
+    hasHardMismatch: hardMismatchCount >= 2,
+  }
 }
 
 /** Etapa RESEARCHING: pesquisa de mercado + DNA. Não reexecuta a identificação. */
@@ -339,18 +356,61 @@ export async function runGeneration(
   const { category, attributes } = await resolveCategoryContext(token, research.category_id)
 
   // P0.3: Category Sanity Guard — verificar se categoria é compatível com o produto
+  let categoryChanged = false
+  let categoryChangeReason = ''
+  let categoryChangeEvidence = ''
+
   if (research.category_id && attributes.length > 0) {
     const sanity = checkCategorySanity(attributes, truth.name)
     if (!sanity.ok) {
-      // Logar mas NÃO bloquear se a categoria veio da fonte (URL lock)
       const isLocked = research.category_source === 'url_source'
       const msg = `Category sanity: ${sanity.mismatches.join('; ')}`
-      if (isLocked) {
-        // Categoria locked da URL — manter mas logar warning
-        console.warn(`[SANITY] LOCKED category ${research.category_id}: ${msg}`)
+
+      if (sanity.hasHardMismatch && isLocked) {
+        // HARD MISMATCH + LOCKED: a categoria da URL é semanticamente errada
+        // Marcar como suspeita e tentar re-resolução
+        console.error(`[SANITY] HARD MISMATCH on locked category ${research.category_id}: ${msg}`)
+        categoryChangeReason = `HARD_MISMATCH: ${sanity.mismatches.join('; ')}`
+        categoryChanged = true
+
+        // Tentar re-resolução usando discoverDomain com o nome do produto
+        try {
+          const { discoverDomain } = await import('./taxonomy')
+          const domains = await discoverDomain(token, truth.name)
+          if (domains.length > 0 && domains[0].category_id !== research.category_id) {
+            const newCatId = domains[0].category_id
+            const newAttrs = await import('./taxonomy').then(m => m.getCategoryAttributes(token, newCatId)).catch(() => [])
+            const newSanity = checkCategorySanity(newAttrs, truth.name)
+
+            if (newSanity.ok || !newSanity.hasHardMismatch) {
+              categoryChangeEvidence = `Re-resolved from ${research.category_id} to ${newCatId} (${domains[0].category_name})`
+              console.log(`[SANITY] Category re-resolved: ${research.category_id} → ${newCatId}`)
+
+              // Atualizar research para usar a nova categoria
+              ;(research as Mutable<ResearchResult>).category_id = newCatId
+              ;(research as Mutable<ResearchResult>).category_name = domains[0].category_name
+              ;(research as Mutable<ResearchResult>).category_source = 'sanity_reresolution'
+
+              // Re-resolver contexto da categoria
+              const newCtx = await resolveCategoryContext(token, newCatId)
+              Object.assign({ category, attributes }, newCtx)
+            } else {
+              categoryChangeEvidence = `Re-resolution failed: new category ${newCatId} also has mismatches`
+              console.error(`[SANITY] Re-resolution failed for ${newCatId}`)
+            }
+          }
+        } catch (e) {
+          categoryChangeEvidence = `Re-resolution error: ${e instanceof Error ? e.message : 'unknown'}`
+          console.error(`[SANITY] Re-resolution error: ${e}`)
+        }
+      } else if (sanity.hasHardMismatch) {
+        // HARD MISMATCH + UNlocked: categoria descoberta é claramente errada
+        console.error(`[SANITY] HARD MISMATCH on category ${research.category_id}: ${msg}`)
+        categoryChangeReason = `HARD_MISMATCH: ${sanity.mismatches.join('; ')}`
       } else {
-        // Categoria descoberta por texto — pode ser errada, logar como erro
-        console.error(`[SANITY] Category ${research.category_id} mismatch: ${msg}`)
+        // SOFT mismatch: warning apenas
+        const logFn = isLocked ? console.warn : console.error
+        logFn(`[SANITY] Category ${research.category_id} soft mismatch: ${msg}`)
       }
     }
   }
@@ -400,6 +460,9 @@ export async function runGeneration(
     ? (previous!.photos as string[])
     : analysis.photos || []) as string[]
 
+  // P0.7: fotos da source URL (ML URL informada pelo usuário)
+  const sourcePhotos = (truth.source_pictures || []) as string[]
+
   let photoResult: Awaited<ReturnType<typeof collectAndClassifyPhotos>>
   try {
     photoResult = await collectAndClassifyPhotos({
@@ -407,6 +470,7 @@ export async function runGeneration(
       truth,
       config,
       userPhotos,
+      sourcePhotos,
       domainId: research.domain_id,
     })
   } catch {

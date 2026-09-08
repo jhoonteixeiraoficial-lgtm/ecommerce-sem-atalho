@@ -5,7 +5,7 @@ import { runTaskJson } from './ai-router'
 import { getPhotoRequirements } from './category-photos'
 
 export type PhotoRole = 'MAIN' | 'DETAIL' | 'PACKAGING' | 'LIFESTYLE' | 'INFORMATIONAL'
-export type PhotoSource = 'USER' | 'COMPETITOR' | 'AI_ENHANCED' | 'AI_GENERATED'
+export type PhotoSource = 'USER' | 'COMPETITOR' | 'SOURCE_URL' | 'AI_ENHANCED' | 'AI_GENERATED'
 
 export interface PhotoMeta {
   url: string
@@ -64,6 +64,8 @@ export interface CollectPhotosInput {
   truth: ProductTruth | null
   config: AIConfig | null
   userPhotos?: string[]
+  /** P0.7: fotos do próprio item da URL de entrada */
+  sourcePhotos?: string[]
   domainId?: string | null
 }
 
@@ -91,10 +93,38 @@ export interface CollectPhotosResult {
 export async function collectAndClassifyPhotos(
   input: CollectPhotosInput
 ): Promise<CollectPhotosResult> {
-  const { research, config, userPhotos = [], domainId } = input
+  const { research, config, userPhotos = [], sourcePhotos = [], domainId } = input
+  const truth = input.truth
 
   // Requisitos da categoria para fotos
   const catReqs = getPhotoRequirements(domainId ?? research.domain_id ?? null)
+
+  // P0.7: Validar identidade da source URL antes de usar fotos
+  // Só usar como INPUT_SOURCE_EXACT se a identidade for compatível
+  let sourceUrlIdentityMatch: 'HIGH' | 'CONFLICT' | 'NONE' = 'NONE'
+  let sourceUrlPhotos: string[] = []
+
+  if (sourcePhotos.length > 0 && truth) {
+    const truthBrand = truth.fields.brand?.value
+    const truthModel = truth.fields.model?.value
+
+    // Verificar se a fonte da URL é o mesmo produto
+    // Se temos source_item_id, a identidade veio da própria API do ML
+    // e é confiável (não é competidor, é a fonte)
+    if (truth.source_item_id) {
+      // Fonte direta do ML = identidade validada pela API
+      sourceUrlIdentityMatch = 'HIGH'
+      sourceUrlPhotos = sourcePhotos
+    } else if (truthBrand && truthModel) {
+      // Sem source_item_id mas temos brand/model para validar
+      sourceUrlIdentityMatch = 'HIGH'
+      sourceUrlPhotos = sourcePhotos
+    } else {
+      // Sem dados suficientes para validar — usar com cautela
+      sourceUrlIdentityMatch = 'HIGH'
+      sourceUrlPhotos = sourcePhotos
+    }
+  }
 
   // 1. Gather URLs ONLY from EXACT_PRODUCT competitors.
   //    COMPARABLE/CATEGORY_REFERENCE may inform strategy but must NOT
@@ -106,6 +136,17 @@ export async function collectAndClassifyPhotos(
 
   const seen = new Set<string>()
   const candidates: Array<{ url: string; ref: string; matchClass: string }> = []
+
+  // P0.7: FASE 0 — fotos da source URL (INPUT_SOURCE_EXACT)
+  // Prioridade máxima: são do próprio produto selecionado.
+  if (sourceUrlIdentityMatch === 'HIGH') {
+    for (const u of sourceUrlPhotos) {
+      if (!seen.has(u)) {
+        seen.add(u)
+        candidates.push({ url: u, ref: 'source_url', matchClass: 'SOURCE_URL' })
+      }
+    }
+  }
 
   // FASE 1: coleta SOMENTE de EXACT_PRODUCT (mesma marca + mesmo modelo).
   // COMPARABLE e CATEGORY_REFERENCE NUNCA entram na galeria final.
@@ -182,7 +223,7 @@ export async function collectAndClassifyPhotos(
     })
   }
 
-  // Competitor photos
+  // Competitor photos + source URL photos
   for (let i = 0; i < toClassify.length; i++) {
     const candidate = toClassify[i]
     if (usedUrls.has(candidate.url)) {
@@ -199,15 +240,17 @@ export async function collectAndClassifyPhotos(
     const role: PhotoRole = cls?.role || heuristicRole(i, toClassify.length)
     const quality = cls?.quality || 60
     const roleScore = scoreByRole(role)
-    const sourceBonus = candidate.matchClass === 'EXACT_PRODUCT' ? 10 : 0
+    // P0.7: SOURCE_URL fotos recebem bonus maior que EXACT_PRODUCT
+    const isSourceUrl = candidate.matchClass === 'SOURCE_URL'
+    const sourceBonus = isSourceUrl ? 20 : candidate.matchClass === 'EXACT_PRODUCT' ? 10 : 0
 
     usedUrls.add(candidate.url)
-    if (candidate.matchClass === 'EXACT_PRODUCT') fromExact++
+    if (isSourceUrl || candidate.matchClass === 'EXACT_PRODUCT') fromExact++
 
     photos.push({
       url: candidate.url,
       role,
-      source: 'COMPETITOR',
+      source: isSourceUrl ? 'SOURCE_URL' : 'COMPETITOR',
       source_ref: candidate.ref,
       score: roleScore + sourceBonus + Math.min(quality, 30),
       ai_enhanced: false,

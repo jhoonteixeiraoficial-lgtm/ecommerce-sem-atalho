@@ -144,7 +144,7 @@ export interface ResearchResult {
   category_id: string | null
   category_name: string | null
   /** P0.2: de onde veio a categoria */
-  category_source: 'url_source' | 'category_hint' | 'domain_discovery'
+  category_source: 'url_source' | 'category_hint' | 'domain_discovery' | 'sanity_reresolution'
   keywords: string[]
   competitors: CompetitorDossier[]
   candidates_found: number

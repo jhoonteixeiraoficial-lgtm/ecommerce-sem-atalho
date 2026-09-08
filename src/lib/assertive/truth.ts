@@ -73,6 +73,9 @@ export interface ProductTruth {
   source_category_name?: string
   source_domain_id?: string
   source_catalog_product_id?: string
+  /** P0.7: fotos do próprio item da URL de entrada */
+  source_item_id?: string
+  source_pictures?: string[]
 }
 
 const CANONICAL_KEYS = [
@@ -266,6 +269,7 @@ interface MLItemLite {
   title?: string
   category_id?: string
   attributes?: Array<{ id: string; name?: string; value_name?: string }>
+  pictures?: Array<{ url?: string; secure_url?: string }>
 }
 
 const ATTR_TO_CANONICAL: Record<string, string> = {
@@ -305,6 +309,7 @@ export async function identifyFromUrl(
         category_id?: string
         id?: string
         attributes?: Array<{ id: string; value_name?: string }>
+        pictures?: Array<{ url?: string; secure_url?: string }>
       }>(`/products/${itemId}`, mlToken, { ttl: 3600 })
 
       if (product?.name) {
@@ -320,6 +325,9 @@ export async function identifyFromUrl(
             }
           }
         }
+        const sourcePictures = (product.pictures || [])
+          .map(p => p.secure_url || p.url)
+          .filter((u): u is string => Boolean(u))
         return {
           name: product.name,
           fields,
@@ -329,6 +337,8 @@ export async function identifyFromUrl(
           source_category_id: product.category_id,
           source_domain_id: product.domain_id,
           source_catalog_product_id: product.id,
+          source_item_id: itemId,
+          source_pictures: sourcePictures,
         }
       }
     } catch {
@@ -353,6 +363,9 @@ export async function identifyFromUrl(
             }
           }
         }
+        const sourcePictures = (item.pictures || [])
+          .map(p => p.secure_url || p.url)
+          .filter((u): u is string => Boolean(u))
         return {
           name: item.title,
           fields,
@@ -360,6 +373,8 @@ export async function identifyFromUrl(
           evidence: [`Anúncio ${itemId} lido pela API oficial`],
           confidence: 0.9,
           source_category_id: item.category_id,
+          source_item_id: itemId,
+          source_pictures: sourcePictures,
         }
       }
     } catch {
