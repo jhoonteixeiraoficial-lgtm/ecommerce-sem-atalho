@@ -12,6 +12,7 @@ import {
   type SellerCapabilities,
   type ValidationIssue,
 } from '@/lib/assertive/publisher'
+import { payloadHash, wasPayloadChanged } from '@/lib/assertive/publication-readiness'
 import type { ListingAttribute } from '@/lib/assertive/generator'
 import { z } from 'zod'
 
@@ -116,11 +117,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       )
     }
 
+    // payloadHash: garantir que o payload validado é o mesmo que será publicado
+    const validatedHash = payloadHash(payload)
+
+    // salvar hash validado + payload para comparação futura
     await supabase
       .from('assertive_listings')
-      .update({ status: 'publishing', updated_at: new Date().toISOString() })
+      .update({
+        status: 'publishing',
+        validated_payload_hash: validatedHash,
+        validated_payload: payload,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
+      .eq('validated_payload_hash', null)
+
+    // IDEMPOTÊNCIA ATÔMICA: se status já era 'publishing', outro request já está rodando
+    const { data: currentAfterLock } = await supabase
+      .from('assertive_listings')
+      .select('status')
+      .eq('id', id)
+      .eq('user_id', authorizedUser.id)
+      .single()
+
+    if (currentAfterLock?.status !== 'publishing') {
+      return Response.json(
+        { error: 'Publicação já em andamento por outro processo.' },
+        { status: 409 }
+      )
+    }
 
     // usar EXATAMENTE o mesmo payload validado — não reconstruir
     const result = await publishListing(token, payload, listing.description || '')

@@ -92,24 +92,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   if (attributes) {
     if (Array.isArray(attributes)) {
-      // envio como array = substitui a lista inteira
       patch.attributes = { ...(current.attributes || {}), list: attributes }
     } else {
-      // envio como objeto = merge de campos aninhados (ex: { photo_metadata: [...] })
       patch.attributes = { ...(current.attributes || {}), ...attributes }
     }
-    patch.validation = {}
-    patch.publication_requirements = null
   }
   if (photo_metadata) {
     patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }
-    patch.validation = {}
-    patch.publication_requirements = null
   }
-  if (rest.title || rest.description || rest.photos || rest.category_id) {
-    patch.validation = {}
-    patch.publication_requirements = null
-  }
+
+  // QUALQUER edição invalida preflight — payloadHash do publish vai comparar
+  patch.validation = {}
+  patch.publication_requirements = null
 
   await supabase.from('assertive_listings').update(patch).eq('id', id).eq('user_id', authorizedUser.id)
 
