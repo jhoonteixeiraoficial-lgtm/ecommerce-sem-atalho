@@ -8,7 +8,8 @@ import {
   getUserAIConfig,
 } from '@/lib/assertive/pipeline'
 import { MLNotConnectedError } from '@/lib/assertive/publisher'
-import { applyUserAnswers, type ProductTruth } from '@/lib/assertive/truth'
+import { getValidMLToken } from '@/lib/assertive/publisher'
+import { applyUserAnswers, identifyFromUrl, isProtectedField, type ProductTruth } from '@/lib/assertive/truth'
 import { z } from 'zod'
 
 export const runtime = 'nodejs'
@@ -44,6 +45,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     const config = await getUserAIConfig(authorizedUser.id)
 
+    // Recupera análises URL criadas antes do suporte a /up/MLBU.
+    // Dados confirmados manualmente pelo usuário continuam soberanos.
+    if (parsed.data.from === 'researching' && analysis.input_type === 'url') {
+      const truth = analysis.product_truth as ProductTruth
+      const sourceUrl = typeof analysis.input_data?.ml_url === 'string' ? analysis.input_data.ml_url : null
+      const needsSourceSnapshot = !truth?.source_item_id || !truth?.source_pictures?.length || !truth?.source_category_id
+      if (sourceUrl && needsSourceSnapshot) {
+        const token = await getValidMLToken(authorizedUser.id)
+        if (token) {
+          const refreshed = await identifyFromUrl(config, sourceUrl, token)
+          const protectedFields = Object.fromEntries(
+            Object.entries(truth?.fields || {}).filter(([, field]) => isProtectedField(field))
+          )
+          const refreshedTruth: ProductTruth = {
+            ...refreshed,
+            fields: { ...refreshed.fields, ...protectedFields },
+          }
+          await updateAnalysis(id, authorizedUser.id, {
+            product_truth: refreshedTruth,
+            product_name: refreshedTruth.name,
+            error_message: null,
+          })
+          analysis = {
+            ...analysis,
+            product_truth: refreshedTruth,
+            product_name: refreshedTruth.name,
+            error_message: null,
+          }
+        }
+      }
+    }
+
     // respostas do vendedor viram fatos confirmados antes da pesquisa
     const answers = Object.fromEntries(
       Object.entries(parsed.data.answers ?? {}).filter(([, v]) => v.trim())
@@ -67,12 +100,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     if (parsed.data.from === 'researching') {
-      await runResearch(analysis, {
+      const result = await runResearch(analysis, {
         queryOverride: parsed.data.query,
         categoryOverride: parsed.data.category_id,
       })
-      analysis = await loadAnalysis(id, authorizedUser.id)
-      if (!analysis) return Response.json({ error: 'Análise não encontrada.' }, { status: 404 })
+      analysis = {
+        ...analysis,
+        product_truth: result.truth,
+        product_name: result.truth.name,
+        research: result.research,
+        dna: result.dna,
+        category_id: result.research.category_id,
+        domain_id: result.research.domain_id,
+        status: 'generating',
+        error_message: null,
+      }
     }
 
     const { listingId } = await runGeneration(analysis, config)

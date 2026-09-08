@@ -118,7 +118,9 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: 'researching',
-          query: productName.trim() || undefined,
+          query: productName.trim() !== (analysis?.product_truth?.name || analysis?.product_name || '').trim()
+            ? productName.trim()
+            : undefined,
           answers: Object.fromEntries(
             Object.entries(answers).filter(([, v]) => v.trim())
           ),

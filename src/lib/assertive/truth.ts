@@ -268,7 +268,23 @@ interface MLItemLite {
   id: string
   title?: string
   category_id?: string
+  domain_id?: string
+  user_product_id?: string
   attributes?: Array<{ id: string; name?: string; value_name?: string }>
+  pictures?: Array<{ url?: string; secure_url?: string }>
+}
+
+interface MLUserProductLite {
+  id: string
+  name?: string
+  user_id?: number
+  domain_id?: string
+  catalog_product_id?: string | null
+  attributes?: Array<{
+    id: string
+    name?: string
+    values?: Array<{ id?: string | null; name?: string }>
+  }>
   pictures?: Array<{ url?: string; secure_url?: string }>
 }
 
@@ -298,8 +314,105 @@ export async function identifyFromUrl(
 ): Promise<ProductTruth> {
   const itemMatch = url.match(/MLB-?(\d{6,})/i)
   const itemId = itemMatch ? `MLB${itemMatch[1]}` : null
+  const userProductMatch = url.match(/MLBU-?(\d{6,})/i)
+  const userProductId = userProductMatch ? `MLBU${userProductMatch[1]}` : null
 
-  // 1) Produto de catálogo (acessível a aplicações externas)
+  // 1) User Product (/up/MLBU...) da conta conectada.
+  // O user product fornece identidade/fotos; o anúncio associado fornece a categoria.
+  if (userProductId && mlToken) {
+    try {
+      const product = await mlGet<MLUserProductLite>(`/user-products/${userProductId}`, mlToken, { ttl: 600 })
+      if (product?.name) {
+        let sourceItem: MLItemLite | null = null
+        if (product.user_id) {
+          const search = await mlGet<{ results?: string[] }>(
+            `/users/${product.user_id}/items/search?user_product_id=${userProductId}`,
+            mlToken,
+            { ttl: 300 }
+          ).catch(() => null)
+          const associatedItemId = search?.results?.[0]
+          if (associatedItemId) {
+            sourceItem = await mlGet<MLItemLite>(`/items/${associatedItemId}`, mlToken, { ttl: 600 }).catch(() => null)
+          }
+        }
+
+        const fields: Record<string, TruthField> = {}
+        const sourceAttributes = [
+          ...(product.attributes || []).map(a => ({ id: a.id, value_name: a.values?.[0]?.name })),
+          ...(sourceItem?.attributes || []),
+        ]
+        for (const a of sourceAttributes) {
+          const key = ATTR_TO_CANONICAL[a.id]
+          const value = a.value_name?.trim()
+          if (!key || !value || fields[key]) continue
+          // MODEL em anúncios antigos pode conter uma descrição inteira. Só aceite
+          // como modelo quando for curto e estiver literalmente no título oficial.
+          if (key === 'model') {
+            const normalizedName = product.name.replace(/[^a-z0-9]/gi, '').toLowerCase()
+            const normalizedValue = value.replace(/[^a-z0-9]/gi, '').toLowerCase()
+            if (value.length > 60 || !normalizedName.includes(normalizedValue)) continue
+          }
+          fields[key] = {
+            value,
+            confidence: 'confirmed',
+            source: 'ml_item',
+            evidence: `Ficha oficial do user product ${userProductId} (${a.id})`,
+          }
+        }
+
+        if (!fields.model) {
+          const model = product.name.match(/\b(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z]{1,8}-?\d{2,}[a-z0-9-]*\b/i)?.[0]
+          if (model) {
+            fields.model = {
+              value: model.toUpperCase(),
+              confidence: 'confirmed',
+              source: 'ml_item',
+              evidence: `Modelo escrito no título oficial do user product ${userProductId}`,
+            }
+          }
+        }
+
+        if (!fields.voltage) {
+          const voltages = [...product.name.matchAll(/\b(\d{1,3})\s*v\b/gi)]
+            .map(match => `${match[1]}V`)
+          const uniqueVoltages = [...new Set(voltages)]
+          if (uniqueVoltages.length) {
+            fields.voltage = {
+              value: uniqueVoltages.join('/'),
+              confidence: 'confirmed',
+              source: 'ml_item',
+              evidence: `Voltagem escrita no título oficial do user product ${userProductId}`,
+            }
+          }
+        }
+
+        const sourcePictures = (product.pictures?.length ? product.pictures : sourceItem?.pictures || [])
+          .map(p => p.secure_url || p.url)
+          .filter((picture): picture is string => Boolean(picture))
+
+        return {
+          name: product.name,
+          fields,
+          uncertain: [],
+          evidence: [
+            sourceItem?.id
+              ? `User product ${userProductId} e anúncio ${sourceItem.id} lidos pela API oficial`
+              : `User product ${userProductId} lido pela API oficial`,
+          ],
+          confidence: 1,
+          source_category_id: sourceItem?.category_id,
+          source_domain_id: sourceItem?.domain_id || product.domain_id,
+          source_catalog_product_id: product.catalog_product_id || undefined,
+          source_item_id: sourceItem?.id || userProductId,
+          source_pictures: sourcePictures,
+        }
+      }
+    } catch {
+      /* user product de outra conta pode retornar 403; segue para o slug */
+    }
+  }
+
+  // 2) Produto de catálogo (acessível a aplicações externas)
   if (itemId && mlToken) {
     try {
       const product = await mlGet<{
@@ -346,7 +459,7 @@ export async function identifyFromUrl(
     }
   }
 
-  // 2) Anúncio do próprio vendedor (a API só libera itens da própria conta)
+  // 3) Anúncio do próprio vendedor (a API só libera itens da própria conta)
   if (itemId && mlToken) {
     try {
       const item = await mlGet<MLItemLite>(`/items/${itemId}`, mlToken, { ttl: 600 })
@@ -382,7 +495,7 @@ export async function identifyFromUrl(
     }
   }
 
-  // 3) Slug da URL — funciona para anúncios de terceiros, que a API bloqueia
+  // 4) Slug da URL — funciona para anúncios de terceiros, que a API bloqueia
   const clean = url.split('?')[0]
   const segments = clean.split('/').filter(Boolean)
   const slug = segments

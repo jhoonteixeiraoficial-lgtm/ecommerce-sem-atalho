@@ -75,11 +75,12 @@ export async function updateAnalysis(
   patch: Record<string, unknown>
 ) {
   const supabase = createAdminClient()
-  await supabase
+  const { error } = await supabase
     .from('assertive_analyses')
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq('id', analysisId)
     .eq('user_id', userId)
+  if (error) throw new Error(`Falha ao persistir análise: ${error.message}`)
 }
 
 export async function getUserAIConfig(userId: string): Promise<AIConfig | null> {
@@ -250,9 +251,6 @@ export async function runResearch(
     product_truth: enriched,
     category_id: research.category_id,
     domain_id: research.domain_id,
-    // P0.2: category lock log
-    category_source: research.category_source,
-    category_lock: research.category_source === 'url_source',
     status: 'generating',
   })
 
