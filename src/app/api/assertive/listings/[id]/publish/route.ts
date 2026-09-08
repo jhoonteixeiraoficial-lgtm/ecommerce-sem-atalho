@@ -12,7 +12,8 @@ import {
   type SellerCapabilities,
   type ValidationIssue,
 } from '@/lib/assertive/publisher'
-import { payloadHash, wasPayloadChanged } from '@/lib/assertive/publication-readiness'
+import { mlGet } from '@/lib/assertive/ml-api'
+import { payloadHash } from '@/lib/assertive/publication-readiness'
 import type { ListingAttribute } from '@/lib/assertive/generator'
 import { z } from 'zod'
 
@@ -20,9 +21,25 @@ export const runtime = 'nodejs'
 export const maxDuration = 120
 
 const schema = z.object({
-  // exige confirmação explícita do vendedor — nada é publicado por acidente
   confirm: z.literal(true),
 })
+
+/** Lock leasetime: 5 minutos — stale depois disso */
+const LOCK_LEASE_MS = 5 * 60 * 1000
+
+async function releaseLock(supabase: ReturnType<typeof createAdminClient>, id: string, userId: string, extra?: Record<string, unknown>) {
+  await supabase
+    .from('assertive_listings')
+    .update({
+      status: 'failed',
+      publishing_started_at: null,
+      publishing_attempt_id: null,
+      ...extra,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('user_id', userId)
+}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireCommunityUser()
@@ -49,6 +66,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .maybeSingle()
 
   if (!listing) return Response.json({ error: 'Anúncio não encontrado.' }, { status: 404 })
+
+  // Já publicado
   if (listing.status === 'published' || listing.ml_item_id) {
     return Response.json(
       { error: 'Este anúncio já foi publicado.', item_id: listing.ml_item_id },
@@ -56,19 +75,46 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
   }
 
-  // IDEMPOTÊNCIA: verificar se já existe publicação em andamento
+  // ---------------------------------------------------------------- LOCK: status = publishing
   if (listing.status === 'publishing') {
-    return Response.json(
-      { error: 'Publicação já em andamento. Aguarde ou recarregue a página.' },
-      { status: 409 }
-    )
+    const startedAt = listing.publishing_started_at ? new Date(listing.publishing_started_at).getTime() : 0
+    const now = Date.now()
+    const isStale = startedAt > 0 && (now - startedAt) > LOCK_LEASE_MS
+
+    if (isStale && !listing.ml_item_id) {
+      // Lock antigo sem item criado → recuperar: marcar anterior como failed e permitir retry
+      await supabase
+        .from('assertive_listings')
+        .update({
+          status: 'failed',
+          publishing_started_at: null,
+          publishing_attempt_id: null,
+          last_publication_error: 'Tentativa anterior expirada (stale lock).',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('user_id', authorizedUser.id)
+      // Continua para nova tentativa abaixo — o listing.status agora é 'failed'
+    } else if (!isStale) {
+      // Lock ainda ativo
+      return Response.json(
+        { error: 'Publicando no Mercado Livre...', status: 'publishing' },
+        { status: 409 }
+      )
+    } else {
+      // Stale mas ml_item_id existe → publicado
+      return Response.json(
+        { error: 'Este anúncio já foi publicado.', item_id: listing.ml_item_id },
+        { status: 409 }
+      )
+    }
   }
 
+  // ---------------------------------------------------------------- PRE-FLIGHT
   try {
     const token = await requireMLToken(authorizedUser.id)
     const capabilities = await getSellerCapabilities(token)
 
-    // construir payload UMA VEZ — o mesmo validado será usado na publicação
     const payload = buildItemPayload(
       {
         title: listing.title,
@@ -84,10 +130,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       capabilities
     )
 
-    // valida imediatamente antes de criar: garante que nada mudou desde a última checagem
     let validation = await validateListing(token, payload)
 
-    // AUTO-RESOLVE: tenta corrigir automaticamente os blockers antes de pedir ao usuário
     if (!validation.valid) {
       const autoFixed = await autoResolveBlockers(token, payload, validation.issues, capabilities)
       if (autoFixed.changed) {
@@ -117,53 +161,76 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       )
     }
 
-    // payloadHash: garantir que o payload validado é o mesmo que será publicado
+    // ---------------------------------------------------------------- ATOMIC LOCK
     const validatedHash = payloadHash(payload)
+    const attemptId = crypto.randomUUID()
 
-    // salvar hash validado + payload para comparação futura
-    await supabase
+    // Acquire lock atomicamente: só atualiza se não está publishing
+    const { data: lockAcquired } = await supabase
       .from('assertive_listings')
       .update({
         status: 'publishing',
+        publishing_started_at: new Date().toISOString(),
+        publishing_attempt_id: attemptId,
         validated_payload_hash: validatedHash,
         validated_payload: payload,
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
-      .eq('validated_payload_hash', null)
-
-    // IDEMPOTÊNCIA ATÔMICA: se status já era 'publishing', outro request já está rodando
-    const { data: currentAfterLock } = await supabase
-      .from('assertive_listings')
-      .select('status')
-      .eq('id', id)
-      .eq('user_id', authorizedUser.id)
+      .neq('status', 'publishing')
+      .select('id')
       .single()
 
-    if (currentAfterLock?.status !== 'publishing') {
+    if (!lockAcquired) {
+      // Outro request adquiriu o lock entre nossa leitura e a escrita
       return Response.json(
-        { error: 'Publicação já em andamento por outro processo.' },
+        { error: 'Publicando no Mercado Livre...', status: 'publishing' },
         { status: 409 }
       )
     }
 
-    // usar EXATAMENTE o mesmo payload validado — não reconstruir
-    const result = await publishListing(token, payload, listing.description || '')
+    // ---------------------------------------------------------------- POST /items
+    let result
+    try {
+      result = await publishListing(token, payload, listing.description || '')
+    } catch (publishError) {
+      // Publicação falhou — liberar lock
+      const msg = publishError instanceof Error ? publishError.message : 'Falha ao publicar.'
+      await releaseLock(supabase, id, authorizedUser.id, {
+        last_publication_error: msg,
+        validated_payload: payload,
+      })
+      return Response.json({ error: msg }, { status: 500 })
+    }
 
     if (!result.success) {
-      await supabase
-        .from('assertive_listings')
-        .update({
-          status: 'failed',
-          validation: { valid: false, checked_at: new Date().toISOString(), issues: result.issues || [] },
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .eq('user_id', authorizedUser.id)
-
+      await releaseLock(supabase, id, authorizedUser.id, {
+        validation: { valid: false, checked_at: new Date().toISOString(), issues: result.issues || [] },
+        last_publication_error: result.error,
+        validated_payload: payload,
+        ml_response: result,
+      })
       return Response.json({ error: result.error, issues: result.issues }, { status: 422 })
     }
+
+    // ---------------------------------------------------------------- SUCESSO
+    // Consultar item real para capturar título final do ML
+    let mlFinalTitle: string | null = null
+    try {
+      const realItem = await mlGet<{
+        id?: string
+        title?: string
+        family_name?: string
+        catalog_product_id?: string | null
+        catalog_listing?: boolean
+      }>(`/items/${result.item_id}`, token)
+      mlFinalTitle = realItem.title || null
+    } catch {
+      // melhor esforço — não falha a publicação
+    }
+
+    const titleControlMode = listing.attributes?.title_control_mode || (capabilities?.user_product_model ? 'user_product' : 'seller')
 
     await supabase
       .from('assertive_listings')
@@ -173,8 +240,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ml_permalink: result.permalink,
         published_at: new Date().toISOString(),
         published_payload: payload,
-        ml_response: result,
+        ml_response: { ...result, ml_final_title: mlFinalTitle },
         publication_status: result.status || 'active',
+        publishing_started_at: null,
+        publishing_attempt_id: null,
+        validated_payload: payload,
+        attributes: {
+          ...(listing.attributes || {}),
+          ml_final_title: mlFinalTitle,
+          title_control_mode: titleControlMode,
+        },
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
@@ -197,11 +272,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return Response.json({ error: e.message, code: 'ML_NOT_CONNECTED' }, { status: 409 })
     }
     const message = e instanceof Error ? e.message : 'Falha ao publicar.'
-    await supabase
-      .from('assertive_listings')
-      .update({ status: 'failed', updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('user_id', authorizedUser.id)
+    await releaseLock(supabase, id, authorizedUser.id, {
+      last_publication_error: message,
+    })
     return Response.json({ error: message }, { status: 500 })
   }
 }
@@ -219,8 +292,6 @@ async function autoResolveBlockers(
   for (const issue of issues) {
     if (issue.severity !== 'error') continue
 
-    // GTIN missing: NÃO usar EMPTY_GTIN_REASON como fallback
-    // Só remover o valor inválido; ML decide se aceita ausência naquela categoria
     if (
       (issue.code?.includes('GTIN') || issue.attribute_ids?.includes('GTIN')) &&
       !payload.attributes.some(a => a.id === 'GTIN' && a.value_name && !['Na', 'N/A', ''].includes(a.value_name))
@@ -232,12 +303,10 @@ async function autoResolveBlockers(
       }
     }
 
-    // Seller package missing: não podemos inventar medidas de embalagem
     if (issue.attribute_ids?.some(id => id.startsWith('SELLER_PACKAGE_')) && capabilities.user_product_model) {
       continue
     }
 
-    // Qualquer outro atributo_required com suggested_value: usar o sugerido
     if (issue.suggested_value && issue.attribute_id) {
       const existing = payload.attributes.find(a => a.id === issue.attribute_id)
       if (!existing || !existing.value_name) {

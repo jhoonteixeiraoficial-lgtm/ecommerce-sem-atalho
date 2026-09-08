@@ -6,7 +6,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, ArrowLeft, ShieldCheck, Upload, X,
   Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera, Search,
   ExternalLink, Sparkles, TrendingUp, Truck, Store, ChevronDown, Plug,
-  ArrowUp, ArrowDown, Star,
+  ArrowUp, ArrowDown, Star, Info, AlertTriangle,
 } from 'lucide-react'
 
 interface ListingAttribute {
@@ -90,6 +90,11 @@ interface Listing {
       classified: number
       deduplicated: number
     }
+    // title control
+    title_control_mode?: 'seller' | 'user_product'
+    predicted_title?: string
+    ml_final_title?: string
+    auto_appended_attributes?: string[]
   }
   image_plan: Array<{ order: number; title: string; description: string; required: boolean }>
   completeness: {
@@ -137,6 +142,14 @@ interface Listing {
     total_attributes: number
     filled_count: number
     blocker_count: number
+    account_warnings: Array<{
+      code: string
+      message: string
+      category: 'account' | 'product' | 'shipping' | 'unknown'
+      user_action_required: boolean
+      friendly_message: string
+    }>
+    product_payload_ready: boolean
   }
 }
 
@@ -167,6 +180,52 @@ interface Research {
 function brl(v: number | null | undefined) {
   if (v === null || v === undefined) return '—'
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  SELLER_PACKAGE_HEIGHT: 'Altura da embalagem',
+  SELLER_PACKAGE_WIDTH: 'Largura da embalagem',
+  SELLER_PACKAGE_LENGTH: 'Comprimento da embalagem',
+  SELLER_PACKAGE_WEIGHT: 'Peso da embalagem',
+  GTIN: 'Código de barras (GTIN)',
+  COLOR: 'Cor do produto',
+  BRAND: 'Marca',
+  MODEL: 'Modelo',
+}
+
+const FIELD_REASONS: Record<string, string> = {
+  SELLER_PACKAGE_HEIGHT: 'Essa informação depende da embalagem utilizada no envio e não pôde ser confirmada automaticamente.',
+  SELLER_PACKAGE_WIDTH: 'Essa informação depende da embalagem utilizada no envio e não pôde ser confirmada automaticamente.',
+  SELLER_PACKAGE_LENGTH: 'Essa informação depende da embalagem utilizada no envio e não pôde ser confirmada automaticamente.',
+  SELLER_PACKAGE_WEIGHT: 'Essa informação depende da embalagem utilizada no envio e não pôde ser confirmada automaticamente.',
+  GTIN: 'O código de barras é necessário para publicar este produto. O Assertive não encontrou um GTIN válido automaticamente.',
+  COLOR: 'A cor do produto é obrigatória para publicar.',
+  BRAND: 'A marca do produto é obrigatória para publicar.',
+  MODEL: 'O modelo do produto é obrigatório para publicar.',
+}
+
+function formatFieldName(blocker: { attribute_id: string; name: string }): string {
+  return FIELD_LABELS[blocker.attribute_id] || blocker.name
+}
+
+function getFieldReason(attributeId: string): string {
+  return FIELD_REASONS[attributeId] || 'O Mercado Livre exige essa informação para publicar.'
+}
+
+function formatBlockerMessage(issue: { code: string; message: string }): string {
+  // Traduzir mensagens comuns do ML para português amigável
+  const translations: Array<{ test: RegExp; msg: string }> = [
+    { test: /seller_package.*dimensions/i, msg: 'Medidas da embalagem em formato inválido. Use: 10 cm, 200 g.' },
+    { test: /product_identifier.*invalid_format/i, msg: 'GTIN com formato inválido.' },
+    { test: /attributes.*required/i, msg: 'Atributo obrigatório faltando.' },
+    { test: /picture_not_found/i, msg: 'Imagem não encontrada no ML.' },
+    { test: /listing_type.*unavailable/i, msg: 'Tipo de anúncio não disponível.' },
+    { test: /requiresPictures/i, msg: 'Fotos são obrigatórias para este tipo de anúncio.' },
+  ]
+  for (const t of translations) {
+    if (t.test.test(issue.code) || t.test.test(issue.message)) return t.msg
+  }
+  return issue.message
 }
 
 function scoreColor(n: number) {
@@ -446,21 +505,37 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   }
 
   const attrs = listing.attributes?.list || []
-  const missing = listing.attributes?.missing || []
+  const missingRaw = listing.attributes?.missing || []
   const pubReqs = listing.publication_requirements
   const blockers = pubReqs?.blockers || []
   const recommendedMissing = pubReqs?.recommended_missing || []
+  const accountWarnings = pubReqs?.account_warnings || []
   const blockerCount = blockers.length || pubReqs?.blocker_count || 0
   const scores = listing.scores
   const comp = listing.completeness
   const validation = listing.validation
   const isPublished = listing.status === 'published'
+  const isPublishing = listing.status === 'publishing'
   // Publicar só exige: não publicado ainda + dados mínimos reais do ML (título, preço, foto, categoria)
-  const canPublish = !isPublished && !!listing.title?.trim() && !!listing.price && listing.price > 0
+  // + payload pronto (sem erros de produto) — warnings de conta não bloqueiam
+  const canPublish = !isPublished && !isPublishing && !!listing.title?.trim() && !!listing.price && listing.price > 0
     && Array.isArray(listing.photos) && listing.photos.length > 0 && !!listing.category_id
     && (!pubReqs || pubReqs.all_clear)
   const competitors = research?.competitors || []
   const blockingCount = comp?.missing_required?.length || 0
+
+  // Ordenar missing: obrigatórios primeiro, depois recommended, depois optional
+  const REQUIRED_FIELDS = new Set([
+    'SELLER_PACKAGE_HEIGHT', 'SELLER_PACKAGE_WIDTH', 'SELLER_PACKAGE_LENGTH', 'SELLER_PACKAGE_WEIGHT',
+    'GTIN', 'COLOR', 'BRAND', 'MODEL',
+  ])
+  const missing = [...missingRaw].sort((a, b) => {
+    const aRequired = REQUIRED_FIELDS.has(a.field) || comp?.missing_required?.includes(a.label)
+    const bRequired = REQUIRED_FIELDS.has(b.field) || comp?.missing_required?.includes(b.label)
+    if (aRequired && !bRequired) return -1
+    if (!aRequired && bRequired) return 1
+    return 0
+  })
 
   const scoreRows: Array<[string, ScoreDetail | undefined, typeof Tag]> = [
     ['SEO', scores?.seo, TrendingUp],
@@ -470,6 +545,98 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     ['Atributos', scores?.attributes, Package],
   ]
 
+  // ============================================================
+  // PREVIEW GATE: Se existem blockers que o Assertive não resolveu,
+  // mostrar etapa simplificada "Preciso de você" em vez do editor completo.
+  // ============================================================
+  const hasUnresolvedBlockers = blockers.length > 0 && !isPublished
+  const filledCount = pubReqs?.filled_count || 0
+  const totalCount = pubReqs?.total_attributes || 0
+
+  if (hasUnresolvedBlockers) {
+    return (
+      <div className="min-h-screen bg-[#0c0c0c] px-4 py-6 sm:p-6">
+        <div className="max-w-lg mx-auto">
+          <Link
+            href="/membros/assertive-ecommerce-ia"
+            className="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-5 transition"
+          >
+            <ArrowLeft className="w-4 h-4" /> Meus anúncios
+          </Link>
+
+          <div className="bg-[#141414] border border-amber-500/20 rounded-xl p-6 mb-5">
+            <h1 className="text-white text-lg font-semibold mb-2 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-amber-500" />
+              Estamos quase prontos
+            </h1>
+            <p className="text-gray-400 text-sm mb-4">
+              O Assertive já resolveu {filledCount} de {totalCount} informações automaticamente.
+            </p>
+            <p className="text-gray-300 text-sm mb-4">
+              Precisamos de você somente para {blockers.length}:
+            </p>
+
+            <div className="space-y-4">
+              {blockers.map(q => (
+                <div key={q.attribute_id}>
+                  <label className="block text-gray-300 text-sm mb-1 font-medium">
+                    {formatFieldName(q)}
+                  </label>
+                  <p className="text-gray-500 text-xs mb-2">
+                    {getFieldReason(q.attribute_id)}
+                  </p>
+                  {q.suggested_value && (
+                    <p className="text-amber-400/70 text-xs mb-1">
+                      Valor sugerido pelo ML: {q.suggested_value.value_name}
+                    </p>
+                  )}
+                  <input
+                    value={answers[q.attribute_id] ?? ''}
+                    onChange={e => setAnswers(a => ({ ...a, [q.attribute_id]: e.target.value }))}
+                    placeholder={q.ml_message || `Informe ${q.name}`}
+                    className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={submitAnswers}
+              disabled={saving || !Object.values(answers).some(v => v.trim())}
+              className="w-full mt-5 bg-amber-500 text-black py-3 rounded-lg font-semibold text-sm hover:bg-amber-400 transition disabled:opacity-40"
+            >
+              {saving ? 'Salvando e revalidando...' : 'Resolver e revalidar'}
+            </button>
+          </div>
+
+          {/* Aviso de conta (se houver) */}
+          {accountWarnings.length > 0 && (
+            <div className="bg-[#141414] border border-blue-500/20 rounded-xl p-5">
+              <h2 className="text-white font-semibold flex items-center gap-2 mb-3">
+                <Info className="w-4 h-4 text-blue-400" />
+                Avisos de conta
+              </h2>
+              <p className="text-gray-400 text-xs mb-3">
+                O Mercado Livre retornou {accountWarnings.length} aviso(s) de logística.
+              </p>
+              <ul className="space-y-2">
+                {accountWarnings.map((w, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                    <span className="text-gray-300">{w.friendly_message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // ============================================================
+  // EDITOR COMPLETO — só chega aqui quando não há blockers
+  // ============================================================
   return (
     <div className="min-h-screen bg-[#0c0c0c] px-4 py-6 sm:p-6 pb-28 lg:pb-6">
       <div className="max-w-6xl mx-auto">
@@ -497,6 +664,46 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 Ver <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
+          </div>
+        )}
+
+        {isPublishing && (
+          <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4 mb-5 flex items-center gap-3">
+            <Loader2 className="w-5 h-5 text-amber-400 shrink-0 animate-spin" />
+            <div className="flex-1">
+              <p className="text-amber-300 text-sm font-medium">Publicando no Mercado Livre...</p>
+              <p className="text-amber-300/60 text-xs mt-0.5">Aguarde, não feche esta página.</p>
+            </div>
+          </div>
+        )}
+
+        {/* Status de publicação — Preview Gate passou */}
+        {!isPublished && !isPublishing && canPublish && (
+          <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-4 mb-5 flex items-center gap-3">
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+            <div className="flex-1">
+              <p className="text-emerald-300 text-sm font-medium">Pronto para publicar</p>
+              <p className="text-emerald-300/60 text-xs mt-0.5">
+                Todos os campos obrigatórios foram preenchidos e validados.
+                {accountWarnings.length > 0 && ` ${accountWarnings.length} aviso(s) de conta.`}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {!isPublished && !isPublishing && !canPublish && validation?.checked_at && (
+          <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4 mb-5 flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+            <div className="flex-1">
+              <p className="text-amber-300 text-sm font-medium">Ajustes necessários</p>
+              <p className="text-amber-300/60 text-xs mt-0.5">
+                {!listing.title?.trim() ? 'Defina um título' :
+                 !listing.price || listing.price <= 0 ? 'Defina um preço' :
+                 !listing.photos?.length ? 'Adicione pelo menos uma foto' :
+                 !listing.category_id ? 'Categoria não definida' :
+                 'Preencha os campos obrigatórios'}
+              </p>
+            </div>
           </div>
         )}
 
@@ -766,6 +973,48 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 rows={2}
                 className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white resize-none focus:outline-none focus:border-amber-500/50 disabled:opacity-60"
               />
+
+              {/* Title control mode: User Products */}
+              {listing.attributes?.title_control_mode === 'user_product' && (
+                <div className="mt-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+                  <p className="text-amber-300 text-xs font-medium flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5" />
+                    Neste modelo, o Mercado Livre gera o título final automaticamente
+                  </p>
+                  {!isPublished && (
+                    <div className="mt-2 space-y-1">
+                      <p className="text-gray-400 text-xs">
+                        Título estratégico: <span className="text-white">{title}</span>
+                      </p>
+                      {listing.attributes?.predicted_title && (
+                        <p className="text-gray-400 text-xs">
+                          Título provável no ML: <span className="text-amber-300">{listing.attributes.predicted_title}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {isPublished && listing.attributes?.ml_final_title && (
+                    <p className="text-emerald-300 text-xs mt-2">
+                      Título publicado: <span className="text-white font-medium">{listing.attributes.ml_final_title}</span>
+                    </p>
+                  )}
+                  {listing.attributes?.auto_appended_attributes && listing.attributes.auto_appended_attributes.length > 0 && (
+                    <p className="text-gray-500 text-[11px] mt-2">
+                      ML acrescenta ao título: {listing.attributes.auto_appended_attributes.join(', ')}
+                    </p>
+                  )}
+                  <p className="text-gray-500 text-[11px] mt-1">
+                    Family name: {listing.family_name || title}
+                  </p>
+                </div>
+              )}
+
+              {/* Title control mode: Seller */}
+              {listing.attributes?.title_control_mode === 'seller' && (
+                <p className="text-gray-500 text-xs mt-2">
+                  Você controla o título exato exibido no anúncio.
+                </p>
+              )}
               {(listing.attributes?.alternatives?.length ?? 0) > 0 && !isPublished && (
                 <div className="mt-3">
                   <p className="text-gray-500 text-xs mb-2">Alternativas geradas:</p>
@@ -1004,89 +1253,51 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
               </section>
             )}
 
-            {/* campos faltantes */}
-            {(blockers.length > 0 || (missing.length > 0 && !pubReqs)) && !isPublished && (
-              <section className="bg-[#141414] border border-amber-500/20 rounded-xl p-5 max-h-[60vh] flex flex-col">
+            {/* melhorias opcionais — aparece quando não há blockers e há missing */}
+            {(missing.length > 0 && blockers.length === 0) && !isPublished && (
+              <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 flex flex-col" style={{ maxHeight: 'min(70vh, 600px)' }}>
                 <button
                   onClick={() => setOpenSection(openSection === 'missing' ? null : 'missing')}
                   className="w-full flex items-center justify-between mb-1 shrink-0"
                 >
                   <h2 className="text-white font-semibold text-left flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-amber-500" />
-                    {blockers.length > 0
-                      ? `Precisamos de ${blockers.length} informação(ões)`
-                      : `Faltam ${missing.length} informações`}
+                    <Sparkles className="w-4 h-4 text-gray-500" />
+                    {missing.length} melhorias opcionais
                   </h2>
                   <ChevronDown className={`w-4 h-4 text-gray-500 transition ${openSection === 'missing' ? 'rotate-180' : ''}`} />
                 </button>
 
-                {blockerCount > 0 && (
-                  <p className="text-amber-400/80 text-xs mb-3 shrink-0">
-                    {blockerCount} obrigatória(s) para publicar
-                  </p>
-                )}
-
-                {pubReqs && !pubReqs.all_clear && (
-                  <p className="text-gray-400 text-xs mb-3 shrink-0">
-                    O Assertive já resolveu {pubReqs.filled_count} de {pubReqs.total_attributes} informações automaticamente.
-                  </p>
-                )}
-
                 {openSection === 'missing' && (
                   <>
-                    <div className="space-y-3 mt-3 overflow-y-auto flex-1 min-h-0">
-                      {blockers.length > 0 && (
-                        <div className="mb-2">
-                          <h3 className="text-amber-400/80 text-xs font-semibold uppercase tracking-wider mb-2">Obrigatórios</h3>
-                          {blockers.map(q => (
-                            <div key={q.attribute_id} className="mb-3">
-                              <label className="block text-gray-300 text-sm mb-1">
-                                {q.name}
-                                <span className="text-amber-500 ml-1">*</span>
-                              </label>
-                              {q.suggested_value && (
-                                <p className="text-gray-500 text-xs mb-1">Sugerido: {q.suggested_value.value_name}</p>
-                              )}
-                              <input
-                                value={answers[q.attribute_id] ?? ''}
-                                onChange={e => setAnswers(a => ({ ...a, [q.attribute_id]: e.target.value }))}
-                                placeholder={q.ml_message || `Informe ${q.name}`}
-                                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {blockers.length === 0 && missing.length > 0 && !pubReqs && (
-                        missing.slice(0, 10).map(q => (
-                          <div key={q.field}>
-                            <label className="block text-gray-300 text-sm mb-1">
-                              {q.label}
-                              {comp?.missing_required?.includes(q.label) && (
-                                <span className="text-amber-500 ml-1">*</span>
-                              )}
-                            </label>
-                            {q.options && q.options.length > 0 ? (
-                              <select
-                                value={answers[q.field] ?? ''}
-                                onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
-                                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500/50"
-                              >
-                                <option value="">Selecione</option>
-                                {q.options.map(o => <option key={o} value={o}>{o}</option>)}
-                              </select>
-                            ) : (
-                              <input
-                                value={answers[q.field] ?? ''}
-                                onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
-                                placeholder={q.suggestion || q.why}
-                                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
-                              />
+                    <div className="space-y-3 mt-3 overflow-y-auto flex-1 min-h-0" style={{ scrollPaddingBottom: '80px' }}>
+                      {missing.map(q => (
+                        <div key={q.field} className="pb-2">
+                          <label className="block text-gray-300 text-sm mb-1">
+                            {q.label}
+                            {comp?.missing_required?.includes(q.label) && (
+                              <span className="text-amber-500 ml-1">*</span>
                             )}
-                          </div>
-                        ))
-                      )}
+                          </label>
+                          {q.options && q.options.length > 0 ? (
+                            <select
+                              value={answers[q.field] ?? ''}
+                              onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
+                              className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500/50"
+                            >
+                              <option value="">Selecione</option>
+                              {q.options.map(o => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                          ) : (
+                            <input
+                              value={answers[q.field] ?? ''}
+                              onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
+                              placeholder={q.suggestion || q.why}
+                              className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                            />
+                          )}
+                        </div>
+                      ))}
+                      <div className="h-16" />
                     </div>
                     <button
                       onClick={submitAnswers}
@@ -1097,6 +1308,31 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                     </button>
                   </>
                 )}
+              </section>
+            )}
+
+            {/* avisos de conta/logística — NÃO são campos do produto */}
+            {accountWarnings.length > 0 && !isPublished && (
+              <section className="bg-[#141414] border border-blue-500/20 rounded-xl p-5">
+                <h2 className="text-white font-semibold flex items-center gap-2 mb-3">
+                  <Info className="w-4 h-4 text-blue-400" />
+                  Avisos de conta
+                </h2>
+                <p className="text-gray-400 text-xs mb-3">
+                  Seu anúncio está preenchido. O Mercado Livre retornou {accountWarnings.length} aviso(s) de logística da conta.
+                </p>
+                <ul className="space-y-2">
+                  {accountWarnings.map((w, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm">
+                      {w.user_action_required ? (
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                      )}
+                      <span className="text-gray-300">{w.friendly_message}</span>
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
 
@@ -1119,14 +1355,58 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   {!validation.valid && validation.issues && (
                     <ul className="mt-2 space-y-1">
                       {validation.issues.slice(0, 6).map((issue, i) => (
-                        <li key={i} className="text-red-300/80 text-xs">• {issue.message}</li>
+                        <li key={i} className="text-red-300/80 text-xs">• {formatBlockerMessage(issue)}</li>
                       ))}
                     </ul>
                   )}
                 </div>
               )}
 
-              {!isPublished && (
+              {/* Resumo da pré-publicação */}
+              {!isPublished && canPublish && (
+                <div className="bg-[#1c1c1c] rounded-lg p-4 mb-4 space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Produto</span>
+                    <span className="text-white font-medium truncate ml-4 max-w-[200px]">{listing.title || listing.family_name}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Categoria</span>
+                    <span className="text-white font-medium">{listing.category_id}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Preço</span>
+                    <span className="text-white font-medium">{brl(listing.price)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Estoque</span>
+                    <span className="text-white font-medium">{listing.available_quantity || 1}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Fotos</span>
+                    <span className="text-white font-medium">{listing.photos?.length || 0}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Atributos obrigatórios</span>
+                    <span className="text-emerald-400 font-medium">✓ completos</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Embalagem</span>
+                    <span className="text-emerald-400 font-medium">✓ completa</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Pré-validação</span>
+                    <span className="text-emerald-400 font-medium">✓ concluída</span>
+                  </div>
+                  {accountWarnings.length > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400">Conta</span>
+                      <span className="text-amber-400 font-medium">⚠ {accountWarnings.length} aviso(s)</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!isPublished && !isPublishing && (
                 <div className="space-y-2">
                   <button
                     onClick={validate}

@@ -1,6 +1,7 @@
 import type { ClassifiedAttribute } from './taxonomy'
 import type { ValidationIssue } from './publisher'
 import type { EnrichedAttribute } from './enrichment'
+import { classifyMLWarning, type MLClassifiedWarning } from './publication-readiness'
 
 export type RequirementLevel = 'blocking_required' | 'recommended' | 'optional' | 'not_applicable'
 
@@ -25,6 +26,10 @@ export interface PublicationRequirements {
   total_attributes: number
   filled_count: number
   blocker_count: number
+  /** Warnings de conta/logística que NÃO são do payload */
+  account_warnings: MLClassifiedWarning[]
+  /** true se o payload está correto (sem erros de produto) */
+  product_payload_ready: boolean
 }
 
 /**
@@ -33,6 +38,9 @@ export interface PublicationRequirements {
  *
  * Regra: se o ML diz REQUIRED mas o schema diz RECOMMENDED,
  * o estado efetivo vira BLOCKING_REQUIRED.
+ *
+ * Warnings de conta/logística (me1, frete grátis) são separados
+ * dos warnings de produto — não entram como blockers.
  */
 export function computeEffectiveRequirements(
   categoryAttributes: ClassifiedAttribute[],
@@ -43,7 +51,18 @@ export function computeEffectiveRequirements(
   const mlRequiredIds = new Set<string>()
   const mlIssuesMap = new Map<string, ValidationIssue>()
 
+  // Separar erros de produto de warnings de conta
+  const accountWarnings: MLClassifiedWarning[] = []
+
   for (const issue of mlValidationIssues) {
+    const classified = classifyMLWarning(issue)
+
+    // Warnings de conta/logística não afetam atributos do produto
+    if (issue.severity === 'warning' && (classified.category === 'account' || classified.category === 'shipping')) {
+      accountWarnings.push(classified)
+      continue
+    }
+
     if (issue.severity !== 'error') continue
     for (const attrId of issue.attribute_ids || []) {
       mlRequiredIds.add(attrId)
@@ -102,6 +121,9 @@ export function computeEffectiveRequirements(
     r => r.level === 'recommended' && !r.current_value?.trim()
   )
 
+  // product_payload_ready = sem erros de atributos do produto
+  const productPayloadReady = blockers.length === 0
+
   return {
     requirements,
     blockers,
@@ -110,6 +132,8 @@ export function computeEffectiveRequirements(
     total_attributes: requirements.length,
     filled_count: requirements.filter(r => Boolean(r.current_value?.trim())).length,
     blocker_count: blockers.length,
+    account_warnings: accountWarnings,
+    product_payload_ready: productPayloadReady,
   }
 }
 

@@ -33,8 +33,69 @@ export default function PerfilPage() {
   const [passwordSuccess, setPasswordSuccess] = useState(false)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [avatarError, setAvatarError] = useState('')
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const [supabase] = useState(() => createClient())
+
+  const compressImage = (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        URL.revokeObjectURL(url)
+        resolve(file)
+      }, 10000)
+
+      const img = new Image()
+      const url = URL.createObjectURL(file)
+
+      img.onerror = () => {
+        clearTimeout(timeout)
+        URL.revokeObjectURL(url)
+        resolve(file)
+      }
+
+      img.onload = () => {
+        try {
+          const maxSize = 1024
+          let { width, height } = img
+          if (width > maxSize || height > maxSize) {
+            if (width > height) {
+              height = Math.round((height / width) * maxSize)
+              width = maxSize
+            } else {
+              width = Math.round((width / height) * maxSize)
+              height = maxSize
+            }
+          }
+          const canvas = document.createElement('canvas')
+          canvas.width = width
+          canvas.height = height
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            clearTimeout(timeout)
+            URL.revokeObjectURL(url)
+            resolve(file)
+            return
+          }
+          ctx.drawImage(img, 0, 0, width, height)
+          canvas.toBlob(
+            (blob) => {
+              clearTimeout(timeout)
+              URL.revokeObjectURL(url)
+              resolve(blob || file)
+            },
+            'image/jpeg',
+            0.85,
+          )
+        } catch {
+          clearTimeout(timeout)
+          URL.revokeObjectURL(url)
+          resolve(file)
+        }
+      }
+
+      img.src = url
+    })
+  }
 
   const fetchData = async () => {
     const { data: { user: authUser } } = await supabase.auth.getUser()
@@ -49,7 +110,7 @@ export default function PerfilPage() {
       setProfile(profileData)
       setFullName(profileData?.full_name || '')
       setPhone(profileData?.phone || '')
-      setAvatarUrl(profileData?.avatar_url || null)
+      setAvatarUrl(profileData?.avatar_url ? `${profileData.avatar_url}?v=${profileData.updated_at || Date.now()}` : null)
 
       const { data: subData } = await supabase
         .from('subscriptions')
@@ -125,28 +186,37 @@ export default function PerfilPage() {
     const file = e.target.files?.[0]
     if (!file || !user) return
 
-    if (file.size > 5 * 1024 * 1024) {
+    setAvatarError('')
+
+    if (file.size > 50 * 1024 * 1024) {
+      setAvatarError('A imagem deve ter no máximo 50MB.')
       return
     }
 
     setUploadingAvatar(true)
+    setAvatarError('')
     try {
-      const ext = file.name.split('.').pop()
-      const filePath = `${user.id}/avatar.${ext}`
+      const compressed = await compressImage(file)
+      const filePath = `${user.id}/avatar.jpg`
 
-      const { error: uploadError } = await supabase.storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
         .from('avatars')
-        .upload(filePath, file, { upsert: true })
+        .upload(filePath, compressed, { upsert: true, contentType: 'image/jpeg' })
 
-      if (uploadError) throw uploadError
+      if (uploadError) {
+        console.error('[avatar] storage error:', uploadError)
+        throw new Error(`Erro ao enviar imagem: ${uploadError.message}`)
+      }
 
-      const { data } = supabase.storage.from('avatars').getPublicUrl(filePath)
-      const publicUrl = data.publicUrl
+      const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath)
+      if (!urlData?.publicUrl) {
+        throw new Error('Não foi possível obter a URL da imagem.')
+      }
 
       const res = await fetch('/api/account/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fullName, phone, avatarUrl: publicUrl }),
+        body: JSON.stringify({ fullName, phone, avatarUrl: urlData.publicUrl }),
       })
 
       if (!res.ok) {
@@ -154,10 +224,13 @@ export default function PerfilPage() {
         throw new Error(err.error || 'Erro ao salvar avatar')
       }
 
-      setAvatarUrl(publicUrl)
-      setProfile(prev => prev ? { ...prev, avatar_url: publicUrl } : prev)
+      const cacheBustedUrl = `${urlData.publicUrl}?v=${Date.now()}`
+      setAvatarUrl(cacheBustedUrl)
+      setProfile(prev => prev ? { ...prev, avatar_url: urlData.publicUrl } : prev)
+      window.dispatchEvent(new CustomEvent('avatar-updated', { detail: { url: cacheBustedUrl } }))
     } catch (err) {
       console.error('[avatar] upload failed:', err)
+      setAvatarError(err instanceof Error ? err.message : 'Erro ao atualizar foto. Tente novamente.')
     } finally {
       setUploadingAvatar(false)
       if (avatarInputRef.current) avatarInputRef.current.value = ''
@@ -227,6 +300,9 @@ export default function PerfilPage() {
             </div>
           </div>
         </div>
+        {avatarError && (
+          <p className="mt-3 text-[11px] text-error">{avatarError}</p>
+        )}
       </div>
 
       {/* Subscription Info */}

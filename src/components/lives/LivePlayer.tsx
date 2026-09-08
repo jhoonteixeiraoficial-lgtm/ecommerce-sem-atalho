@@ -10,6 +10,7 @@ interface LivePlayerProps {
   title: string
   scheduledAt?: string
   replayUrl?: string
+  thumbnailUrl?: string
 }
 
 function calculateTimeLeft(targetDate: string) {
@@ -63,7 +64,7 @@ function CountdownTimer({ targetDate }: { targetDate: string }) {
   )
 }
 
-export default function LivePlayer({ streamUrl, isLive, title, scheduledAt, replayUrl }: LivePlayerProps) {
+export default function LivePlayer({ streamUrl, isLive, title, scheduledAt, replayUrl, thumbnailUrl }: LivePlayerProps) {
   if (isLive && streamUrl) {
     return (
       <div className="rounded-xl overflow-hidden border border-border-subtle bg-surface">
@@ -131,10 +132,19 @@ export default function LivePlayer({ streamUrl, isLive, title, scheduledAt, repl
   if (!isLive && scheduledAt && !replayUrl) {
     const isPast = new Date(scheduledAt) < new Date()
     return (
-      <div className="rounded-xl border border-border-subtle bg-surface p-6">
+      <div className="rounded-xl border border-border-subtle bg-surface p-4 sm:p-6">
         <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-lg bg-surface-raised flex items-center justify-center flex-shrink-0">
-            <Play className="w-5 h-5 text-text-muted" />
+          <div className="w-16 h-16 sm:w-24 sm:h-24 rounded-lg overflow-hidden bg-surface-raised flex-shrink-0 relative">
+            {thumbnailUrl ? (
+              <img src={thumbnailUrl} alt={title} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <Play className="w-5 h-5 sm:w-6 sm:h-6 text-text-muted" />
+              </div>
+            )}
+            <div className="absolute inset-0 bg-black/20 flex items-center justify-center">
+              <Play className="w-5 h-5 sm:w-6 sm:h-6 text-white drop-shadow" />
+            </div>
           </div>
           <div className="flex-1 min-w-0">
             <h3 className="text-sm font-medium text-text-primary">{title}</h3>

@@ -111,6 +111,17 @@ export interface SellerCapabilities {
   tags: string[]
 }
 
+export interface SellerShippingPreferences {
+  modes: string[]
+  default_shipping_mode: string | null
+  /** true se o seller tem me1 habilitado */
+  has_me1: boolean
+  /** true se o seller tem me2 habilitado */
+  has_me2: boolean
+  /** modos realmente disponíveis para esta conta */
+  available_modes: string[]
+}
+
 export async function getSellerCapabilities(token: string): Promise<SellerCapabilities> {
   const me = await mlGet<{
     id: number
@@ -129,7 +140,51 @@ export async function getSellerCapabilities(token: string): Promise<SellerCapabi
   }
 }
 
+/**
+ * Consulta preferências de envio do seller via endpoint oficial do ML.
+ * Descobre dinamicamente quais modos de envio estão disponíveis.
+ * NÃO assume me1 — verifica na API.
+ */
+export async function getSellerShippingPreferences(
+  token: string,
+  mlUserId: number
+): Promise<SellerShippingPreferences> {
+  try {
+    const prefs = await mlGet<{
+      modes?: string[]
+      default_shipping_mode?: string | null
+    }>(`/users/${mlUserId}/shipping_preferences`, token, { ttl: 300 })
+
+    const modes = prefs.modes || []
+    const has_me1 = modes.includes('me1')
+    const has_me2 = modes.includes('me2')
+    const available_modes = modes.filter(m =>
+      ['me1', 'me2', 'custom', 'not_specified', 'local_pick_up'].includes(m)
+    )
+
+    return {
+      modes,
+      default_shipping_mode: prefs.default_shipping_mode || null,
+      has_me1,
+      has_me2,
+      available_modes,
+    }
+  } catch {
+    // Fallback: se endpoint não existir ou retornar erro,
+    // assumir que apenas me2 está disponível (mais comum)
+    return {
+      modes: ['me2'],
+      default_shipping_mode: 'me2',
+      has_me1: false,
+      has_me2: true,
+      available_modes: ['me2'],
+    }
+  }
+}
+
 // ---------------------------------------------------------------- payload
+export type TitleControlMode = 'seller' | 'user_product'
+
 export interface ListingPayloadInput {
   title: string
   family_name?: string
@@ -180,7 +235,11 @@ export interface MLItemPayload {
  */
 function sanitizeAttributes(attrs: ListingAttribute[]): Array<{ id: string; value_id?: string; value_name: string }> {
   const INVALID = /^(na|n\/a|não informado|nao informado|n\/a\.?|indefinido|indisponivel|indisponível|desconhecido)$/i
-  const PACKAGING_NUM = /^SELLER_PACKAGE_(HEIGHT|WIDTH|LENGTH|WEIGHT)$/
+  const PACKAGING_DIM = /^SELLER_PACKAGE_(HEIGHT|WIDTH|LENGTH)$/
+  const PACKAGING_WEIGHT = /^SELLER_PACKAGE_WEIGHT$/
+
+  // ML usa COLOR (catalog_required), não MAIN_COLOR (variation_attribute)
+  const COLOR_MAP: Record<string, string> = { MAIN_COLOR: 'COLOR' }
 
   return attrs
     .filter(a => {
@@ -188,29 +247,40 @@ function sanitizeAttributes(attrs: ListingAttribute[]): Array<{ id: string; valu
       if (!v) return false
       if (INVALID.test(v)) return false
       // SELLER_PACKAGE_* must be positive numbers
-      if (PACKAGING_NUM.test(a.id)) {
-        const n = parseFloat(v.replace(',', '.'))
+      if (PACKAGING_DIM.test(a.id) || PACKAGING_WEIGHT.test(a.id)) {
+        const numStr = v.replace(/[^0-9.,]/g, '').replace(',', '.')
+        const n = parseFloat(numStr)
         if (!Number.isFinite(n) || n <= 0) return false
       }
       return true
     })
     .map(a => {
+      // Mapear IDs que o ML rejeita para os corretos
+      const mappedId = COLOR_MAP[a.id] || a.id
       let v = a.value_name!.trim()
-      // Normalize packaging dimensions: ensure consistent format for ML
-      if (PACKAGING_NUM.test(a.id)) {
-        const n = parseFloat(v.replace(',', '.'))
-        v = String(Math.round(n * 100) / 100) // 2 decimal places
+      // ML exige: dimensões em "cm" (integer), peso em "g" (integer)
+      if (PACKAGING_DIM.test(a.id)) {
+        const numStr = v.replace(/[^0-9.,]/g, '').replace(',', '.')
+        const n = parseFloat(numStr)
+        v = `${Math.round(n)} cm`
+      } else if (PACKAGING_WEIGHT.test(a.id)) {
+        const numStr = v.replace(/[^0-9.,]/g, '').replace(',', '.')
+        const n = parseFloat(numStr)
+        // Se valor < 1, provavelmente está em kg — converter para g
+        const grams = n < 1 ? Math.round(n * 1000) : Math.round(n)
+        v = `${grams} g`
       }
       if (a.value_id) {
-        return { id: a.id, value_id: a.value_id, value_name: v }
+        return { id: mappedId, value_id: a.value_id, value_name: v }
       }
-      return { id: a.id, value_name: v }
+      return { id: mappedId, value_name: v }
     })
 }
 
 export function buildItemPayload(
   input: ListingPayloadInput,
-  capabilities: SellerCapabilities | null
+  capabilities: SellerCapabilities | null,
+  shippingPrefs?: SellerShippingPreferences | null
 ): MLItemPayload {
   const attributes = sanitizeAttributes(input.attributes.filter(a => a.value_name?.trim()))
 
@@ -230,8 +300,15 @@ export function buildItemPayload(
     attributes,
   }
 
+  // Escolher modo de envio dinamicamente — NÃO hardcode me2
+  const shippingMode = shippingPrefs?.has_me2
+    ? 'me2'
+    : shippingPrefs?.has_me1
+      ? 'me1'
+      : shippingPrefs?.available_modes?.[0] || 'not_specified'
+
   payload.shipping = {
-    mode: 'me2',
+    mode: shippingMode,
     local_pick_up: false,
     free_shipping: input.free_shipping ?? false,
   }
@@ -245,6 +322,73 @@ export function buildItemPayload(
   }
 
   return payload
+}
+
+export interface BuildPayloadResult {
+  payload: MLItemPayload
+  title_control_mode: TitleControlMode
+}
+
+/**
+ * Constrói payload E detecta modo de controle do título.
+ * Retorna payload + metadata para o pipeline persistir.
+ */
+export function buildItemPayloadWithMeta(
+  input: ListingPayloadInput,
+  capabilities: SellerCapabilities | null,
+  shippingPrefs?: SellerShippingPreferences | null
+): BuildPayloadResult {
+  const payload = buildItemPayload(input, capabilities, shippingPrefs)
+  const title_control_mode: TitleControlMode = capabilities?.user_product_model ? 'user_product' : 'seller'
+  return { payload, title_control_mode }
+}
+
+/**
+ * Prediz o título final que o ML vai gerar no modo user_product.
+ * Usa os tags dos atributos da categoria para saber quais o ML auto-appende.
+ * Não é 100% preciso — o ML pode alterar capitalização, ordem, etc.
+ */
+export function predictMLTitle(
+  familyName: string,
+  attributes: Array<{ id: string; value_name?: string }>,
+  categoryAttributes?: Array<{ id: string; tags?: Record<string, boolean> }>,
+): string {
+  // Descobrir quais atributos da categoria têm tag "in_title" ou "inmediate_title"
+  const autoAppendIds = new Set<string>()
+  if (categoryAttributes) {
+    for (const catAttr of categoryAttributes) {
+      if (catAttr.tags?.in_title || catAttr.tags?.inmediate_title) {
+        autoAppendIds.add(catAttr.id)
+      }
+    }
+  }
+  // Fallback: se não temos tags da categoria, usar lista genérica
+  if (autoAppendIds.size === 0) {
+    for (const id of ['COLOR', 'MAIN_COLOR', 'MODEL', 'CAPACITY', 'SIZE', 'VOLTAGE', 'MEMORY']) {
+      autoAppendIds.add(id)
+    }
+  }
+
+  const extras: string[] = []
+  for (const attr of attributes) {
+    if (autoAppendIds.has(attr.id) && attr.value_name) {
+      extras.push(attr.value_name)
+    }
+  }
+  const parts = [familyName, ...extras].filter(Boolean)
+  return parts.join(' ')
+}
+
+/**
+ * Retorna IDs de atributos que o ML auto-appende ao título na dada categoria.
+ * Útil para o generator saber o que NÃO incluir no family_name.
+ */
+export function getAutoAppendedAttributeIds(
+  categoryAttributes: Array<{ id: string; tags?: Record<string, boolean> }>,
+): string[] {
+  return categoryAttributes
+    .filter(a => a.tags?.in_title || a.tags?.inmediate_title)
+    .map(a => a.id)
 }
 
 // ---------------------------------------------------------------- validação

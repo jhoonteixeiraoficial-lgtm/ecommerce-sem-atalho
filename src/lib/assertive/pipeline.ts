@@ -16,7 +16,7 @@ import {
 import { generateListing, type GeneratedListing, type ListingAttribute } from './generator'
 import { enrichAttributes, type EnrichedAttribute } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
-import { requireMLToken, getSellerCapabilities, buildItemPayload, validateListing, type SellerCapabilities } from './publisher'
+import { requireMLToken, getSellerCapabilities, buildItemPayload, buildItemPayloadWithMeta, predictMLTitle, getAutoAppendedAttributeIds, validateListing, type SellerCapabilities, type TitleControlMode } from './publisher'
 import { searchQueryFor } from './truth'
 import { decrypt } from './encryption'
 import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
@@ -174,6 +174,87 @@ export async function runResearch(
   return { research, dna, truth: enriched }
 }
 
+/**
+ * Auto-resolve blockers de uma validação ML e pesquisa atributos faltantes.
+ * Retorna true se algum dado foi alterado (pode tentar revalidar).
+ */
+async function autoResolveAndResearch(
+  token: string,
+  issues: Array<{ severity: string; code: string; attribute_ids?: string[]; suggested_value?: { value_id?: string; value_name?: string } }>,
+  resolvedAttributes: EnrichedAttribute[],
+  categoryAttributes: ClassifiedAttribute[],
+  truth: ProductTruth,
+  research: ResearchResult,
+  config: AIConfig | null
+): Promise<boolean> {
+  let changed = false
+
+  // 1. Auto-aplicar suggested_values do ML
+  for (const issue of issues) {
+    if (issue.severity !== 'error') continue
+    if (!issue.suggested_value) continue
+    for (const attrId of issue.attribute_ids || []) {
+      const existing = resolvedAttributes.find(a => a.id === attrId)
+      if (existing?.value_name?.trim()) continue // já preenchido
+      if (existing) {
+        existing.value_name = issue.suggested_value.value_name || issue.suggested_value.value_id || ''
+        existing.source = 'catalog'
+        existing.status = 'AUTO_FILLED'
+      } else {
+        const spec = categoryAttributes.find(a => a.id === attrId)
+        resolvedAttributes.push({
+          id: attrId,
+          name: spec?.name || attrId,
+          value_name: issue.suggested_value.value_name || issue.suggested_value.value_id || '',
+          source: 'catalog',
+          tier: spec?.tier || 'recommended',
+          status: 'AUTO_FILLED',
+        })
+      }
+      changed = true
+    }
+  }
+
+  // 2. Para atributos ainda vazios sem suggested_value, tentar pesquisa direcionada
+  const exactProducts = research.competitors
+    .filter(c => c.usable_as_fact_source)
+    .map(c => ({ title: c.title, attributes: c.attributes }))
+
+  for (const issue of issues) {
+    if (issue.severity !== 'error') continue
+    for (const attrId of issue.attribute_ids || []) {
+      if (resolvedAttributes.some(a => a.id === attrId && a.value_name?.trim())) continue
+      const spec = categoryAttributes.find(a => a.id === attrId)
+      if (!spec) continue
+
+      // Pular seller_package — não inventar dimensões
+      if (attrId.startsWith('SELLER_PACKAGE_')) continue
+
+      const result = await targetedAttributeResearch(config, truth, spec, exactProducts)
+      if (result?.value) {
+        const existing = resolvedAttributes.find(a => a.id === attrId)
+        if (existing) {
+          existing.value_name = result.value
+          existing.source = 'catalog'
+          existing.status = 'AUTO_FILLED'
+        } else {
+          resolvedAttributes.push({
+            id: attrId,
+            name: spec.name,
+            value_name: result.value,
+            source: 'catalog',
+            tier: spec.tier,
+            status: 'AUTO_FILLED',
+          })
+        }
+        changed = true
+      }
+    }
+  }
+
+  return changed
+}
+
 /** Etapa GENERATING: cria o anúncio. Não refaz a pesquisa. */
 export async function runGeneration(
   analysis: AnalysisRow,
@@ -275,6 +356,9 @@ export async function runGeneration(
   // PRE-PUBLISH VALIDATION: montar payload e validar no ML automaticamente
   let publicationRequirements: PublicationRequirements | null = null
   let resolvedAttributes = [...finalAttributes]
+  let titleControlMode: TitleControlMode = 'seller'
+  let predictedTitle = generated.title
+  let catAttrs: Array<{ id: string; tags?: Record<string, boolean> }> = []
 
   if (generated.title?.trim() && generated.price && generated.price > 0 && photos.length > 0) {
     try {
@@ -282,7 +366,15 @@ export async function runGeneration(
       const capabilities = await getSellerCapabilities(token).catch(() => null)
       const catId = generated.category_id || research.category_id || ''
 
-      const payload = buildItemPayload({
+      // Detectar title_control_mode
+      titleControlMode = capabilities?.user_product_model ? 'user_product' : 'seller'
+
+      // Buscar atributos da categoria para saber quais o ML auto-appende ao título
+      if (catId && titleControlMode === 'user_product') {
+        catAttrs = await getCategoryAttributes(token, catId).catch(() => [])
+      }
+
+      const buildPayload = () => buildItemPayload({
         title: generated.title,
         family_name: generated.family_name,
         category_id: catId,
@@ -294,56 +386,22 @@ export async function runGeneration(
         pictures: photos,
       }, capabilities)
 
-      let validation = await validateListing(token, payload)
+      // Predição do título final (modo user_product)
+      if (titleControlMode === 'user_product') {
+        predictedTitle = predictMLTitle(generated.family_name, resolvedAttributes, catAttrs)
+      }
 
-      // se ML retornou blockers, tentar targeted research para cada um
-      if (!validation.valid && validation.issues.length) {
-        const exactProducts = research.competitors
-          .filter(c => c.usable_as_fact_source)
-          .map(c => ({ title: c.title, attributes: c.attributes }))
+      // Validation loop iterativo — max 5 tentativas
+      const MAX_VALIDATION_ATTEMPTS = 5
+      let validation = await validateListing(token, buildPayload())
 
-        for (const issue of validation.issues) {
-          if (issue.severity !== 'error') continue
-          for (const attrId of issue.attribute_ids || []) {
-            if (resolvedAttributes.some(a => a.id === attrId && a.value_name?.trim())) continue
+      for (let attempt = 0; attempt < MAX_VALIDATION_ATTEMPTS && !validation.valid; attempt++) {
+        const autoFixed = await autoResolveAndResearch(
+          token, validation.issues, resolvedAttributes, attributes, truth, research, config
+        )
+        if (!autoFixed) break // nada mais para resolver
 
-            const spec = attributes.find(a => a.id === attrId)
-            if (!spec) continue
-
-            const result = await targetedAttributeResearch(config, truth, spec, exactProducts)
-            if (result?.value) {
-              const existing = resolvedAttributes.find(a => a.id === attrId)
-              if (existing) {
-                existing.value_name = result.value
-                existing.source = 'catalog'
-              } else {
-                resolvedAttributes.push({
-                  id: attrId,
-                  name: spec.name,
-                  value_name: result.value,
-                  source: 'catalog',
-                  tier: spec.tier,
-                  status: 'AUTO_FILLED',
-                })
-              }
-            }
-          }
-        }
-
-        // revalidar após targeted research
-        const payload2 = buildItemPayload({
-          title: generated.title,
-          family_name: generated.family_name,
-          category_id: catId,
-          price: Number(generated.price),
-          available_quantity: 1,
-          condition: 'new',
-          listing_type_id: 'gold_special',
-          attributes: resolvedAttributes,
-          pictures: photos,
-        }, capabilities)
-
-        validation = await validateListing(token, payload2)
+        validation = await validateListing(token, buildPayload())
       }
 
       publicationRequirements = computeEffectiveRequirements(attributes, validation.issues, resolvedAttributes)
@@ -393,6 +451,10 @@ export async function runGeneration(
         photo_stats: photoResult.stats,
         // pre-publish validation
         publication_requirements: publicationRequirements,
+        // title control
+        title_control_mode: titleControlMode,
+        predicted_title: predictedTitle,
+        auto_appended_attributes: catAttrs.length > 0 ? getAutoAppendedAttributeIds(catAttrs) : [],
       },
       photos,
       image_plan: generated.image_plan,

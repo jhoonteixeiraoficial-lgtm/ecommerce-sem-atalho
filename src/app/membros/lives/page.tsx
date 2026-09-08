@@ -41,9 +41,16 @@ function formatDuration(minutes: number): string {
 
 function getYouTubeThumb(url: string): string {
   if (!url) return ''
-  const match = url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)
+  const match = url.match(/(?:v=|youtu\.be\/|embed\/|live\/)([a-zA-Z0-9_-]{11})/)
   if (match) return `https://img.youtube.com/vi/${match[1]}/mqdefault.jpg`
   return ''
+}
+
+function resolveThumbnail(thumbnailUrl: string, youtubeUrl: string, replayUrl: string): string {
+  if (thumbnailUrl && /\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i.test(thumbnailUrl)) {
+    return thumbnailUrl
+  }
+  return getYouTubeThumb(youtubeUrl || replayUrl)
 }
 
 export default function LivesPage() {
@@ -153,14 +160,18 @@ export default function LivesPage() {
           <p className="text-sm text-text-muted">Nenhuma live agendada no momento</p>
         ) : (
           <div className="space-y-3">
-            {upcomingLives.map(live => (
-              <LivePlayer
-                key={live.id}
-                isLive={false}
-                title={live.title}
-                scheduledAt={live.scheduled_at}
-              />
-            ))}
+            {upcomingLives.map(live => {
+              const thumb = resolveThumbnail(live.thumbnail_url, live.youtube_url, live.replay_url)
+              return (
+                <LivePlayer
+                  key={live.id}
+                  isLive={false}
+                  title={live.title}
+                  scheduledAt={live.scheduled_at}
+                  thumbnailUrl={thumb || undefined}
+                />
+              )
+            })}
           </div>
         )}
       </div>
@@ -225,7 +236,7 @@ export default function LivesPage() {
         ) : (
           <div className="space-y-2">
             {pastLives.map(live => {
-              const thumb = live.thumbnail_url || getYouTubeThumb(live.replay_url || live.youtube_url)
+              const thumb = resolveThumbnail(live.thumbnail_url, live.youtube_url, live.replay_url)
               const isSelected = selectedReplayId === live.id
 
               return (

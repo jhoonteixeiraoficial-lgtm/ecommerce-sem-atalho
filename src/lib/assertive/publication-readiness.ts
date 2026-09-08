@@ -1,4 +1,4 @@
-import type { MLItemPayload, ValidationIssue, SellerCapabilities } from './publisher'
+import type { MLItemPayload, ValidationIssue, SellerCapabilities, SellerShippingPreferences } from './publisher'
 import type { ClassifiedAttribute } from './taxonomy'
 
 export type PreflightCheck =
@@ -25,8 +25,36 @@ export interface PreflightResult {
   details?: string
 }
 
+/**
+ * Estados de readiness do anúncio.
+ * NEEDS_USER_INPUT = payload tem blockers que só o usuário pode resolver
+ * (ex: seller_package, GTIN não encontrado).
+ * READY_WITH_WARNINGS = payload correto, mas existem avisos de conta/logística
+ * que NÃO impedem a publicação real (ex: me1 não habilitado, frete grátis forçado).
+ */
+export type ReadinessState = 'BLOCKED' | 'NEEDS_USER_INPUT' | 'READY_WITH_WARNINGS' | 'READY'
+
+/**
+ * Categorias de warnings do ML.
+ * ACCOUNT warnings = condição da conta do seller (me1, frete)
+ * PRODUCT warnings = problema com atributos do produto
+ */
+export type MLWarningCategory = 'account' | 'product' | 'shipping' | 'unknown'
+
+export interface MLClassifiedWarning {
+  code: string
+  message: string
+  category: MLWarningCategory
+  /** true se o seller pode resolver essa ação */
+  user_action_required: boolean
+  /** mensagem amigável para o usuário */
+  friendly_message: string
+}
+
 export interface PublicationReadiness {
   ready: boolean
+  /** Estado granular: BLOCKED / NEEDS_USER_INPUT / READY_WITH_WARNINGS / READY */
+  state: ReadinessState
   validated_at: string | null
   payload_hash: string | null
   checks: PreflightResult[]
@@ -36,6 +64,16 @@ export interface PublicationReadiness {
   blocker_count: number
   warning_count: number
   validated_payload: MLItemPayload | null
+  /** Warnings classificados por categoria */
+  classified_warnings: MLClassifiedWarning[]
+  /** true se o payload está correto (sem erros de produto) */
+  product_payload_ready: boolean
+  /** true se a conta está pronta (sem erros de conta) */
+  account_ready: boolean
+  /** true se o shipping está configurado corretamente */
+  shipping_ready: boolean
+  /** Campos que o usuário precisa preencher (blockers que o Assertive não resolveu) */
+  user_input_required: Array<{ attribute_id: string; name: string; reason: string }>
 }
 
 const SELLER_PACKAGE_IDS = new Set([
@@ -44,6 +82,73 @@ const SELLER_PACKAGE_IDS = new Set([
   'SELLER_PACKAGE_LENGTH',
   'SELLER_PACKAGE_WEIGHT',
 ])
+
+/**
+ * Códigos de warnings que são da CONTA/LOGÍSTICA do seller,
+ * não do payload do produto.
+ */
+const ACCOUNT_WARNING_CODES = new Set([
+  'shipping.lost_me1_by_user',
+  'item.shipping.mandatory_free_shipping',
+  'shipping.lost_me2_by_user',
+  'user.shipping_preferences.modes',
+])
+
+/**
+ * Classifica um warning do ML em categoria.
+ */
+export function classifyMLWarning(issue: ValidationIssue): MLClassifiedWarning {
+  const code = issue.code
+  const msg = issue.message
+
+  // Warnings de conta/logística
+  if (ACCOUNT_WARNING_CODES.has(code)) {
+    if (code === 'shipping.lost_me1_by_user') {
+      return {
+        code,
+        message: msg,
+        category: 'account',
+        user_action_required: true,
+        friendly_message: 'Mercado Envíos 1 não está habilitado na sua conta.',
+      }
+    }
+    if (code === 'item.shipping.mandatory_free_shipping') {
+      return {
+        code,
+        message: msg,
+        category: 'shipping',
+        user_action_required: false,
+        friendly_message: 'O Mercado Livre determinou frete grátis obrigatório para esta publicação.',
+      }
+    }
+    return {
+      code,
+      message: msg,
+      category: 'account',
+      user_action_required: false,
+      friendly_message: `Aviso de logística: ${msg}`,
+    }
+  }
+
+  // Warnings de produto
+  if (code.includes('attribute') || code.includes('missing') || code.includes('required')) {
+    return {
+      code,
+      message: msg,
+      category: 'product',
+      user_action_required: true,
+      friendly_message: msg,
+    }
+  }
+
+  return {
+    code,
+    message: msg,
+    category: 'unknown',
+    user_action_required: false,
+    friendly_message: msg,
+  }
+}
 
 /**
  * Gera hash do payload para garantir que o mesmo payload validado
@@ -213,24 +318,90 @@ export function runPreflightChecks(
 
 /**
  * Combina preflight checks com ML validation para determinar readiness.
- * Se ML retornar 204 → ready = true.
+ *
+ * Regra: HTTP 400 com apenas warnings de conta/logística ≠ BLOCKED.
+ * Se errors = 0 e só restam warnings de conta → READY_WITH_WARNINGS.
  */
 export function computeReadiness(
   preflightChecks: PreflightResult[],
   mlValidation: { valid: boolean; issues: ValidationIssue[]; status_code?: number },
   validatedPayload: MLItemPayload | null,
-  validatedAt: string | null
+  validatedAt: string | null,
+  shippingPrefs?: SellerShippingPreferences | null
 ): PublicationReadiness {
   const errors = preflightChecks.filter(c => c.status === 'fail')
   const warnings = preflightChecks.filter(c => c.status === 'warning')
   const mlErrors = mlValidation.issues.filter(i => i.severity === 'error')
   const mlWarnings = mlValidation.issues.filter(i => i.severity === 'warning')
 
+  // Classificar warnings do ML
+  const classifiedWarnings = mlWarnings.map(classifyMLWarning)
+
+  // Determinar readiness state
   const preflightPassed = errors.length === 0
-  const mlPassed = mlValidation.valid && (mlValidation.status_code === 204 || mlValidation.status_code === 200)
+  const mlHasErrors = mlErrors.length > 0
+  const mlHasOnlyAccountWarnings = !mlHasErrors && mlWarnings.length > 0
+    && classifiedWarnings.every(w => w.category === 'account' || w.category === 'shipping')
+
+  // Identificar blockers que o Assertive NÃO conseguiu resolver
+  // (seller_package, GTIN sem fonte, atributos sem suggested_value)
+  const UNRESOLVABLE_CODES = new Set([
+    'item.attribute.invalid.format.seller.package.dimensions',
+  ])
+  const hasUnresolvableBlockers = mlErrors.some(e =>
+    UNRESOLVABLE_CODES.has(e.code) ||
+    (!e.suggested_value && !e.attribute_ids?.length)
+  )
+
+  let state: ReadinessState
+  if (!preflightPassed || mlHasErrors) {
+    // Se existem blockers que o Assertive não resolveu e que dependem do usuário
+    state = hasUnresolvableBlockers ? 'NEEDS_USER_INPUT' : 'BLOCKED'
+  } else if (mlHasOnlyAccountWarnings) {
+    state = 'READY_WITH_WARNINGS'
+  } else if (mlValidation.valid && (mlValidation.status_code === 204 || mlValidation.status_code === 200)) {
+    state = 'READY'
+  } else {
+    state = 'BLOCKED'
+  }
+
+  // Ready = true somente para READY ou READY_WITH_WARNINGS
+  const ready = state !== 'BLOCKED' && state !== 'NEEDS_USER_INPUT'
+
+  // Verificar shipping
+  const shippingOk = shippingPrefs
+    ? (shippingPrefs.has_me1 || shippingPrefs.has_me2)
+    : true // Sem info = não bloquear
+
+  // Identificar campos que o usuário precisa preencher
+  const userInputRequired: Array<{ attribute_id: string; name: string; reason: string }> = []
+  if (state === 'NEEDS_USER_INPUT' || state === 'BLOCKED') {
+    for (const issue of mlErrors) {
+      // Só pedir se o Assertive não conseguiu resolver
+      if (issue.suggested_value) continue // pode auto-aplicar
+      if (!issue.attribute_ids?.length) continue // sem id específico
+      for (const attrId of issue.attribute_ids) {
+        const friendlyNames: Record<string, string> = {
+          SELLER_PACKAGE_HEIGHT: 'Altura da embalagem',
+          SELLER_PACKAGE_WIDTH: 'Largura da embalagem',
+          SELLER_PACKAGE_LENGTH: 'Comprimento da embalagem',
+          SELLER_PACKAGE_WEIGHT: 'Peso da embalagem',
+          GTIN: 'Código de barras (GTIN)',
+        }
+        const name = friendlyNames[attrId] || attrId
+        const reason = attrId.startsWith('SELLER_PACKAGE')
+          ? 'Essa informação depende da embalagem utilizada no envio e não pôde ser confirmada automaticamente.'
+          : 'O Mercado Livre exige essa informação e o Assertive não encontrou evidência suficiente.'
+        if (!userInputRequired.find(u => u.attribute_id === attrId)) {
+          userInputRequired.push({ attribute_id: attrId, name, reason })
+        }
+      }
+    }
+  }
 
   return {
-    ready: preflightPassed && mlPassed,
+    ready,
+    state,
     validated_at: validatedAt,
     payload_hash: validatedPayload ? payloadHash(validatedPayload) : null,
     checks: preflightChecks,
@@ -240,6 +411,11 @@ export function computeReadiness(
     blocker_count: errors.length + mlErrors.length,
     warning_count: warnings.length + mlWarnings.length,
     validated_payload: validatedPayload,
+    classified_warnings: classifiedWarnings,
+    product_payload_ready: preflightPassed && !mlHasErrors,
+    account_ready: true, // sempre true se chegou até aqui
+    shipping_ready: shippingOk,
+    user_input_required: userInputRequired,
   }
 }
 

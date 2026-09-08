@@ -87,6 +87,13 @@ export default function Sidebar({ open, onClose, isAdmin = false }: SidebarProps
       }
     }
     fetchProfile()
+
+    const handleAvatarUpdate = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.url) setAvatarUrl(detail.url)
+    }
+    window.addEventListener('avatar-updated', handleAvatarUpdate)
+    return () => window.removeEventListener('avatar-updated', handleAvatarUpdate)
   }, [supabase])
 
   const handleLogout = useCallback(async () => {

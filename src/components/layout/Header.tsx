@@ -31,6 +31,13 @@ export default function Header({ onMenuToggle }: HeaderProps) {
       }
     }
     fetchProfile()
+
+    const handleAvatarUpdate = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.url) setAvatarUrl(detail.url)
+    }
+    window.addEventListener('avatar-updated', handleAvatarUpdate)
+    return () => window.removeEventListener('avatar-updated', handleAvatarUpdate)
   }, [])
 
   return (

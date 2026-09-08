@@ -59,7 +59,7 @@ Responda SOMENTE com JSON válido:
 {
   "title": "título principal dentro do limite de caracteres",
   "title_alternatives": ["alternativa 1", "alternativa 2"],
-  "family_name": "nome curto do produto sem cor/voltagem/quantidade",
+  "family_name": "tipo do produto + marca + linha/modelo (para catálogo ML — NÃO incluir atributos que o ML adiciona automaticamente ao título, como cor quando o ML usa MAIN_COLOR/COLOR; incluir atributos importantes de busca que o ML NÃO adiciona)",
   "description": "descrição completa em texto puro, com seções separadas por linhas em branco",
   "attributes": [ { "id": "BRAND", "value_name": "Kitest" } ],
   "missing": [ { "id": "VOLTAGE", "label": "Voltagem", "why": "não informado pelo vendedor" } ],
@@ -300,7 +300,7 @@ ${attributeSchemaForPrompt(schema)}
 TAREFA:
 1. Título de até ${titleLimit} caracteres, usando os termos realmente buscados, começando pelo tipo de produto e incluindo marca e modelo quando confirmados.
 2. Duas alternativas de título.
-3. family_name: nome curto do produto, sem cor, voltagem ou quantidade.
+3. family_name: nome do produto para o catálogo do ML. Incluir: tipo do produto, marca, linha/modelo e termos de busca importantes que o ML NÃO adiciona ao título automaticamente (ex: material se o ML não usa MATERIAL no título, tecnologia, etc). Excluir SOMENTE atributos que o ML comprovadamente acrescentará ao título final (ex: cor se o ML usa COLOR/MAIN_COLOR). Máximo 60 caracteres. Exemplo: "Cadeira Diretor Atlanta HomeNow Couro PU" (se MATERIAL não é auto-appended).
 4. Descrição original e profissional seguindo esta estrutura: ${dna.description_structure.join(' → ')}.
 5. Preencha os atributos com evidência. Os sem evidência vão para "missing" com uma pergunta clara.
 6. Plano de fotos adequado a este produto específico.
