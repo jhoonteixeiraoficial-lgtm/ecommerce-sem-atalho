@@ -350,7 +350,9 @@ export async function runGeneration(
   const dna = analysis.dna as WinningListingDNA
 
   if (!truth?.name) throw new Error('A identificação do produto ainda não foi concluída.')
-  if (!research?.competitors) throw new Error('A pesquisa de mercado ainda não foi executada.')
+  if (!research?.category_id && !research?.query) {
+    throw new Error('A pesquisa de mercado ainda não foi executada.')
+  }
 
   const token = await requireMLToken(analysis.user_id)
   const { category, attributes } = await resolveCategoryContext(token, research.category_id)

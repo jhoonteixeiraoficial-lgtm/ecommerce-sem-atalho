@@ -319,12 +319,21 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
 
             <button
               onClick={runPipeline}
-              disabled={!productName.trim()}
+              disabled={!productName.trim() || running}
               className="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-black py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition disabled:opacity-40"
             >
-              <Search className="w-5 h-5" />
-              Pesquisar mercado e criar anúncio
-              <ArrowRight className="w-5 h-5" />
+              {running ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Pesquisando mercado...
+                </>
+              ) : (
+                <>
+                  <Search className="w-5 h-5" />
+                  Pesquisar mercado e criar anúncio
+                  <ArrowRight className="w-5 h-5" />
+                </>
+              )}
             </button>
 
             {analysis?.status === 'failed' && (
