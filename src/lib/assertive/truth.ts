@@ -68,6 +68,11 @@ export interface ProductTruth {
   evidence: string[]
   confidence: number
   category_hint?: string
+  /** P0.1: source snapshot quando input é URL do ML */
+  source_category_id?: string
+  source_category_name?: string
+  source_domain_id?: string
+  source_catalog_product_id?: string
 }
 
 const CANONICAL_KEYS = [
@@ -297,6 +302,8 @@ export async function identifyFromUrl(
         name?: string
         family_name?: string
         domain_id?: string
+        category_id?: string
+        id?: string
         attributes?: Array<{ id: string; value_name?: string }>
       }>(`/products/${itemId}`, mlToken, { ttl: 3600 })
 
@@ -319,6 +326,9 @@ export async function identifyFromUrl(
           uncertain: [],
           evidence: [`Produto de catálogo oficial do Mercado Livre (${itemId})`],
           confidence: 0.95,
+          source_category_id: product.category_id,
+          source_domain_id: product.domain_id,
+          source_catalog_product_id: product.id,
         }
       }
     } catch {
@@ -349,6 +359,7 @@ export async function identifyFromUrl(
           uncertain: [],
           evidence: [`Anúncio ${itemId} lido pela API oficial`],
           confidence: 0.9,
+          source_category_id: item.category_id,
         }
       }
     } catch {

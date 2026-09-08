@@ -143,6 +143,8 @@ export interface ResearchResult {
   domain_name: string | null
   category_id: string | null
   category_name: string | null
+  /** P0.2: de onde veio a categoria */
+  category_source: 'url_source' | 'category_hint' | 'domain_discovery'
   keywords: string[]
   competitors: CompetitorDossier[]
   candidates_found: number
@@ -404,6 +406,8 @@ export interface ResearchOptions {
   /** quantos candidatos entram na fase 2 (análise profunda) */
   deepLimit?: number
   categoryHint?: string | null
+  /** P0.2: category_id direto da fonte (URL do ML) — LOCK */
+  sourceCategoryId?: string | null
   /** usado para classificar EXACT vs COMPARABLE. Sem ele, nada vira fonte de fato. */
   truth?: ProductTruth | null
 }
@@ -422,9 +426,24 @@ export async function researchMarket(
   const warnings: string[] = []
 
   // --- categoria/domínio oficiais
+  // P0.2: LOCK — se sourceCategoryId existe, é a categoria canônica da URL.
+  // Ainda precisamos do discoverDomain para domain_id/domain_name.
   const domains = await discoverDomain(token, query).catch(() => [])
   const primary = domains[0] || null
-  const categoryId = opts.categoryHint || primary?.category_id || null
+
+  let categoryId: string | null = null
+  let categorySource: 'url_source' | 'category_hint' | 'domain_discovery' = 'domain_discovery'
+
+  if (opts.sourceCategoryId) {
+    categoryId = opts.sourceCategoryId
+    categorySource = 'url_source'
+  } else if (opts.categoryHint) {
+    categoryId = opts.categoryHint
+    categorySource = 'category_hint'
+  } else {
+    categoryId = primary?.category_id || null
+    categorySource = 'domain_discovery'
+  }
 
   // --- fase 1: candidatos
   const [searchResults, highlights] = await Promise.all([
@@ -480,6 +499,7 @@ export async function researchMarket(
       exact_product_count: 0,
       competitor_matrix: {},
       regional: buildRegionalRadar([]),
+      category_source: categorySource,
       warnings: [
         'Nenhuma referência de catálogo encontrada para este produto no Mercado Livre. Isso pode indicar um nicho pouco explorado ou que o nome do produto precisa ser mais específico.',
       ],
@@ -558,6 +578,7 @@ export async function researchMarket(
     domain_name: primary?.domain_name ?? null,
     category_id: categoryId,
     category_name: primary?.category_name ?? null,
+    category_source: categorySource,
     keywords,
     competitors,
     candidates_found: candidateIds.size,
