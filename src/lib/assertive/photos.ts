@@ -59,6 +59,14 @@ function scoreByRole(role: PhotoRole): number {
   return map[role]
 }
 
+function roleForShotType(shotId: string): PhotoRole {
+  if (shotId === 'front') return 'MAIN'
+  if (shotId === 'packaging' || shotId === 'accessories') return 'PACKAGING'
+  if (shotId === 'in_use' || shotId === 'context' || shotId === 'model') return 'LIFESTYLE'
+  if (['nutrition', 'ingredients', 'dimensions', 'compatibility'].includes(shotId)) return 'INFORMATIONAL'
+  return 'DETAIL'
+}
+
 export interface CollectPhotosInput {
   research: ResearchResult
   truth: ProductTruth | null
@@ -83,6 +91,12 @@ export interface CollectPhotosResult {
     min_photos: number
     recommended_photos: number
     shot_types: string[]
+  }
+  photo_gap: {
+    reference_candidates: number
+    missing_count: number
+    missing_roles: string[]
+    recommendations: string[]
   }
   fidelity_check?: {
     passed: boolean
@@ -111,7 +125,7 @@ export async function collectAndClassifyPhotos(
     // Verificar se a fonte da URL é o mesmo produto
     // Se temos source_item_id, a identidade veio da própria API do ML
     // e é confiável (não é competidor, é a fonte)
-    if (truth.source_item_id) {
+    if (truth.source_item_id || truth.source_catalog_product_id) {
       // Fonte direta do ML = identidade validada pela API
       sourceUrlIdentityMatch = 'HIGH'
       sourceUrlPhotos = sourcePhotos
@@ -119,20 +133,17 @@ export async function collectAndClassifyPhotos(
       // Sem source_item_id mas temos brand/model para validar
       sourceUrlIdentityMatch = 'HIGH'
       sourceUrlPhotos = sourcePhotos
-    } else {
-      // Sem dados suficientes para validar — usar com cautela
-      sourceUrlIdentityMatch = 'HIGH'
-      sourceUrlPhotos = sourcePhotos
     }
   }
 
-  // 1. Gather URLs ONLY from EXACT_PRODUCT competitors.
-  //    COMPARABLE/CATEGORY_REFERENCE may inform strategy but must NOT
-  //    provide reference images for the gallery — wrong model photos
-  //    would contaminate the listing.
+  // Concorrentes informam a estratégia visual, mas nunca entram
+  // automaticamente na galeria publicável.
   const byStrength = [...research.competitors].sort(
     (a, b) => b.competitive_reference_strength - a.competitive_reference_strength
   )
+  const referenceCandidates = byStrength
+    .filter(candidate => candidate.match_class === 'EXACT_PRODUCT')
+    .reduce((total, candidate) => total + candidate.pictures.length, 0)
 
   const seen = new Set<string>()
   const candidates: Array<{ url: string; ref: string; matchClass: string }> = []
@@ -144,17 +155,6 @@ export async function collectAndClassifyPhotos(
       if (!seen.has(u)) {
         seen.add(u)
         candidates.push({ url: u, ref: 'source_url', matchClass: 'SOURCE_URL' })
-      }
-    }
-  }
-
-  // FASE 1: coleta SOMENTE de EXACT_PRODUCT (mesma marca + mesmo modelo).
-  // COMPARABLE e CATEGORY_REFERENCE NUNCA entram na galeria final.
-  for (const c of byStrength.filter(c => c.match_class === 'EXACT_PRODUCT')) {
-    for (const u of c.pictures) {
-      if (!seen.has(u)) {
-        seen.add(u)
-        candidates.push({ url: u, ref: c.title, matchClass: c.match_class })
       }
     }
   }
@@ -175,6 +175,12 @@ export async function collectAndClassifyPhotos(
         min_photos: catReqs.min_photos,
         recommended_photos: catReqs.recommended_photos,
         shot_types: catReqs.shot_types.map(s => s.label),
+      },
+      photo_gap: {
+        reference_candidates: referenceCandidates,
+        missing_count: catReqs.recommended_photos,
+        missing_roles: catReqs.shot_types.filter(shot => shot.required).map(shot => shot.label),
+        recommendations: ['Envie fotos reais do produto para compor a galeria.'],
       },
     }
   }
@@ -223,7 +229,7 @@ export async function collectAndClassifyPhotos(
     })
   }
 
-  // Competitor photos + source URL photos
+  // Fotos oficiais da fonte identificada
   for (let i = 0; i < toClassify.length; i++) {
     const candidate = toClassify[i]
     if (usedUrls.has(candidate.url)) {
@@ -283,6 +289,10 @@ export async function collectAndClassifyPhotos(
   final.forEach((p, i) => (p.position = i))
 
   const fromCompetitor = final.filter(p => p.source === 'COMPETITOR').length
+  const finalRoles = new Set(final.map(photo => photo.role))
+  const missingRoles = catReqs.shot_types
+    .filter(shot => shot.required && !finalRoles.has(roleForShotType(shot.id)))
+    .map(shot => shot.label)
 
   return {
     photos: final,
@@ -298,6 +308,14 @@ export async function collectAndClassifyPhotos(
       min_photos: catReqs.min_photos,
       recommended_photos: catReqs.recommended_photos,
       shot_types: catReqs.shot_types.map(s => s.label),
+    },
+    photo_gap: {
+      reference_candidates: referenceCandidates,
+      missing_count: Math.max(0, catReqs.recommended_photos - final.length),
+      missing_roles: missingRoles,
+      recommendations: final.length < catReqs.recommended_photos
+        ? [`Adicione ${catReqs.recommended_photos - final.length} foto(s) real(is) do produto.`]
+        : [],
     },
     fidelity_check: {
       passed: fromExact > 0 || userPhotos.length > 0,

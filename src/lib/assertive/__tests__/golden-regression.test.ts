@@ -107,6 +107,16 @@ describe('GOLDEN — predictMLTitle', () => {
     const title = predictMLTitle('Product Name', attrs)
     expect(title.length).toBeLessThan(200)
   })
+
+  it('does not append model or voltage already present in family_name', () => {
+    const family = 'Caneta de Polaridade Kitest KA250 12V 24V'
+    const title = predictMLTitle(family, [
+      { id: 'MODEL', value_name: 'KA250' },
+      { id: 'VOLTAGE', value_name: '12 V / 24 V' },
+    ])
+
+    expect(title).toBe(family)
+  })
 })
 
 describe('GOLDEN — getAutoAppendedAttributeIds', () => {
@@ -136,8 +146,8 @@ describe('GOLDEN — getAutoAppendedAttributeIds', () => {
 
 describe('GOLDEN — Confirm Product Flow (NOT_STARTED is valid)', () => {
   it('research check passes with empty research object', () => {
-    const research = {}
-    const hasCategoryOrQuery = !!(research as any).category_id || !!(research as any).query
+    const research: { category_id?: string; query?: string } = {}
+    const hasCategoryOrQuery = !!research.category_id || !!research.query
     expect(hasCategoryOrQuery).toBe(false)
   })
 

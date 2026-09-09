@@ -7,7 +7,7 @@ import {
   Loader2, AlertCircle, X, Plug, CheckCircle2,
 } from 'lucide-react'
 
-type InputType = 'photo' | 'description' | 'url'
+type InputType = 'single_image' | 'multi_image' | 'description' | 'url' | 'gtin' | 'brand_model'
 
 interface Photo {
   id: string
@@ -15,14 +15,17 @@ interface Photo {
   file: File
 }
 
-const MAX_PHOTOS = 6
+const MAX_PHOTOS = 8
 
 export default function NovoPage() {
-  const [inputType, setInputType] = useState<InputType>('photo')
+  const [inputType, setInputType] = useState<InputType>('single_image')
   const [photos, setPhotos] = useState<Photo[]>([])
   const [description, setDescription] = useState('')
   const [photoHint, setPhotoHint] = useState('')
   const [url, setUrl] = useState('')
+  const [gtin, setGtin] = useState('')
+  const [brand, setBrand] = useState('')
+  const [model, setModel] = useState('')
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -69,13 +72,14 @@ export default function NovoPage() {
 
     setPhotos(prev => {
       const merged = [...prev, ...incoming]
-      if (merged.length > MAX_PHOTOS) {
-        setError(`Máximo de ${MAX_PHOTOS} fotos.`)
-        merged.slice(MAX_PHOTOS).forEach(p => URL.revokeObjectURL(p.previewUrl))
+      const limit = inputType === 'single_image' ? 1 : MAX_PHOTOS
+      if (merged.length > limit) {
+        setError(inputType === 'single_image' ? 'Use uma foto nesta modalidade.' : `Máximo de ${MAX_PHOTOS} fotos.`)
+        merged.slice(limit).forEach(p => URL.revokeObjectURL(p.previewUrl))
       }
-      return merged.slice(0, MAX_PHOTOS)
+      return merged.slice(0, limit)
     })
-  }, [])
+  }, [inputType])
 
   function removePhoto(id: string) {
     setPhotos(prev => {
@@ -87,7 +91,8 @@ export default function NovoPage() {
 
   async function uploadPhotos(): Promise<string[]> {
     const form = new FormData()
-    photos.forEach(p => form.append('files', p.file, p.file.name))
+    const selected = inputType === 'single_image' ? photos.slice(0, 1) : photos
+    selected.forEach(p => form.append('files', p.file, p.file.name))
 
     const res = await fetch('/api/assertive/upload', { method: 'POST', body: form })
     const data = await res.json()
@@ -97,11 +102,17 @@ export default function NovoPage() {
 
   const canSubmit =
     !loading &&
-    (inputType === 'photo'
-      ? photos.length > 0
-      : inputType === 'description'
-        ? description.trim().length >= 8
-        : /^https?:\/\/.+/.test(url.trim()))
+    (inputType === 'single_image'
+      ? photos.length === 1
+      : inputType === 'multi_image'
+        ? photos.length >= 2
+        : inputType === 'description'
+          ? description.trim().length >= 8
+          : inputType === 'url'
+            ? /^https?:\/\/.+/.test(url.trim())
+            : inputType === 'gtin'
+              ? /^\d{8,14}$/.test(gtin.replace(/\D/g, ''))
+              : brand.trim().length >= 2 && model.trim().length >= 2)
 
   async function handleAnalyze() {
     if (!canSubmit) return
@@ -111,7 +122,7 @@ export default function NovoPage() {
     try {
       let photoUrls: string[] = []
 
-      if (inputType === 'photo') {
+      if (inputType === 'single_image' || inputType === 'multi_image') {
         setStage('Enviando fotos...')
         photoUrls = await uploadPhotos()
       }
@@ -122,14 +133,17 @@ export default function NovoPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           input_type: inputType,
-          photos: inputType === 'photo' ? photoUrls : undefined,
+          photos: inputType === 'single_image' || inputType === 'multi_image' ? photoUrls : undefined,
           description:
             inputType === 'description'
               ? description.trim()
-              : inputType === 'photo' && photoHint.trim()
+              : (inputType === 'single_image' || inputType === 'multi_image') && photoHint.trim()
                 ? photoHint.trim()
                 : undefined,
           url: inputType === 'url' ? url.trim() : undefined,
+          gtin: inputType === 'gtin' ? gtin.replace(/\D/g, '') : undefined,
+          brand: inputType === 'brand_model' ? brand.trim() : undefined,
+          model: inputType === 'brand_model' ? model.trim() : undefined,
         }),
       })
 
@@ -166,9 +180,12 @@ export default function NovoPage() {
   }, [])
 
   const tabs = [
-    { type: 'photo' as InputType, icon: Camera, label: 'Foto' },
+    { type: 'single_image' as InputType, icon: Camera, label: '1 foto' },
+    { type: 'multi_image' as InputType, icon: ImagePlus, label: 'Várias fotos' },
     { type: 'description' as InputType, icon: FileText, label: 'Descrição' },
     { type: 'url' as InputType, icon: LinkIcon, label: 'Link ML' },
+    { type: 'gtin' as InputType, icon: CheckCircle2, label: 'GTIN/EAN' },
+    { type: 'brand_model' as InputType, icon: Sparkles, label: 'Marca + modelo' },
   ]
 
   return (
@@ -218,7 +235,7 @@ export default function NovoPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-2 mb-5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
           {tabs.map(tab => (
             <button
               key={tab.type}
@@ -236,13 +253,13 @@ export default function NovoPage() {
         </div>
 
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 sm:p-6">
-          {inputType === 'photo' && (
+          {(inputType === 'single_image' || inputType === 'multi_image') && (
             <div>
               <input
                 ref={galleryRef}
                 type="file"
                 accept="image/*"
-                multiple
+                multiple={inputType === 'multi_image'}
                 onChange={e => { addFiles(e.target.files); e.target.value = '' }}
                 className="hidden"
               />
@@ -278,7 +295,7 @@ export default function NovoPage() {
                 </div>
               )}
 
-              {photos.length < MAX_PHOTOS && (
+              {photos.length < (inputType === 'single_image' ? 1 : MAX_PHOTOS) && (
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => cameraRef.current?.click()}
@@ -334,6 +351,36 @@ export default function NovoPage() {
               <p className="text-gray-500 text-xs mt-3">
                 Cole o link de um anúncio parecido com o seu produto. Usamos apenas como ponto de partida da identificação.
               </p>
+            </div>
+          )}
+
+          {inputType === 'gtin' && (
+            <div>
+              <input
+                inputMode="numeric"
+                value={gtin}
+                onChange={e => setGtin(e.target.value.replace(/\D/g, '').slice(0, 14))}
+                placeholder="Ex.: 7898559182505"
+                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-4 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
+              />
+              <p className="text-gray-500 text-xs mt-3">O código será conferido e buscado no catálogo oficial antes da pesquisa.</p>
+            </div>
+          )}
+
+          {inputType === 'brand_model' && (
+            <div className="grid sm:grid-cols-2 gap-3">
+              <input
+                value={brand}
+                onChange={e => setBrand(e.target.value)}
+                placeholder="Marca"
+                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-4 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
+              />
+              <input
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                placeholder="Modelo"
+                className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg p-4 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
+              />
             </div>
           )}
 

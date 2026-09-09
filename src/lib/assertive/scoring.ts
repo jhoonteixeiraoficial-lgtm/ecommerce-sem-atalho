@@ -36,11 +36,18 @@ const TIER_WEIGHT: Record<string, number> = {
   optional: 1,
 }
 
+const UNRESOLVED_STATUSES = new Set(['NEEDS_CONFIRMATION', 'UNKNOWN', 'NOT_APPLICABLE', 'CONFLICT'])
+
+function isFactuallyFilled(attribute: ListingAttribute): boolean {
+  const status = (attribute as ListingAttribute & { status?: string }).status
+  return Boolean(attribute.value_name?.trim()) && (!status || !UNRESOLVED_STATUSES.has(status))
+}
+
 export function computeCompleteness(
   schema: ClassifiedAttribute[],
   filled: ListingAttribute[]
 ): CompletenessResult {
-  const filledIds = new Set(filled.map(a => a.id))
+  const filledIds = new Set(filled.filter(isFactuallyFilled).map(a => a.id))
   const applicable = schema.filter(a => !a.isVariationOnly)
 
   let weightTotal = 0
@@ -67,7 +74,7 @@ export function computeCompleteness(
 
   return {
     percent: weightTotal ? Math.round((weightFilled / weightTotal) * 100) : 0,
-    filled: filled.length,
+    filled: applicable.filter(attribute => filledIds.has(attribute.id)).length,
     applicable: applicable.length,
     required_total,
     required_filled,
@@ -205,7 +212,10 @@ function scoreDescription(input: ScoreInput): ScoreDetail {
 
 function scoreAttributes(input: ScoreInput): ScoreDetail {
   const applicable = input.schema.filter(a => !a.isVariationOnly).length
-  const filled = input.attributes.length
+  const schemaIds = new Set(input.schema.filter(a => !a.isVariationOnly).map(a => a.id))
+  const filled = new Set(
+    input.attributes.filter(attribute => schemaIds.has(attribute.id) && isFactuallyFilled(attribute)).map(attribute => attribute.id)
+  ).size
   const notes: string[] = []
   if (applicable) notes.push(`${filled} de ${applicable} atributos aplicáveis preenchidos`)
   const score = applicable ? Math.round((filled / applicable) * 100) : 0

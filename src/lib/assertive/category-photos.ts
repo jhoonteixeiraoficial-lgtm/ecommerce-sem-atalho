@@ -215,9 +215,13 @@ export function getPhotoRequirements(domainId: string | null): CategoryPhotoRequ
   if (specific) return { ...(DOMAIN_REQUIREMENTS.MLB_DEFAULT as CategoryPhotoRequirements), ...specific }
 
   // Tenta grupo (ex: MLB_TOOLS de "MLB_TOOLS_AND_CONSTRUCTION")
-  const groupKey = Object.keys(DOMAIN_REQUIREMENTS).find(
-    k => domainId.startsWith(k) || k !== 'MLB_DEFAULT' && domainId.includes(k.replace('MLB_', ''))
-  )
+  const normalizedDomain = domainId.replace(/(^|_)\w+S(?=_|$)/g, match => match.slice(0, -1))
+  const groupKey = Object.keys(DOMAIN_REQUIREMENTS).find(k => {
+    if (k === 'MLB_DEFAULT') return false
+    const normalizedGroup = k.replace(/(^|_)\w+S(?=_|$)/g, match => match.slice(0, -1))
+    return normalizedDomain.startsWith(normalizedGroup)
+      || normalizedDomain.includes(normalizedGroup.replace('MLB_', ''))
+  })
   if (groupKey && groupKey !== 'MLB_DEFAULT') {
     return { ...(DOMAIN_REQUIREMENTS.MLB_DEFAULT as CategoryPhotoRequirements), ...DOMAIN_REQUIREMENTS[groupKey] }
   }

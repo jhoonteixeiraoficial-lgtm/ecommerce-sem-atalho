@@ -96,15 +96,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       m => !current.some(a => a.id === m.field)
     )
 
-    await supabase
+    const { error } = await supabase
       .from('assertive_listings')
       .update({
-        attributes: { ...(listing.attributes || {}), list: current, missing: stillMissing },
+        attributes: {
+          ...(listing.attributes || {}),
+          list: current,
+          missing: stillMissing,
+          publication_requirements: null,
+        },
         validation: {},
+        validated_payload: null,
+        validated_payload_hash: null,
+        status: 'ready',
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
+
+    if (error) throw new Error('Falha ao salvar as respostas.')
 
     const recomputed = await recomputeListing(id, authorizedUser.id)
 

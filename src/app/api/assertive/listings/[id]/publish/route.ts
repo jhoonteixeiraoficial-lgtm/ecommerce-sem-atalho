@@ -27,6 +27,28 @@ const schema = z.object({
 /** Lock leasetime: 5 minutos — stale depois disso */
 const LOCK_LEASE_MS = 5 * 60 * 1000
 
+interface MarketplaceItemSnapshot {
+  id?: string
+  title?: string
+  family_name?: string
+  permalink?: string
+  status?: string
+  category_id?: string
+  price?: number
+  currency_id?: string
+  available_quantity?: number
+  listing_type_id?: string
+  shipping?: {
+    mode?: string
+    free_shipping?: boolean
+    local_pick_up?: boolean
+    logistic_type?: string
+    tags?: string[]
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
 async function releaseLock(supabase: ReturnType<typeof createAdminClient>, id: string, userId: string, extra?: Record<string, unknown>) {
   await supabase
     .from('assertive_listings')
@@ -215,33 +237,42 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // ---------------------------------------------------------------- SUCESSO
-    // Consultar item real para capturar título final do ML
-    let mlFinalTitle: string | null = null
+    // O POST confirma criação; o GET seguinte captura o estado que o marketplace efetivamente aplicou.
+    let marketplaceItem: MarketplaceItemSnapshot | null = null
+    let reconciliation: { status: 'confirmed' | 'pending'; checked_at: string; error?: string }
     try {
-      const realItem = await mlGet<{
-        id?: string
-        title?: string
-        family_name?: string
-        catalog_product_id?: string | null
-        catalog_listing?: boolean
-      }>(`/items/${result.item_id}`, token)
-      mlFinalTitle = realItem.title || null
-    } catch {
-      // melhor esforço — não falha a publicação
+      marketplaceItem = await mlGet<MarketplaceItemSnapshot>(`/items/${result.item_id}`, token)
+      reconciliation = { status: 'confirmed', checked_at: new Date().toISOString() }
+    } catch (error) {
+      reconciliation = {
+        status: 'pending',
+        checked_at: new Date().toISOString(),
+        error: error instanceof Error ? error.message : 'Falha ao consultar o item publicado.',
+      }
     }
 
+    const mlFinalTitle = marketplaceItem?.title || null
+    const authoritativeItemId = marketplaceItem?.id || result.item_id
+    const authoritativePermalink = marketplaceItem?.permalink || result.permalink
+    const authoritativeStatus = marketplaceItem?.status || result.status || 'active'
     const titleControlMode = listing.attributes?.title_control_mode || (capabilities?.user_product_model ? 'user_product' : 'seller')
 
     await supabase
       .from('assertive_listings')
       .update({
         status: 'published',
-        ml_item_id: result.item_id,
-        ml_permalink: result.permalink,
+        ml_item_id: authoritativeItemId,
+        ml_permalink: authoritativePermalink,
         published_at: new Date().toISOString(),
         published_payload: payload,
-        ml_response: { ...result, ml_final_title: mlFinalTitle },
-        publication_status: result.status || 'active',
+        ml_response: {
+          ...result,
+          validation_warnings: validation.issues.filter(issue => issue.severity === 'warning'),
+          reconciliation,
+          marketplace_item: marketplaceItem,
+          ml_final_title: mlFinalTitle,
+        },
+        publication_status: authoritativeStatus,
         publishing_started_at: null,
         publishing_attempt_id: null,
         validated_payload: payload,
@@ -263,9 +294,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return Response.json({
       ok: true,
-      item_id: result.item_id,
-      permalink: result.permalink,
-      status: result.status,
+      item_id: authoritativeItemId,
+      permalink: authoritativePermalink,
+      status: authoritativeStatus,
+      reconciliation: reconciliation.status,
     })
   } catch (e) {
     if (e instanceof MLNotConnectedError) {

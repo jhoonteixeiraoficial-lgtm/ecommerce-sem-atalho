@@ -11,7 +11,14 @@ export interface WinningListingDNA {
   high_value_attributes: Array<{ id: string; presence_pct: number; common_values: string[] }>
   description_structure: string[]
   image_patterns: { median_count: number; max_count: number; recommendation: string }
-  price_context: { min: number; max: number; median: number; suggested: number } | null
+  price_context: {
+    min: number
+    max: number
+    median: number
+    suggested: number
+    basis: ResearchResult['price_basis']
+    sample_size: number
+  } | null
   logistics_patterns: { free_shipping_pct: number; fulfillment_pct: number; note: string }
   common_weaknesses: string[]
   opportunities: string[]
@@ -61,7 +68,8 @@ export function extractDNA(research: ResearchResult): WinningListingDNA {
 
   // ---- títulos
   const titlePatterns: string[] = []
-  const strongest = [...refs].sort((a, b) => b.competitive_reference_strength - a.competitive_reference_strength).slice(0, 5)
+  const rankedRefs = [...refs].sort((a, b) => b.competitive_reference_strength - a.competitive_reference_strength)
+  const strongest = rankedRefs.slice(0, 5)
   for (const r of strongest) {
     if (r.title) titlePatterns.push(r.title)
   }
@@ -102,8 +110,9 @@ export function extractDNA(research: ResearchResult): WinningListingDNA {
     .sort((a, b) => b.presence_pct - a.presence_pct)
 
   // atributos mais presentes no topo do que no fim do ranking = diferencial competitivo
-  const topHalf = strongest
-  const bottomHalf = [...refs].sort((a, b) => a.competitive_reference_strength - b.competitive_reference_strength).slice(0, 5)
+  const splitAt = Math.ceil(rankedRefs.length / 2)
+  const topHalf = rankedRefs.slice(0, splitAt)
+  const bottomHalf = rankedRefs.slice(splitAt)
   const inTop = new Map<string, number>()
   const inBottom = new Map<string, number>()
   for (const r of topHalf) for (const id of Object.keys(r.attributes)) inTop.set(id, (inTop.get(id) || 0) + 1)
@@ -196,6 +205,8 @@ export function extractDNA(research: ResearchResult): WinningListingDNA {
             priceStats.min,
             Math.round(priceStats.median * 0.97 * 100) / 100
           ),
+          basis: research.price_basis,
+          sample_size: priceStats.sample_size,
         }
       : null,
     logistics_patterns: {
@@ -242,8 +253,11 @@ export function dnaToPrompt(dna: WinningListingDNA, refs: CompetitorDossier[]): 
   }
 
   if (dna.price_context) {
+    const basis = dna.price_context.basis === 'EXACT_PRODUCT'
+      ? 'produto exato'
+      : 'produtos comparáveis'
     lines.push(
-      `\nPREÇOS REAIS: mínimo R$${dna.price_context.min.toFixed(2)}, mediana R$${dna.price_context.median.toFixed(2)}, máximo R$${dna.price_context.max.toFixed(2)}`
+      `\nPREÇOS REAIS (${basis}, ${dna.price_context.sample_size} oferta(s)): mínimo R$${dna.price_context.min.toFixed(2)}, mediana R$${dna.price_context.median.toFixed(2)}, máximo R$${dna.price_context.max.toFixed(2)}`
     )
   }
 

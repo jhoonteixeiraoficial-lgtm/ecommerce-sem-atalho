@@ -1,5 +1,5 @@
 import { mlGet, mapLimitSettled, SITE_ID } from './ml-api'
-import { discoverDomain, getCategoryTrends } from './taxonomy'
+import { discoverDomain, getCategory, getCategoryTrends, type DomainSuggestion } from './taxonomy'
 import { evaluateMatch, buildCompetitorMatrix, type MatchClass, type MatrixKey } from './matching'
 import type { ProductTruth } from './truth'
 
@@ -137,16 +137,41 @@ export interface RegionalRadar {
   free_shipping_pct: number
 }
 
+export interface CategoryResolution {
+  category_id: string | null
+  category_name: string | null
+  domain_id: string | null
+  source: 'url_source' | 'category_hint' | 'domain_discovery' | 'sanity_reresolution'
+  confidence: number
+  candidates: DomainSuggestion[]
+  reasons: string[]
+  warnings: string[]
+}
+
+export interface CatalogMatch {
+  product_id: string
+  title: string
+  domain_id: string | null
+  attributes: Record<string, string>
+  pictures: string[]
+  match_class: MatchClass
+  product_match_confidence: number
+  usable_as_fact_source: boolean
+}
+
 export interface ResearchResult {
   query: string
   domain_id: string | null
   domain_name: string | null
   category_id: string | null
   category_name: string | null
+  category_resolution: CategoryResolution
   /** P0.2: de onde veio a categoria */
   category_source: 'url_source' | 'category_hint' | 'domain_discovery' | 'sanity_reresolution'
   keywords: string[]
   competitors: CompetitorDossier[]
+  /** Produtos de catálogo são fonte técnica; só ofertas reais entram em competitors. */
+  catalog_matches: CatalogMatch[]
   candidates_found: number
   price_stats: {
     min: number
@@ -158,19 +183,50 @@ export interface ResearchResult {
   /** de onde vieram os preços: produto exato é muito mais confiável */
   price_basis: 'EXACT_PRODUCT' | 'COMPARABLE_PRODUCT' | 'NONE'
   exact_product_count: number
+  exact_catalog_count: number
   competitor_matrix: Partial<Record<MatrixKey, { product_id: string; title: string; value: string }>>
   regional: RegionalRadar
   warnings: string[]
 }
 
+export function exactFactSources(
+  research: Pick<ResearchResult, 'catalog_matches' | 'competitors'>
+): Array<{ title: string; attributes: Record<string, string> }> {
+  return [...(research.catalog_matches || []), ...research.competitors]
+    .filter(candidate => candidate.usable_as_fact_source)
+    .map(candidate => ({ title: candidate.title, attributes: candidate.attributes }))
+}
+
 // ---------------------------------------------------------------- fetchers
 async function searchCatalog(token: string, query: string): Promise<CatalogSearchItem[]> {
   const data = await mlGet<{ results?: CatalogSearchItem[] }>(
-    `/products/search?status=active&site_id=${SITE_ID}&q=${encodeURIComponent(query.slice(0, 150))}`,
+    `/products/search?status=active&site_id=${SITE_ID}&limit=50&q=${encodeURIComponent(query.slice(0, 150))}`,
     token,
     { ttl: SIX_HOURS, persist: true }
   )
   return data.results || []
+}
+
+function identitySearchQueries(query: string, truth?: ProductTruth | null): string[] {
+  const candidates = [
+    truth?.fields.gtin?.value,
+    [truth?.fields.brand?.value, truth?.fields.model?.value].filter(Boolean).join(' '),
+    truth?.source_title,
+    [truth?.identity?.product_type, truth?.identity?.function, truth?.fields.brand?.value, truth?.fields.model?.value]
+      .filter(Boolean)
+      .join(' '),
+    query,
+  ]
+  const seen = new Set<string>()
+  return candidates
+    .map(value => value?.trim() || '')
+    .filter(value => {
+      const key = value.toLowerCase().replace(/\s+/g, ' ')
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, 5)
 }
 
 async function getHighlights(
@@ -408,6 +464,7 @@ export interface ResearchOptions {
   categoryHint?: string | null
   /** P0.2: category_id direto da fonte (URL do ML) — LOCK */
   sourceCategoryId?: string | null
+  sourceDomainId?: string | null
   /** usado para classificar EXACT vs COMPARABLE. Sem ele, nada vira fonte de fato. */
   truth?: ProductTruth | null
 }
@@ -445,11 +502,42 @@ export async function researchMarket(
     categorySource = 'domain_discovery'
   }
 
+  const category = categoryId ? await getCategory(token, categoryId).catch(() => null) : null
+  const categoryName = category?.name
+    || (primary?.category_id === categoryId ? primary.category_name : null)
+    || null
+  const resolvedDomainId = categorySource === 'url_source'
+    ? opts.sourceDomainId || category?.settings?.catalog_domain || primary?.domain_id || null
+    : category?.settings?.catalog_domain || primary?.domain_id || null
+  const categoryWarnings: string[] = []
+  if (categorySource === 'url_source' && opts.sourceDomainId && primary?.domain_id && primary.domain_id !== opts.sourceDomainId) {
+    categoryWarnings.push(`Domain discovery sugeriu ${primary.domain_id}, mas a fonte oficial da URL confirma ${opts.sourceDomainId}.`)
+  }
+  const categoryResolution: CategoryResolution = {
+    category_id: categoryId,
+    category_name: categoryName,
+    domain_id: resolvedDomainId,
+    source: categorySource,
+    confidence: categorySource === 'url_source' ? 1 : categorySource === 'category_hint' ? 0.9 : primary ? 0.8 : 0,
+    candidates: domains,
+    reasons: categorySource === 'url_source'
+      ? ['Categoria preservada do anúncio informado pelo vendedor.']
+      : categorySource === 'category_hint'
+        ? ['Categoria explicitamente confirmada no fluxo.']
+        : primary
+          ? ['Categoria sugerida pelo domain discovery oficial do Mercado Livre.']
+          : [],
+    warnings: categoryWarnings,
+  }
+  warnings.push(...categoryWarnings)
+
   // --- fase 1: candidatos
-  const [searchResults, highlights] = await Promise.all([
-    searchCatalog(token, query).catch(() => [] as CatalogSearchItem[]),
+  const queries = identitySearchQueries(query, opts.truth)
+  const [searchBatches, highlights] = await Promise.all([
+    mapLimitSettled(queries, 2, candidateQuery => searchCatalog(token, candidateQuery)),
     categoryId ? getHighlights(token, categoryId) : Promise.resolve([]),
   ])
+  const searchResults = [...new Map(searchBatches.flat().map(result => [result.id, result])).values()]
 
   const highlightPos = new Map<string, number>()
   for (const h of highlights) {
@@ -469,7 +557,9 @@ export async function researchMarket(
   // Caso contrário, usa o domínio mais frequente da busca.
   const primaryDomainInResults = primary?.domain_id && domainCount.has(primary.domain_id)
   const dominantDomain =
-    primaryDomainInResults
+    categorySource === 'url_source' && resolvedDomainId
+      ? resolvedDomainId
+      : primaryDomainInResults
       ? primary!.domain_id
       : [...domainCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
         primary?.domain_id ||
@@ -487,20 +577,24 @@ export async function researchMarket(
   if (candidateIds.size === 0) {
     return {
       query,
-      domain_id: primary?.domain_id ?? null,
-      domain_name: primary?.domain_name ?? null,
+      domain_id: resolvedDomainId,
+      domain_name: categorySource === 'url_source' ? null : primary?.domain_name ?? null,
       category_id: categoryId,
-      category_name: primary?.category_name ?? null,
+      category_name: categoryName,
+      category_resolution: categoryResolution,
       keywords: [],
       competitors: [],
+      catalog_matches: [],
       candidates_found: 0,
       price_stats: null,
       price_basis: 'NONE',
       exact_product_count: 0,
+      exact_catalog_count: 0,
       competitor_matrix: {},
       regional: buildRegionalRadar([]),
       category_source: categorySource,
       warnings: [
+        ...warnings,
         'Nenhuma referência de catálogo encontrada para este produto no Mercado Livre. Isso pode indicar um nicho pouco explorado ou que o nome do produto precisa ser mais específico.',
       ],
     }
@@ -554,9 +648,25 @@ export async function researchMarket(
     }
   }
 
+  const catalogMatches: CatalogMatch[] = valid
+    .filter(candidate => candidate.match_class === 'EXACT_PRODUCT')
+    .map(candidate => ({
+      product_id: candidate.product_id,
+      title: candidate.title,
+      domain_id: candidate.domain_id,
+      attributes: candidate.attributes,
+      pictures: candidate.pictures,
+      match_class: candidate.match_class,
+      product_match_confidence: candidate.product_match_confidence,
+      usable_as_fact_source: candidate.usable_as_fact_source,
+    }))
+
+  // Catálogo sem oferta ativa não é concorrente. Competidor exige item/oferta real.
+  const offers = valid.filter(candidate => candidate.offers_count > 0 && Boolean(candidate.item_id))
+
   // Ordenação por força COMPETITIVA — não por estar no catálogo.
-  valid.sort((a, b) => b.competitive_reference_strength - a.competitive_reference_strength)
-  const competitors = valid.slice(0, deepLimit)
+  offers.sort((a, b) => b.competitive_reference_strength - a.competitive_reference_strength)
+  const competitors = offers.slice(0, deepLimit)
 
   if (competitors.length && competitors.every(c => c.price === null)) {
     warnings.push(
@@ -566,7 +676,7 @@ export async function researchMarket(
 
   // Preço prioriza produto EXATO; comparáveis só entram se não houver exato.
   const exactPriced = competitors.filter(c => c.match_class === 'EXACT_PRODUCT' && c.price)
-  const priceBasis = exactPriced.length >= 2 ? exactPriced : competitors
+  const priceBasis = exactPriced.length ? exactPriced : competitors
   const prices = priceBasis.map(c => c.price).filter((p): p is number => typeof p === 'number' && p > 0)
   const keywords = categoryId
     ? (await getCategoryTrends(token, categoryId)).map(t => t.keyword).slice(0, 25)
@@ -574,13 +684,15 @@ export async function researchMarket(
 
   return {
     query,
-    domain_id: primary?.domain_id ?? dominantDomain,
-    domain_name: primary?.domain_name ?? null,
+    domain_id: resolvedDomainId ?? dominantDomain,
+    domain_name: categorySource === 'url_source' ? null : primary?.domain_name ?? null,
     category_id: categoryId,
-    category_name: primary?.category_name ?? null,
+    category_name: categoryName,
+    category_resolution: categoryResolution,
     category_source: categorySource,
     keywords,
     competitors,
+    catalog_matches: catalogMatches,
     candidates_found: candidateIds.size,
     price_stats: prices.length
       ? {
@@ -593,10 +705,11 @@ export async function researchMarket(
       : null,
     price_basis: !prices.length
       ? 'NONE'
-      : exactPriced.length >= 2
+      : exactPriced.length
         ? 'EXACT_PRODUCT'
         : 'COMPARABLE_PRODUCT',
     exact_product_count: competitors.filter(c => c.match_class === 'EXACT_PRODUCT').length,
+    exact_catalog_count: catalogMatches.length,
     competitor_matrix: buildCompetitorMatrix(
       competitors.map(c => ({
         product_id: c.product_id,

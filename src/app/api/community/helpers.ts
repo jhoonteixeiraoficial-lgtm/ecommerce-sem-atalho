@@ -4,11 +4,16 @@ import { createServerGuards } from '@/lib/auth/server-guards'
 import { checkRateLimit } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
 
+function isMissingSession(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'name' in error
+    && (error as { name?: unknown }).name === 'AuthSessionMissingError')
+}
+
 export async function requireCommunityUser() {
   try {
     const supabase = await createClient()
     const { data: { user }, error } = await supabase.auth.getUser()
-    const authorizedUser = await createServerGuards(user, error).requireUser()
+    const authorizedUser = await createServerGuards(user, isMissingSession(error) ? null : error).requireUser()
 
     return { authorizedUser, response: null, supabase }
   } catch (error: unknown) {

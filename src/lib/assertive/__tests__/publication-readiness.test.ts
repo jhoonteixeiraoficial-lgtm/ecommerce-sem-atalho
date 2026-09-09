@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { payloadHash, wasPayloadChanged, runPreflightChecks, computeReadiness } from '../publication-readiness'
+import {
+  payloadHash,
+  wasPayloadChanged,
+  runPreflightChecks,
+  computeReadiness,
+  evaluateEditorReadiness,
+} from '../publication-readiness'
 import type { MLItemPayload } from '../publisher'
+import type { ClassifiedAttribute } from '../taxonomy'
 
 describe('PublicationReadiness - payloadHash', () => {
   it('produz hash determinístico para o mesmo payload', () => {
@@ -23,6 +30,29 @@ describe('PublicationReadiness - payloadHash', () => {
     const hash2 = payloadHash(payload)
     expect(hash1).toBe(hash2)
     expect(hash1).toBeTruthy()
+  })
+
+  it('mantém o hash quando o JSONB reordena chaves de objetos aninhados', () => {
+    const validated: MLItemPayload = {
+      category_id: 'MLB455266',
+      price: 434.56,
+      currency_id: 'BRL',
+      available_quantity: 1,
+      buying_mode: 'buy_it_now',
+      condition: 'new',
+      listing_type_id: 'gold_special',
+      pictures: [{ source: 'https://example.com/dualsense.jpg' }],
+      attributes: [{ id: 'BRAND', value_name: 'Sony' }],
+      shipping: { mode: 'not_specified', local_pick_up: false, free_shipping: false },
+      sale_terms: [{ id: 'WARRANTY_TYPE', value_name: 'Garantia do vendedor' }],
+    }
+    const readBackFromJsonb: MLItemPayload = {
+      ...validated,
+      shipping: { mode: 'not_specified', free_shipping: false, local_pick_up: false },
+      sale_terms: [{ value_name: 'Garantia do vendedor', id: 'WARRANTY_TYPE' }],
+    }
+
+    expect(payloadHash(readBackFromJsonb)).toBe(payloadHash(validated))
   })
 
   it('hash muda quando payload muda', () => {
@@ -144,8 +174,8 @@ describe('PublicationReadiness - runPreflightChecks', () => {
       basePayload,
       { ml_user_id: 123, nickname: 'test', site_id: 'MLB', user_product_model: false, tags: [] },
       [
-        { id: 'BRAND', name: 'Marca', tier: 'required', value_type: 'string', fixedValues: true, isVariationOnly: false, readOnly: false } as any,
-        { id: 'MODEL', name: 'Modelo', tier: 'required', value_type: 'string', fixedValues: false, isVariationOnly: false, readOnly: false } as any,
+        { id: 'BRAND', name: 'Marca', tier: 'required', value_type: 'string', fixedValues: true, isVariationOnly: false, readOnly: false },
+        { id: 'MODEL', name: 'Modelo', tier: 'required', value_type: 'string', fixedValues: false, isVariationOnly: false, readOnly: false },
       ],
       true
     )
@@ -186,8 +216,8 @@ describe('PublicationReadiness - runPreflightChecks', () => {
       { ...basePayload, attributes: [] },
       null,
       [
-        { id: 'BRAND', name: 'Marca', tier: 'required', value_type: 'string', fixedValues: true, isVariationOnly: false, readOnly: false } as any,
-      ],
+        { id: 'BRAND', name: 'Marca', tier: 'required', value_type: 'string', fixedValues: true, isVariationOnly: false, readOnly: false },
+      ] satisfies ClassifiedAttribute[],
       true
     )
     const attrCheck = checks.find(c => c.check === 'required_attributes')
@@ -200,8 +230,8 @@ describe('PublicationReadiness - runPreflightChecks', () => {
       basePayload,
       { ml_user_id: 123, nickname: 'test', site_id: 'MLB', user_product_model: true, tags: ['user_product_seller'] },
       [
-        { id: 'SELLER_PACKAGE_HEIGHT', name: 'Altura embalagem', tier: 'required', value_type: 'number', fixedValues: false, isVariationOnly: false, readOnly: false } as any,
-      ],
+        { id: 'SELLER_PACKAGE_HEIGHT', name: 'Altura embalagem', tier: 'required', value_type: 'number', fixedValues: false, isVariationOnly: false, readOnly: false },
+      ] satisfies ClassifiedAttribute[],
       true
     )
     const pkgCheck = checks.find(c => c.check === 'seller_package')
@@ -264,6 +294,39 @@ describe('PublicationReadiness - computeReadiness', () => {
     expect(readiness.blocker_count).toBe(0)
   })
 
+  it('HTTP 400 oficial com apenas warnings fica READY_WITH_WARNINGS', () => {
+    const payload: MLItemPayload = {
+      category_id: 'MLB60658',
+      price: 100,
+      currency_id: 'BRL',
+      available_quantity: 1,
+      buying_mode: 'buy_it_now',
+      condition: 'new',
+      listing_type_id: 'gold_special',
+      pictures: [{ source: 'https://example.com/kitest.jpg' }],
+      attributes: [{ id: 'BRAND', value_name: 'Kitest' }],
+    }
+    const readiness = computeReadiness(
+      [],
+      {
+        valid: true,
+        issues: [{
+          code: 'shipping.lost_me1_by_user',
+          message: 'ME1 unavailable',
+          severity: 'warning',
+        }],
+        status_code: 400,
+      },
+      payload,
+      '2026-09-09T12:00:00.000Z',
+    )
+
+    expect(readiness.ready).toBe(true)
+    expect(readiness.state).toBe('READY_WITH_WARNINGS')
+    expect(readiness.validated_payload).toBe(payload)
+    expect(readiness.payload_hash).toBe(payloadHash(payload))
+  })
+
   it('payload_hash está presente quando payload é fornecido', () => {
     const payload: MLItemPayload = {
       category_id: 'MLB123',
@@ -286,5 +349,94 @@ describe('PublicationReadiness - computeReadiness', () => {
 
     expect(readiness.payload_hash).toBeTruthy()
     expect(readiness.validated_payload).toBe(payload)
+  })
+})
+
+describe('PublicationReadiness - editor', () => {
+  const validPayload: MLItemPayload = {
+    category_id: 'MLB60658',
+    price: 129.9,
+    currency_id: 'BRL',
+    available_quantity: 1,
+    buying_mode: 'buy_it_now',
+    condition: 'new',
+    listing_type_id: 'gold_special',
+    title: 'Caneta de polaridade Kitest KA250 12V 24V',
+    pictures: [{ source: 'https://example.com/kitest.jpg' }],
+    attributes: [{ id: 'BRAND', value_name: 'Kitest' }],
+  }
+
+  const baseListing = {
+    status: 'ready_to_publish',
+    title: validPayload.title,
+    price: validPayload.price,
+    category_id: validPayload.category_id,
+    photos: [validPayload.pictures[0].source],
+    validation: { valid: true, checked_at: '2026-09-08T23:00:00.000Z', status_code: 204, issues: [] },
+    publication_requirements: { all_clear: true, blockers: [] },
+    validated_payload: validPayload,
+    validated_payload_hash: payloadHash(validPayload),
+  }
+
+  it('libera publicação com validação aceita e payload íntegro', () => {
+    expect(evaluateEditorReadiness(baseListing)).toMatchObject({
+      canPublish: true,
+      state: 'READY',
+      blocker: null,
+    })
+  })
+
+  it('libera READY_WITH_WARNINGS para HTTP 400 oficial warning-only', () => {
+    const readiness = evaluateEditorReadiness({
+      ...baseListing,
+      validation: {
+        ...baseListing.validation,
+        valid: true,
+        status_code: 400,
+        issues: [{ code: 'shipping.lost_me1_by_user', message: 'ME1 unavailable', severity: 'warning' }],
+      },
+      publication_requirements: {
+        all_clear: true,
+        blockers: [],
+        account_warnings: [{
+          code: 'shipping.lost_me1_by_user',
+          message: 'ME1 unavailable',
+          category: 'account',
+          user_action_required: true,
+          friendly_message: 'Mercado Envíos 1 não está habilitado na sua conta.',
+        }],
+      },
+    })
+
+    expect(readiness.canPublish).toBe(true)
+    expect(readiness.state).toBe('READY_WITH_WARNINGS')
+    expect(readiness.blocker).toBeNull()
+  })
+
+  it('não exibe READY quando o payload validado foi alterado', () => {
+    const readiness = evaluateEditorReadiness({
+      ...baseListing,
+      validated_payload_hash: payloadHash({ ...validPayload, price: 99.9 }),
+    })
+
+    expect(readiness.canPublish).toBe(false)
+    expect(readiness.blocker?.message).toContain('novamente')
+  })
+
+  it('aponta o primeiro atributo obrigatório para correção', () => {
+    const readiness = evaluateEditorReadiness({
+      ...baseListing,
+      publication_requirements: {
+        all_clear: false,
+        blockers: [{ attribute_id: 'GTIN', name: 'Código universal de produto' }],
+      },
+    })
+
+    expect(readiness.canPublish).toBe(false)
+    expect(readiness.state).toBe('NEEDS_USER_INPUT')
+    expect(readiness.blocker).toEqual({
+      target: 'attribute-GTIN',
+      message: 'Preencha Código universal de produto para continuar.',
+    })
   })
 })

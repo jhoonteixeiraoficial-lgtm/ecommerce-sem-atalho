@@ -14,6 +14,7 @@ export interface EffectiveRequirement {
   suggested_value?: { value_id?: string; value_name?: string }
   /** true se o ML retornou como required E não há valor preenchido */
   is_blocker: boolean
+  requires_confirmation: boolean
   /** valor atual preenchido, se houver */
   current_value?: string
 }
@@ -64,7 +65,12 @@ export function computeEffectiveRequirements(
     }
 
     if (issue.severity !== 'error') continue
-    for (const attrId of issue.attribute_ids || []) {
+    const issueAttributeIds = issue.attribute_ids?.length
+      ? issue.attribute_ids
+      : issue.attribute_id
+        ? [issue.attribute_id]
+        : []
+    for (const attrId of issueAttributeIds) {
       mlRequiredIds.add(attrId)
       if (!mlIssuesMap.has(attrId)) {
         mlIssuesMap.set(attrId, issue)
@@ -102,7 +108,13 @@ export function computeEffectiveRequirements(
     }
 
     const hasValue = Boolean(filled?.value_name?.trim())
-    const isBlocker = level === 'blocking_required' && !hasValue
+    const hasPublishableValue = hasValue && (
+      filled?.status === 'CONFIRMED'
+      || filled?.status === 'AUTO_FILLED'
+      || filled?.status === 'USER_OVERRIDE'
+    )
+    const requiresConfirmation = hasValue && !hasPublishableValue
+    const isBlocker = level === 'blocking_required' && !hasPublishableValue
 
     requirements.push({
       attribute_id: attr.id,
@@ -112,13 +124,38 @@ export function computeEffectiveRequirements(
       ml_message: mlIssue?.message,
       suggested_value: mlIssue?.suggested_value,
       is_blocker: isBlocker,
+      requires_confirmation: requiresConfirmation,
+      current_value: filled?.value_name,
+    })
+  }
+
+  const schemaAttributeIds = new Set(requirements.map(requirement => requirement.attribute_id))
+  for (const attrId of mlRequiredIds) {
+    if (schemaAttributeIds.has(attrId)) continue
+    const filled = filledMap.get(attrId)
+    const hasValue = Boolean(filled?.value_name?.trim())
+    const hasPublishableValue = hasValue && (
+      filled?.status === 'CONFIRMED'
+      || filled?.status === 'AUTO_FILLED'
+      || filled?.status === 'USER_OVERRIDE'
+    )
+    const mlIssue = mlIssuesMap.get(attrId)
+    requirements.push({
+      attribute_id: attrId,
+      name: attrId,
+      level: 'blocking_required',
+      source: 'ml_validation',
+      ml_message: mlIssue?.message,
+      suggested_value: mlIssue?.suggested_value,
+      is_blocker: !hasPublishableValue,
+      requires_confirmation: hasValue && !hasPublishableValue,
       current_value: filled?.value_name,
     })
   }
 
   const blockers = requirements.filter(r => r.is_blocker)
   const recommended_missing = requirements.filter(
-    r => r.level === 'recommended' && !r.current_value?.trim()
+    r => r.level === 'recommended' && (!r.current_value?.trim() || r.requires_confirmation)
   )
 
   // product_payload_ready = sem erros de atributos do produto
@@ -130,7 +167,7 @@ export function computeEffectiveRequirements(
     recommended_missing,
     all_clear: blockers.length === 0,
     total_attributes: requirements.length,
-    filled_count: requirements.filter(r => Boolean(r.current_value?.trim())).length,
+    filled_count: requirements.filter(r => Boolean(r.current_value?.trim()) && !r.requires_confirmation).length,
     blocker_count: blockers.length,
     account_warnings: accountWarnings,
     product_payload_ready: productPayloadReady,

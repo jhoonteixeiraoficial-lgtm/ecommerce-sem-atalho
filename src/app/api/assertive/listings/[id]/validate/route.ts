@@ -9,8 +9,11 @@ import {
   type ValidationIssue,
 } from '@/lib/assertive/publisher'
 import { resolveCategoryContext, recomputeListing } from '@/lib/assertive/pipeline'
+import { computeEffectiveRequirements } from '@/lib/assertive/publication-requirements'
+import { payloadHash } from '@/lib/assertive/publication-readiness'
 import type { ListingAttribute } from '@/lib/assertive/generator'
 import type { ClassifiedAttribute } from '@/lib/assertive/taxonomy'
+import type { EnrichedAttribute } from '@/lib/assertive/enrichment'
 
 export const runtime = 'nodejs'
 export const maxDuration = 90
@@ -84,7 +87,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     }
     await supabase
       .from('assertive_listings')
-      .update({ validation, status: 'needs_input', updated_at: new Date().toISOString() })
+      .update({
+        validation,
+        validated_payload: null,
+        validated_payload_hash: null,
+        status: 'needs_input',
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
     return Response.json(validation)
@@ -123,6 +132,21 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
     // O ML às vezes informa o valor exato que falta. Aplicamos e revalidamos uma vez.
     const autoApplied: string[] = []
+    let payloadChanged = false
+    const gtinSpec = schema.find(attribute => attribute.id === 'GTIN')
+    const invalidOptionalGtin = result.issues.some(issue =>
+      issue.severity === 'error' && issue.code === 'item.attribute.invalid_product_identifier'
+    ) && gtinSpec && gtinSpec.tier !== 'required' && gtinSpec.tier !== 'catalog_required'
+
+    if (invalidOptionalGtin) {
+      const gtinIndex = attributes.findIndex(attribute => attribute.id === 'GTIN')
+      if (gtinIndex !== -1) {
+        attributes.splice(gtinIndex, 1)
+        autoApplied.push(`${gtinSpec.name} inválido removido`)
+        payloadChanged = true
+      }
+    }
+
     const suggestions = result.issues.filter(i => i.suggested_value && i.attribute_id)
     if (suggestions.length) {
       const byId = new Map(schema.map(a => [a.id, a]))
@@ -142,19 +166,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
           source: 'catalog',
         })
         autoApplied.push(spec?.name || attrId)
+        payloadChanged = true
       }
+    }
 
-      if (autoApplied.length) {
-        result = await validateListing(token, build())
-        await supabase
-          .from('assertive_listings')
-          .update({
-            attributes: { ...(listing.attributes || {}), list: attributes },
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', id)
-          .eq('user_id', authorizedUser.id)
-      }
+    if (payloadChanged) {
+      result = await validateListing(token, build())
+      await supabase
+        .from('assertive_listings')
+        .update({
+          attributes: { ...(listing.attributes || {}), list: attributes },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('user_id', authorizedUser.id)
     }
 
     const questions = issuesToQuestions(result.issues, schema, attributes)
@@ -173,24 +198,41 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         .eq('user_id', authorizedUser.id)
     }
 
+    const effectiveAttributes: EnrichedAttribute[] = attributes.map(attribute => ({
+      ...attribute,
+      status: attribute.source === 'user' ? 'USER_OVERRIDE' : 'CONFIRMED',
+    }))
+    const publicationRequirements = computeEffectiveRequirements(schema, result.issues, effectiveAttributes)
+    const validatedPayload = build()
+    const readyToPublish = result.valid && publicationRequirements.all_clear
     const validation = {
-      valid: result.valid,
+      valid: readyToPublish,
+      ml_valid: result.valid,
+      status_code: result.status_code,
       checked_at: new Date().toISOString(),
       issues: result.issues,
       auto_applied: autoApplied,
       account_model: capabilities?.user_product_model ? 'user_product' : 'classic',
     }
 
+    await recomputeListing(id, authorizedUser.id).catch(() => null)
+
     await supabase
       .from('assertive_listings')
       .update({
         validation,
+        attributes: {
+          ...(listing.attributes || {}),
+          list: attributes,
+          publication_requirements: publicationRequirements,
+        },
+        validated_payload: readyToPublish ? validatedPayload : null,
+        validated_payload_hash: readyToPublish ? payloadHash(validatedPayload) : null,
+        status: readyToPublish ? 'ready_to_publish' : 'needs_input',
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
-
-    await recomputeListing(id, authorizedUser.id).catch(() => null)
 
     return Response.json(validation)
   } catch (e) {

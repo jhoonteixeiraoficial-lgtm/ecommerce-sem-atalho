@@ -134,6 +134,185 @@ export function matchAttributeValue(
   )
 }
 
+function normalizedPhrase(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase()
+}
+
+function formatProductType(value: string): string {
+  const connectors = new Set(['a', 'as', 'com', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'para'])
+  return value.trim().split(/\s+/).map((word, index) => {
+    const lower = word.toLocaleLowerCase('pt-BR')
+    if (index > 0 && connectors.has(lower)) return lower
+    if (/^[A-Z0-9]{2,5}$/.test(word)) return word
+    return lower.charAt(0).toLocaleUpperCase('pt-BR') + lower.slice(1)
+  }).join(' ')
+}
+
+function compactMeasurements(value: string): string {
+  return value
+    .replace(/(\d)\s+(V|W|A|HZ)\b/gi, (_match, number: string, unit: string) => `${number}${unit.toUpperCase()}`)
+    .replace(/\s*(?:\/|\|)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function trimAtWord(value: string, limit: number): string {
+  if (value.length <= limit) return value
+  const clipped = value.slice(0, limit + 1)
+  const boundary = clipped.lastIndexOf(' ')
+  return (boundary > 0 ? clipped.slice(0, boundary) : value.slice(0, limit)).trim()
+}
+
+function titleWords(value: string): string[] {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) || []
+}
+
+function measurementClaims(value: string): string[] {
+  return value.match(/\b\d+(?:[.,]\d+)?\s*(?:hz|kg|cm|mm|ml|v|w|a|g|m|l)\b|\b\d+(?:[.,]\d+)?\s*%/gi) || []
+}
+
+function hasUnsupportedMeasurement(value: string, truth: ProductTruth): boolean {
+  const supportedValues = [
+    truth.name,
+    ...Object.values(truth.fields)
+      .filter(field => field.confidence === 'confirmed' || field.status === 'CONFIRMED' || field.status === 'AUTO_FILLED' || field.status === 'USER_OVERRIDE')
+      .map(field => field.value),
+    truth.identity?.voltage,
+    truth.identity?.kit_pack,
+    truth.identity?.dimensions,
+  ].filter((fact): fact is string => Boolean(fact))
+  const supported = new Set(supportedValues.flatMap(measurementClaims).map(normalizeValue))
+  return measurementClaims(value).some(claim => !supported.has(normalizeValue(claim)))
+}
+
+/** Título factual: identidade confirmada prevalece sobre texto livre da IA. */
+export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit: number): string {
+  const identity = truth.identity
+  const productType = identity?.product_type || truth.fields.product_type?.value
+  const brand = identity?.brand || truth.fields.brand?.value
+  const model = identity?.model || truth.fields.model?.value
+
+  if (!productType || (!brand && !model) || truth.confidence < 0.7) {
+    return trimAtWord(compactMeasurements(proposed.trim() || truth.name), limit)
+  }
+
+  const proposedTitle = trimAtWord(compactMeasurements(proposed.trim()), limit)
+  const proposedWords = titleWords(proposedTitle)
+  const containsPart = (part: string | null | undefined) => !part
+    || titleWords(part).every(word => proposedWords.includes(word))
+  const repeatsProductType = titleWords(productType)
+    .filter(word => word.length >= 4)
+    .some(word => proposedWords.filter(candidate => candidate === word).length > 1)
+  const prohibitedClaim = /\b(?:frete\s+gr[aá]tis|imperd[ií]vel|oferta|promo[cç][aã]o)\b/i.test(proposedTitle)
+
+  if (
+    proposedTitle
+    && containsPart(productType)
+    && containsPart(brand)
+    && containsPart(model)
+    && !repeatsProductType
+    && !prohibitedClaim
+    && !hasUnsupportedMeasurement(proposedTitle, truth)
+  ) {
+    return proposedTitle
+  }
+
+  const parts: string[] = []
+  const add = (raw: string | null | undefined) => {
+    const value = compactMeasurements(raw || '')
+    if (!value) return
+    const normalized = normalizedPhrase(value)
+    const current = normalizedPhrase(parts.join(' '))
+    if (normalized && current.includes(normalized)) return
+    parts.push(value)
+  }
+
+  add(formatProductType(productType))
+  add(brand)
+  add(model)
+  add(identity?.family_or_line)
+  add(identity?.variant)
+  add(identity?.voltage || truth.fields.voltage?.value)
+  if (identity?.kit_pack && !/^1(?:\s|$)/.test(identity.kit_pack)) add(identity.kit_pack)
+
+  for (const field of ['material', 'capacity', 'power'] as const) {
+    const fact = truth.fields[field]
+    if (!fact || fact.confidence !== 'confirmed' || fact.status === 'CONFLICT' || fact.status === 'NEEDS_CONFIRMATION') continue
+    add(fact.value)
+  }
+
+  return trimAtWord(parts.join(' '), limit)
+}
+
+const DESCRIPTION_LABELS: Record<string, string> = {
+  brand: 'Marca',
+  model: 'Modelo',
+  family_or_line: 'Linha',
+  line: 'Linha',
+  variant: 'Variante',
+  color: 'Cor',
+  material: 'Material',
+  voltage: 'Voltagem',
+  power: 'Potência',
+  capacity: 'Capacidade',
+  dimensions: 'Dimensões',
+  length: 'Comprimento',
+  width: 'Largura',
+  height: 'Altura',
+  weight: 'Peso',
+  units_per_pack: 'Unidades por embalagem',
+  condition: 'Condição',
+  gtin: 'GTIN',
+}
+
+function confirmedDescriptionFields(truth: ProductTruth) {
+  return Object.entries(truth.fields).filter(([, field]) =>
+    field.confidence === 'confirmed'
+    || field.status === 'CONFIRMED'
+    || field.status === 'AUTO_FILLED'
+    || field.status === 'USER_OVERRIDE'
+  )
+}
+
+function factualDescription(title: string, truth: ProductTruth): string {
+  const facts = confirmedDescriptionFields(truth)
+    .filter(([key]) => DESCRIPTION_LABELS[key])
+    .map(([key, field]) => `- ${DESCRIPTION_LABELS[key]}: ${field.value}`)
+  return [
+    title,
+    '',
+    'Informações do produto',
+    truth.identity?.function || truth.identity?.product_type || truth.name,
+    ...(facts.length ? ['', 'Especificações confirmadas', ...facts] : []),
+  ].join('\n').trim()
+}
+
+function guardDescription(proposed: string, title: string, truth: ProductTruth): string {
+  const description = proposed.trim()
+  const facts = confirmedDescriptionFields(truth).map(([, field]) => normalizedPhrase(field.value))
+  const unsupportedMeasurements = description.match(/\b\d+(?:[.,]\d+)?\s*(?:v|w|a|hz|kg|g|cm|mm|m|ml|l|anos?|meses?|%)\b/gi)
+    ?.some(claim => !facts.some(fact => fact.includes(normalizedPhrase(claim)))) ?? false
+  const hasWarrantyFact = Object.keys(truth.fields).some(key => /warranty|garantia/i.test(key))
+  const hasPackageFact = Object.keys(truth.fields).some(key => /accessor|included|package_contents|conteudo/i.test(key))
+  const unsupportedWarranty = /\bgarantia\b/i.test(description) && !hasWarrantyFact
+  const unsupportedPackage = /\b(?:acompanha|inclus[oa]s?|conte[uú]do da embalagem)\b/i.test(description) && !hasPackageFact
+  const unsupportedCertification = /\b(?:anatel|certifica(?:do|ção)|inmetro)\b/i.test(description)
+    && !facts.some(fact => /anatel|certifica|inmetro/.test(fact))
+
+  if (!description || unsupportedMeasurements || unsupportedWarranty || unsupportedPackage || unsupportedCertification) {
+    return factualDescription(title, truth)
+  }
+  return description
+}
+
 /**
  * Valida cada atributo gerado contra o schema oficial da categoria.
  * Valores que não existem na lista permitida são descartados — nada é forçado.
@@ -324,7 +503,9 @@ Tom: ${input.tone || 'profissional'}.`
     maxTokens: 6000,
   })
 
-  const title = String(raw.title || truth.name).trim().slice(0, titleLimit)
+  const title = buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit)
+  const familyName = buildSemanticTitle(truth, String(raw.family_name || truth.name), 60)
+  const description = guardDescription(String(raw.description || ''), title, truth)
   const { attributes: reconciled, rejected } = reconcileAttributes(
     raw.attributes || [],
     truth,
@@ -349,10 +530,13 @@ Tom: ${input.tone || 'profissional'}.`
         }))
       : DEFAULT_IMAGE_PLAN
 
-  const price = dna.price_context?.suggested ?? null
-  const priceRationale = dna.price_context
-    ? `Sugestão baseada em ${research.price_stats?.sample_size ?? 0} ofertas reais: mediana R$${dna.price_context.median.toFixed(2)}, faixa R$${dna.price_context.min.toFixed(2)}–R$${dna.price_context.max.toFixed(2)}. O valor sugerido fica levemente abaixo da mediana para ganhar relevância sem entrar em guerra de preço.`
-    : 'Não há ofertas ativas suficientes nas referências para sugerir um preço com segurança. Defina o preço manualmente.'
+  const priceBasis = dna.price_context?.basis || research.price_basis
+  const price = priceBasis === 'EXACT_PRODUCT' ? dna.price_context?.suggested ?? null : null
+  const priceRationale = dna.price_context && priceBasis === 'EXACT_PRODUCT'
+    ? `Sugestão baseada em ${dna.price_context.sample_size || research.price_stats?.sample_size || 0} oferta(s) real(is) do produto exato: mediana R$${dna.price_context.median.toFixed(2)}, faixa R$${dna.price_context.min.toFixed(2)}–R$${dna.price_context.max.toFixed(2)}. O valor sugerido fica levemente abaixo da mediana para ganhar relevância sem entrar em guerra de preço.`
+    : dna.price_context && priceBasis === 'COMPARABLE_PRODUCT'
+      ? `A faixa observada vem de ${dna.price_context.sample_size || research.price_stats?.sample_size || 0} oferta(s) de produtos comparáveis, não do produto exato. Use-a apenas como referência e confirme o preço manualmente.`
+      : 'Não há ofertas ativas suficientes nas referências para sugerir um preço com segurança. Defina o preço manualmente.'
 
   const improvements = (raw.improvements || []).map(String).filter(Boolean)
   if (rejected.length) {
@@ -364,11 +548,12 @@ Tom: ${input.tone || 'profissional'}.`
   return {
     title,
     title_alternatives: (raw.title_alternatives || [])
-      .map(t => String(t).trim().slice(0, titleLimit))
+      .map(t => buildSemanticTitle(truth, String(t), titleLimit))
       .filter(t => t && t !== title)
+      .filter((alternative, index, alternatives) => alternatives.indexOf(alternative) === index)
       .slice(0, 2),
-    family_name: String(raw.family_name || truth.name).trim().slice(0, 60),
-    description: String(raw.description || '').trim(),
+    family_name: familyName,
+    description,
     price,
     price_rationale: priceRationale,
     attributes: reconciled,

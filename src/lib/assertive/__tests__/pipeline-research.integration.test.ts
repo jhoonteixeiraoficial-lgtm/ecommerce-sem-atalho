@@ -4,6 +4,7 @@ const database = vi.hoisted(() => ({
   row: {} as Record<string, unknown>,
   forceError: false,
 }))
+const observeAnalysisStage = vi.hoisted(() => vi.fn())
 
 const researchFixture = vi.hoisted(() => ({
   query: 'Kitest KA-250 12V 24V',
@@ -64,9 +65,13 @@ vi.mock('../publisher', () => ({
   getAutoAppendedAttributeIds: vi.fn(),
   validateListing: vi.fn(),
 }))
-vi.mock('../research', () => ({
-  researchMarket: vi.fn().mockResolvedValue(researchFixture),
-}))
+vi.mock('../research', async importOriginal => {
+  const actual = await importOriginal<typeof import('../research')>()
+  return {
+    ...actual,
+    researchMarket: vi.fn().mockResolvedValue(researchFixture),
+  }
+})
 vi.mock('../dna', () => ({
   extractDNA: vi.fn().mockReturnValue({
     title_patterns: [],
@@ -76,6 +81,10 @@ vi.mock('../dna', () => ({
     photo_patterns: [],
     common_attributes: {},
   }),
+}))
+vi.mock('../observability', () => ({
+  observeAnalysisStage,
+  recordAnalysisStageEvent: vi.fn().mockResolvedValue(true),
 }))
 
 import { runResearch, updateAnalysis, type AnalysisRow } from '../pipeline'
@@ -110,6 +119,7 @@ const initialAnalysis: AnalysisRow = {
 describe('runResearch - persistência real do estágio', () => {
   beforeEach(() => {
     database.forceError = false
+    observeAnalysisStage.mockReset().mockImplementation(async (_context, task) => task())
     for (const key of Object.keys(database.row)) delete database.row[key]
     Object.assign(database.row, initialAnalysis)
   })
@@ -124,6 +134,7 @@ describe('runResearch - persistência real do estágio', () => {
     })
     expect(database.row.category_id).toBe('MLB60658')
     expect(database.row.status).toBe('generating')
+    expect(observeAnalysisStage.mock.calls.map(([context]) => context.stage)).toEqual(['research', 'dna'])
   })
 
   it('propaga falha de persistência em vez de continuar com estado vazio', async () => {

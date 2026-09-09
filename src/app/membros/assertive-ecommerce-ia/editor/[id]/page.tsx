@@ -2,6 +2,9 @@
 
 import { useState, useEffect, useCallback, use, useRef } from 'react'
 import Link from 'next/link'
+import { evaluateEditorReadiness } from '@/lib/assertive/publication-readiness'
+import { resolveMarketplacePublication } from '@/lib/assertive/marketplace-publication'
+import type { MLItemPayload } from '@/lib/assertive/publisher'
 import {
   Loader2, AlertCircle, CheckCircle2, ArrowLeft, ShieldCheck, Upload, X,
   Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera, Search,
@@ -39,6 +42,39 @@ interface PendingQuestion {
 
 interface ScoreDetail { score: number; max: number; label: string; notes: string[] }
 
+interface PublicationRequirementsView {
+  requirements: Array<{
+    attribute_id: string
+    name: string
+    level: 'blocking_required' | 'recommended' | 'optional' | 'not_applicable'
+    source: string
+    ml_message?: string
+    suggested_value?: { value_id?: string; value_name?: string }
+    is_blocker: boolean
+    current_value?: string
+  }>
+  blockers: Array<{
+    attribute_id: string
+    name: string
+    level: string
+    ml_message?: string
+    suggested_value?: { value_id?: string; value_name?: string }
+  }>
+  recommended_missing: Array<{ attribute_id: string; name: string }>
+  all_clear: boolean
+  total_attributes: number
+  filled_count: number
+  blocker_count: number
+  account_warnings: Array<{
+    code: string
+    message: string
+    category: 'account' | 'product' | 'shipping' | 'unknown'
+    user_action_required: boolean
+    friendly_message: string
+  }>
+  product_payload_ready: boolean
+}
+
 interface Listing {
   id: string
   analysis_id: string
@@ -52,6 +88,17 @@ interface Listing {
   available_quantity: number
   ml_item_id: string | null
   ml_permalink: string | null
+  publication_status?: string | null
+  ml_response?: {
+    reconciliation?: { status?: 'confirmed' | 'pending'; checked_at?: string; error?: string } | null
+    marketplace_item?: {
+      title?: string | null
+      price?: number | null
+      status?: string | null
+      permalink?: string | null
+      shipping?: { mode?: string | null; free_shipping?: boolean | null; logistic_type?: string | null } | null
+    } | null
+  } | null
   attributes: {
     list?: ListingAttribute[]
     alternatives?: string[]
@@ -95,6 +142,7 @@ interface Listing {
     predicted_title?: string
     ml_final_title?: string
     auto_appended_attributes?: string[]
+    publication_requirements?: PublicationRequirementsView | null
   }
   image_plan: Array<{ order: number; title: string; description: string; required: boolean }>
   completeness: {
@@ -116,41 +164,14 @@ interface Listing {
   }
   validation: {
     valid?: boolean
+    ml_valid?: boolean
+    status_code?: number
     checked_at?: string
-    issues?: Array<{ code: string; message: string; severity: string }>
+    issues?: Array<{ code: string; message: string; severity: 'error' | 'warning' }>
   }
-  publication_requirements?: {
-    requirements: Array<{
-      attribute_id: string
-      name: string
-      level: 'blocking_required' | 'recommended' | 'optional' | 'not_applicable'
-      source: string
-      ml_message?: string
-      suggested_value?: { value_id?: string; value_name?: string }
-      is_blocker: boolean
-      current_value?: string
-    }>
-    blockers: Array<{
-      attribute_id: string
-      name: string
-      level: string
-      ml_message?: string
-      suggested_value?: { value_id?: string; value_name?: string }
-    }>
-    recommended_missing: Array<{ attribute_id: string; name: string }>
-    all_clear: boolean
-    total_attributes: number
-    filled_count: number
-    blocker_count: number
-    account_warnings: Array<{
-      code: string
-      message: string
-      category: 'account' | 'product' | 'shipping' | 'unknown'
-      user_action_required: boolean
-      friendly_message: string
-    }>
-    product_payload_ready: boolean
-  }
+  publication_requirements?: PublicationRequirementsView
+  validated_payload?: MLItemPayload | null
+  validated_payload_hash?: string | null
 }
 
 interface Competitor {
@@ -187,9 +208,9 @@ const FIELD_LABELS: Record<string, string> = {
   SELLER_PACKAGE_WIDTH: 'Largura da embalagem',
   SELLER_PACKAGE_LENGTH: 'Comprimento da embalagem',
   SELLER_PACKAGE_WEIGHT: 'Peso da embalagem',
-  GTIN: 'Código de barras (GTIN)',
+  GTIN: 'Código universal de produto (GTIN/EAN)',
   COLOR: 'Cor do produto',
-  BRAND: 'Marca',
+  BRAND: 'Marca do produto',
   MODEL: 'Modelo',
 }
 
@@ -506,23 +527,23 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
   const attrs = listing.attributes?.list || []
   const missingRaw = listing.attributes?.missing || []
-  const pubReqs = listing.publication_requirements
+  const pubReqs = listing.attributes?.publication_requirements || listing.publication_requirements
   const blockers = pubReqs?.blockers || []
-  const recommendedMissing = pubReqs?.recommended_missing || []
   const accountWarnings = pubReqs?.account_warnings || []
-  const blockerCount = blockers.length || pubReqs?.blocker_count || 0
   const scores = listing.scores
   const comp = listing.completeness
   const validation = listing.validation
   const isPublished = listing.status === 'published'
   const isPublishing = listing.status === 'publishing'
-  // Publicar só exige: não publicado ainda + dados mínimos reais do ML (título, preço, foto, categoria)
-  // + payload pronto (sem erros de produto) — warnings de conta não bloqueiam
-  const canPublish = !isPublished && !isPublishing && !!listing.title?.trim() && !!listing.price && listing.price > 0
-    && Array.isArray(listing.photos) && listing.photos.length > 0 && !!listing.category_id
-    && (!pubReqs || pubReqs.all_clear)
+  const marketplacePublication = resolveMarketplacePublication(listing)
+  const publishedNeedsAttention = marketplacePublication.reconciliation === 'pending'
+    || (marketplacePublication.status !== null && marketplacePublication.status !== 'active')
+  const editorReadiness = evaluateEditorReadiness({
+    ...listing,
+    publication_requirements: pubReqs,
+  })
+  const canPublish = editorReadiness.canPublish
   const competitors = research?.competitors || []
-  const blockingCount = comp?.missing_required?.length || 0
 
   // Ordenar missing: obrigatórios primeiro, depois recommended, depois optional
   const REQUIRED_FIELDS = new Set([
@@ -553,6 +574,16 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const filledCount = pubReqs?.filled_count || 0
   const totalCount = pubReqs?.total_attributes || 0
 
+  function goToBlocker() {
+    if (!editorReadiness.blocker) return
+    const target = document.getElementById(editorReadiness.blocker.target)
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const focusable = target?.matches('input, textarea, select, button')
+      ? target
+      : target?.querySelector('input, textarea, select, button')
+    if (focusable instanceof HTMLElement) window.setTimeout(() => focusable.focus(), 300)
+  }
+
   if (hasUnresolvedBlockers) {
     return (
       <div className="min-h-screen bg-[#0c0c0c] px-4 py-6 sm:p-6">
@@ -578,7 +609,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
             <div className="space-y-4">
               {blockers.map(q => (
-                <div key={q.attribute_id}>
+                <div key={q.attribute_id} id={`attribute-${q.attribute_id}`}>
                   <label className="block text-gray-300 text-sm mb-1 font-medium">
                     {formatFieldName(q)}
                   </label>
@@ -648,15 +679,23 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         </Link>
 
         {isPublished && (
-          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 mb-5 flex items-center gap-3">
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          <div className={`${publishedNeedsAttention ? 'bg-amber-500/10 border-amber-500/30' : 'bg-emerald-500/10 border-emerald-500/30'} border rounded-xl p-4 mb-5 flex items-center gap-3`}>
+            {publishedNeedsAttention
+              ? <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+              : <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />}
             <div className="flex-1">
-              <p className="text-emerald-300 text-sm font-medium">Anúncio publicado no Mercado Livre</p>
-              <p className="text-emerald-300/60 text-xs mt-0.5">Código: {listing.ml_item_id}</p>
+              <p className={`${publishedNeedsAttention ? 'text-amber-300' : 'text-emerald-300'} text-sm font-medium`}>
+                {marketplacePublication.statusLabel}
+              </p>
+              <p className={`${publishedNeedsAttention ? 'text-amber-300/60' : 'text-emerald-300/60'} text-xs mt-0.5`}>
+                Código: {listing.ml_item_id}
+                {marketplacePublication.shipping?.mode && ` · Envio ${marketplacePublication.shipping.mode.toUpperCase()}`}
+                {marketplacePublication.shipping?.freeShipping === true && ' · Frete grátis'}
+              </p>
             </div>
-            {listing.ml_permalink && (
+            {marketplacePublication.permalink && (
               <a
-                href={listing.ml_permalink}
+                href={marketplacePublication.permalink}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 bg-emerald-500 text-black text-sm font-semibold px-3 py-2 rounded-lg hover:bg-emerald-400 transition"
@@ -691,19 +730,16 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           </div>
         )}
 
-        {!isPublished && !isPublishing && !canPublish && validation?.checked_at && (
+        {!isPublished && !isPublishing && !canPublish && editorReadiness.blocker && (
           <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4 mb-5 flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
             <div className="flex-1">
               <p className="text-amber-300 text-sm font-medium">Ajustes necessários</p>
-              <p className="text-amber-300/60 text-xs mt-0.5">
-                {!listing.title?.trim() ? 'Defina um título' :
-                 !listing.price || listing.price <= 0 ? 'Defina um preço' :
-                 !listing.photos?.length ? 'Adicione pelo menos uma foto' :
-                 !listing.category_id ? 'Categoria não definida' :
-                 'Preencha os campos obrigatórios'}
-              </p>
+              <p className="text-amber-300/60 text-xs mt-0.5">{editorReadiness.blocker.message}</p>
             </div>
+            <button onClick={goToBlocker} className="text-amber-300 text-xs font-semibold hover:text-amber-200">
+              Corrigir agora
+            </button>
           </div>
         )}
 
@@ -730,7 +766,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           {/* ============ COLUNA PRINCIPAL ============ */}
           <div className="space-y-5">
             {/* fotos */}
-            <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
+            <section id="listing-photos" className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold flex items-center gap-2">
                   <ImageIcon className="w-4 h-4 text-amber-500" /> Fotos do anúncio
@@ -966,6 +1002,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 </span>
               </div>
               <textarea
+                id="listing-title"
                 value={title}
                 onChange={e => setTitle(e.target.value)}
                 onBlur={() => title !== listing.title && save({ title })}
@@ -1042,6 +1079,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <div>
                   <label className="block text-gray-400 text-xs mb-1.5">Preço (R$)</label>
                   <input
+                    id="listing-price"
                     type="number"
                     step="0.01"
                     min="0"
@@ -1337,7 +1375,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             )}
 
             {/* validação e publicação */}
-            <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
+            <section id="publication-preflight" tabIndex={-1} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
               <h2 className="text-white font-semibold flex items-center gap-2 mb-4">
                 <ShieldCheck className="w-4 h-4 text-amber-500" /> Publicação
               </h2>
@@ -1371,7 +1409,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Categoria</span>
-                    <span className="text-white font-medium">{listing.category_id}</span>
+                    <span id="listing-category" tabIndex={-1} className="text-white font-medium">{listing.category_id}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Preço</span>
@@ -1408,14 +1446,16 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
               {!isPublished && !isPublishing && (
                 <div className="space-y-2">
-                  <button
-                    onClick={validate}
-                    disabled={validating || saving}
-                    className="w-full bg-[#1c1c1c] text-white py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 hover:bg-[#242424] transition disabled:opacity-40"
-                  >
-                    {validating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                    {validating ? 'Validando...' : 'Validar no Mercado Livre'}
-                  </button>
+                  {!canPublish && (
+                    <button
+                      onClick={validate}
+                      disabled={validating || saving}
+                      className="w-full bg-[#1c1c1c] text-white py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 hover:bg-[#242424] transition disabled:opacity-40"
+                    >
+                      {validating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                      {validating ? 'Validando...' : 'Validar no Mercado Livre'}
+                    </button>
+                  )}
 
                   <button
                     onClick={() => setShowConfirm(true)}
@@ -1428,11 +1468,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
                   {!canPublish && !isPublished && (
                     <p className="text-gray-500 text-xs text-center pt-1">
-                      {!listing.title?.trim() ? 'Defina um título' :
-                       !listing.price || listing.price <= 0 ? 'Defina um preço' :
-                       !listing.photos?.length ? 'Adicione pelo menos uma foto' :
-                       !listing.category_id ? 'Categoria não definida' :
-                       'Preencha os campos obrigatórios para publicar'}
+                      {editorReadiness.blocker?.message || 'Este anúncio não pode ser publicado agora.'}
                     </p>
                   )}
                 </div>

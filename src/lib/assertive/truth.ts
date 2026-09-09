@@ -1,6 +1,14 @@
 import type { AIConfig } from './types'
 import { generateJson, toDataUri } from './ai'
 import { mlGet } from './ml-api'
+import {
+  buildCanonicalIdentity,
+  isValidGtin,
+  isPlausibleSellerSku,
+  rankIdentityCandidates,
+  sameIdentityToken,
+  type CanonicalProductIdentity,
+} from './identity'
 
 export type TruthSource =
   | 'user'
@@ -67,6 +75,8 @@ export interface ProductTruth {
   /** trilha de evidências do que originou a identificação */
   evidence: string[]
   confidence: number
+  /** Presente em toda análise nova; opcional apenas para linhas legadas persistidas. */
+  identity?: CanonicalProductIdentity
   category_hint?: string
   /** P0.1: source snapshot quando input é URL do ML */
   source_category_id?: string
@@ -76,6 +86,13 @@ export interface ProductTruth {
   /** P0.7: fotos do próprio item da URL de entrada */
   source_item_id?: string
   source_pictures?: string[]
+  source_title?: string
+  source_attributes?: Array<{ id: string; name?: string; value_name?: string }>
+  source_seller?: { id: number; nickname?: string }
+  source_permalink?: string
+  source_variations?: unknown[]
+  source_condition?: string
+  source_user_product_id?: string
 }
 
 const CANONICAL_KEYS = [
@@ -96,6 +113,13 @@ const CANONICAL_KEYS = [
   'compatibility',
   'line',
   'part_number',
+  'product_type',
+  'function',
+  'family_or_line',
+  'variant',
+  'kit_pack',
+  'dimensions',
+  'condition',
 ] as const
 
 const IDENTIFY_SYSTEM = `Você é um especialista sênior em identificação de produtos para o Mercado Livre Brasil.
@@ -110,6 +134,7 @@ REGRAS ABSOLUTAS:
 5. Se não souber, OMITA o campo. Omitir é sempre melhor que errar.
 6. O nome do produto deve ser específico e comercial, do jeito que um vendedor anunciaria.
 7. Responda em português do Brasil.
+8. Se houver ambiguidade, retorne 2 a 3 "candidates" completos. Eles serão ranqueados por identificadores literais antes da pesquisa.
 
 Responda SOMENTE com JSON válido:
 {
@@ -130,6 +155,8 @@ Chaves permitidas em "fields": ${CANONICAL_KEYS.join(', ')}.`
 
 interface RawIdentification {
   name?: string
+  product_type?: string
+  function?: string
   search_query?: string
   category_hint?: string
   confidence?: number
@@ -141,6 +168,26 @@ interface RawIdentification {
     suggestion?: string
     options?: string[]
   }>
+  evidence?: string[]
+  candidates?: RawIdentification[]
+}
+
+function selectIdentityCandidate(raw: RawIdentification): RawIdentification {
+  const candidates = raw.candidates || []
+  if (!candidates.length) return raw
+
+  const ranked = rankIdentityCandidates(candidates.map(candidate => ({
+    name: candidate.name || '',
+    product_type: candidate.product_type || candidate.fields?.product_type?.value,
+    function: candidate.function || candidate.fields?.function?.value,
+    brand: candidate.fields?.brand?.value,
+    model: candidate.fields?.model?.value,
+    gtin: candidate.fields?.gtin?.value,
+    confidence: Number(candidate.confidence) || 0,
+    evidence: candidate.evidence || Object.values(candidate.fields || {}).map(field => field.evidence || '').filter(Boolean),
+  })))
+  const winner = candidates.find(candidate => candidate.name === ranked[0]?.name)
+  return winner || raw
 }
 
 function normalizeConfidence(c?: string): TruthConfidence {
@@ -149,11 +196,36 @@ function normalizeConfidence(c?: string): TruthConfidence {
   return 'low'
 }
 
+function finalizeTruth(
+  truth: Omit<ProductTruth, 'identity'>,
+  sourceAttributes: Array<{ id: string; value_name?: string }> = []
+): ProductTruth {
+  return {
+    ...truth,
+    identity: buildCanonicalIdentity({
+      name: truth.name,
+      fields: truth.fields,
+      categoryHint: truth.category_hint,
+      evidence: truth.evidence,
+      confidence: truth.confidence,
+      sourceAttributes,
+    }),
+  }
+}
+
 function buildTruth(raw: RawIdentification, source: TruthSource, baseEvidence: string): ProductTruth {
+  raw = selectIdentityCandidate(raw)
   const fields: Record<string, TruthField> = {}
   const uncertain: PendingQuestion[] = []
+  const rawFields = { ...(raw.fields || {}) }
+  if (raw.product_type && !rawFields.product_type) {
+    rawFields.product_type = { value: raw.product_type, confidence: 'high', evidence: baseEvidence }
+  }
+  if (raw.function && !rawFields.function) {
+    rawFields.function = { value: raw.function, confidence: 'high', evidence: baseEvidence }
+  }
 
-  for (const [key, val] of Object.entries(raw.fields || {})) {
+  for (const [key, val] of Object.entries(rawFields)) {
     const value = String(val?.value ?? '').trim()
     if (!value || /^(n\/?a|null|desconhecid|indefinid|não sei)/i.test(value)) continue
 
@@ -163,6 +235,7 @@ function buildTruth(raw: RawIdentification, source: TruthSource, baseEvidence: s
       confidence,
       source: confidence === 'low' ? 'inference' : source,
       evidence: val?.evidence?.trim() || baseEvidence,
+      status: confidence === 'confirmed' ? 'CONFIRMED' : 'AUTO_FILLED',
     }
 
     // Palpite não vira fato: vai para a fila de confirmação do usuário.
@@ -193,14 +266,14 @@ function buildTruth(raw: RawIdentification, source: TruthSource, baseEvidence: s
   const name = String(raw.name || '').trim()
   if (!name) throw new Error('Não foi possível identificar o produto. Tente uma foto mais nítida ou descreva o produto.')
 
-  return {
+  return finalizeTruth({
     name,
     fields,
     uncertain,
-    evidence: [baseEvidence],
+    evidence: [baseEvidence, ...(raw.evidence || [])],
     confidence: Math.min(Math.max(Number(raw.confidence) || 0.5, 0), 1),
     category_hint: raw.category_hint?.trim() || undefined,
-  }
+  })
 }
 
 /** Consulta ideal para buscar o produto no Mercado Livre. */
@@ -239,7 +312,7 @@ export async function identifyFromPhotos(
 
   // Converte antes de chamar a IA para produzir um erro claro se a imagem estiver inacessível.
   const dataUris: string[] = []
-  for (const url of imageUrls.slice(0, 4)) {
+  for (const url of imageUrls.slice(0, 8)) {
     try {
       dataUris.push(await toDataUri(url))
     } catch (e) {
@@ -254,8 +327,9 @@ export async function identifyFromPhotos(
     IDENTIFY_SYSTEM,
     `Analise ${dataUris.length > 1 ? `as ${dataUris.length} fotos` : 'a foto'} deste produto que será anunciado no Mercado Livre.
 
-Leia com atenção qualquer texto visível: marca, modelo, código, voltagem, medidas e informações da embalagem.
-Só afirme o que consegue LER ou VER. O que não estiver visível deve ir para "uncertain".${
+    Leia com atenção qualquer texto visível: marca, modelo, código, voltagem, medidas e informações da embalagem.
+    Compare todas as imagens, consolide apenas o que for consistente e registre divergências em "uncertain".
+    Só afirme o que consegue LER ou VER. O que não estiver visível deve ir para "uncertain".${
       extraContext ? `\n\nContexto informado pelo vendedor: "${extraContext.slice(0, 500)}"` : ''
     }`,
     { images: dataUris, temperature: 0.2 }
@@ -272,6 +346,10 @@ interface MLItemLite {
   user_product_id?: string
   attributes?: Array<{ id: string; name?: string; value_name?: string }>
   pictures?: Array<{ url?: string; secure_url?: string }>
+  seller_id?: number
+  permalink?: string
+  variations?: unknown[]
+  condition?: string
 }
 
 interface MLUserProductLite {
@@ -289,6 +367,7 @@ interface MLUserProductLite {
 }
 
 const ATTR_TO_CANONICAL: Record<string, string> = {
+  PRODUCT_TYPE: 'product_type',
   BRAND: 'brand',
   MODEL: 'model',
   GTIN: 'gtin',
@@ -305,6 +384,183 @@ const ATTR_TO_CANONICAL: Record<string, string> = {
   UNITS_PER_PACK: 'units_per_pack',
   LINE: 'line',
   PART_NUMBER: 'part_number',
+  CONDITION: 'condition',
+}
+
+interface MLCatalogProductLite {
+  id: string
+  name?: string
+  family_name?: string
+  domain_id?: string
+  category_id?: string
+  attributes?: Array<{ id: string; name?: string; value_name?: string }>
+  pictures?: Array<{ url?: string; secure_url?: string }>
+}
+
+function catalogFields(
+  productId: string,
+  attributes: NonNullable<MLCatalogProductLite['attributes']>
+): Record<string, TruthField> {
+  const fields: Record<string, TruthField> = {}
+  for (const attribute of attributes) {
+    const key = ATTR_TO_CANONICAL[attribute.id]
+    const value = attribute.value_name?.trim()
+    if (!key || !value || fields[key]) continue
+    if (key === 'sku' && !isPlausibleSellerSku(value)) continue
+    if (key === 'model' && (value.length > 60 || value.split(/\s+/).length > 8)) continue
+    fields[key] = {
+      value,
+      confidence: 'confirmed',
+      source: 'ml_catalog',
+      evidence: `Ficha oficial do catálogo do Mercado Livre ${productId} (${attribute.id})`,
+      status: 'CONFIRMED',
+    }
+  }
+  return fields
+}
+
+function truthFromCatalog(
+  product: MLCatalogProductLite,
+  overrides: Record<string, TruthField> = {}
+): ProductTruth {
+  const attributes = product.attributes || []
+  const fields = { ...catalogFields(product.id, attributes), ...overrides }
+  const name = product.name?.trim() || product.family_name?.trim() || Object.values(overrides).map(field => field.value).join(' ')
+  const sourcePictures = (product.pictures || [])
+    .map(picture => picture.secure_url || picture.url)
+    .filter((url): url is string => Boolean(url))
+
+  return finalizeTruth({
+    name,
+    fields,
+    uncertain: [],
+    evidence: [`Produto de catálogo oficial do Mercado Livre (${product.id})`],
+    confidence: 0.98,
+    source_category_id: product.category_id,
+    source_domain_id: product.domain_id,
+    source_catalog_product_id: product.id,
+    source_pictures: sourcePictures,
+    source_title: name,
+    source_attributes: attributes,
+  }, attributes)
+}
+
+async function findCatalogProduct(
+  token: string | null,
+  query: string,
+  matches: (product: MLCatalogProductLite) => boolean
+): Promise<MLCatalogProductLite | null> {
+  if (!token) return null
+  const search = await mlGet<{ results?: Array<{ id?: string }> }>(
+    `/products/search?status=active&site_id=MLB&q=${encodeURIComponent(query.slice(0, 150))}`,
+    token,
+    { ttl: 600, persist: true }
+  ).catch(() => null)
+
+  for (const candidate of (search?.results || []).slice(0, 8)) {
+    if (!candidate.id) continue
+    const product = await mlGet<MLCatalogProductLite>(`/products/${candidate.id}`, token, { ttl: 3600, persist: true })
+      .catch(() => null)
+    if (product && matches(product)) return product
+  }
+  return null
+}
+
+function userField(value: string, label: string): TruthField {
+  return {
+    value,
+    confidence: 'confirmed',
+    source: 'user',
+    evidence: `${label} informado pelo vendedor`,
+    status: 'USER_OVERRIDE',
+  }
+}
+
+export async function identifyFromGtin(
+  _config: AIConfig | null,
+  rawGtin: string,
+  mlToken: string | null
+): Promise<ProductTruth> {
+  const gtin = rawGtin.replace(/\D/g, '')
+  if (!isValidGtin(gtin)) throw new Error('Informe um GTIN/EAN válido com 8, 12, 13 ou 14 dígitos.')
+
+  const product = await findCatalogProduct(mlToken, gtin, candidate => {
+    const value = candidate.attributes?.find(attribute => ['GTIN', 'EAN', 'UPC'].includes(attribute.id))?.value_name || ''
+    return value.replace(/\D/g, '') === gtin
+  })
+
+  if (product) return truthFromCatalog(product)
+
+  return finalizeTruth({
+    name: `Produto GTIN ${gtin}`,
+    fields: { gtin: userField(gtin, 'GTIN') },
+    uncertain: [
+      { field: 'brand', label: 'Marca', why: 'O catálogo não retornou um produto exato para este GTIN.' },
+      { field: 'model', label: 'Modelo', why: 'O catálogo não retornou um produto exato para este GTIN.' },
+    ],
+    evidence: ['GTIN informado pelo vendedor; produto exato ainda não confirmado no catálogo'],
+    confidence: 0.45,
+  })
+}
+
+export async function identifyFromBrandModel(
+  _config: AIConfig | null,
+  rawBrand: string,
+  rawModel: string,
+  mlToken: string | null
+): Promise<ProductTruth> {
+  const brand = rawBrand.trim()
+  const model = rawModel.trim()
+  if (!brand || !model) throw new Error('Informe marca e modelo para identificar o produto.')
+
+  const product = await findCatalogProduct(mlToken, `${brand} ${model}`, candidate => {
+    const attributes = candidate.attributes || []
+    const candidateBrand = attributes.find(attribute => attribute.id === 'BRAND')?.value_name || ''
+    const candidateModel = attributes.find(attribute => attribute.id === 'MODEL')?.value_name || ''
+    return sameIdentityToken(brand, candidateBrand) && sameIdentityToken(model, candidateModel)
+  })
+  const overrides = {
+    brand: userField(brand, 'Marca'),
+    model: userField(model, 'Modelo'),
+  }
+
+  if (product) return truthFromCatalog(product, overrides)
+
+  return finalizeTruth({
+    name: `${brand} ${model}`,
+    fields: overrides,
+    uncertain: [{ field: 'product_type', label: 'Tipo de produto', why: 'Marca e modelo não bastaram para confirmar o tipo de produto.' }],
+    evidence: ['Marca e modelo informados pelo vendedor'],
+    confidence: 0.6,
+  })
+}
+
+export type ProductIdentificationInput =
+  | { type: 'url'; url: string }
+  | { type: 'description'; description: string }
+  | { type: 'single_image' | 'multi_image' | 'photo'; photos: string[]; context?: string }
+  | { type: 'gtin'; gtin: string }
+  | { type: 'brand_model'; brand: string; model: string }
+
+export async function identifyProduct(
+  config: AIConfig | null,
+  input: ProductIdentificationInput,
+  mlToken: string | null
+): Promise<ProductTruth> {
+  switch (input.type) {
+    case 'url':
+      return identifyFromUrl(config, input.url, mlToken)
+    case 'description':
+      return identifyFromDescription(config, input.description)
+    case 'single_image':
+    case 'multi_image':
+    case 'photo':
+      return identifyFromPhotos(config, input.photos, input.context)
+    case 'gtin':
+      return identifyFromGtin(config, input.gtin, mlToken)
+    case 'brand_model':
+      return identifyFromBrandModel(config, input.brand, input.model, mlToken)
+  }
 }
 
 export async function identifyFromUrl(
@@ -345,6 +601,7 @@ export async function identifyFromUrl(
           const key = ATTR_TO_CANONICAL[a.id]
           const value = a.value_name?.trim()
           if (!key || !value || fields[key]) continue
+          if (key === 'sku' && !isPlausibleSellerSku(value)) continue
           // MODEL em anúncios antigos pode conter uma descrição inteira. Só aceite
           // como modelo quando for curto e estiver literalmente no título oficial.
           if (key === 'model') {
@@ -357,6 +614,7 @@ export async function identifyFromUrl(
             confidence: 'confirmed',
             source: 'ml_item',
             evidence: `Ficha oficial do user product ${userProductId} (${a.id})`,
+            status: 'CONFIRMED',
           }
         }
 
@@ -368,6 +626,7 @@ export async function identifyFromUrl(
               confidence: 'confirmed',
               source: 'ml_item',
               evidence: `Modelo escrito no título oficial do user product ${userProductId}`,
+              status: 'CONFIRMED',
             }
           }
         }
@@ -382,6 +641,7 @@ export async function identifyFromUrl(
               confidence: 'confirmed',
               source: 'ml_item',
               evidence: `Voltagem escrita no título oficial do user product ${userProductId}`,
+              status: 'CONFIRMED',
             }
           }
         }
@@ -390,7 +650,7 @@ export async function identifyFromUrl(
           .map(p => p.secure_url || p.url)
           .filter((picture): picture is string => Boolean(picture))
 
-        return {
+        return finalizeTruth({
           name: product.name,
           fields,
           uncertain: [],
@@ -405,7 +665,14 @@ export async function identifyFromUrl(
           source_catalog_product_id: product.catalog_product_id || undefined,
           source_item_id: sourceItem?.id || userProductId,
           source_pictures: sourcePictures,
-        }
+          source_title: sourceItem?.title || product.name,
+          source_attributes: sourceAttributes,
+          source_seller: product.user_id ? { id: product.user_id } : undefined,
+          source_permalink: sourceItem?.permalink,
+          source_variations: sourceItem?.variations,
+          source_condition: sourceItem?.condition,
+          source_user_product_id: userProductId,
+        }, sourceAttributes)
       }
     } catch {
       /* user product de outra conta pode retornar 403; segue para o slug */
@@ -430,18 +697,21 @@ export async function identifyFromUrl(
         for (const a of product.attributes || []) {
           const key = ATTR_TO_CANONICAL[a.id]
           if (key && a.value_name) {
+            if (key === 'sku' && !isPlausibleSellerSku(a.value_name)) continue
             fields[key] = {
               value: a.value_name,
               confidence: 'confirmed',
               source: 'ml_catalog',
               evidence: `Ficha oficial do catálogo do Mercado Livre (${a.id})`,
+              status: 'CONFIRMED',
             }
           }
         }
         const sourcePictures = (product.pictures || [])
           .map(p => p.secure_url || p.url)
           .filter((u): u is string => Boolean(u))
-        return {
+        const sourceAttributes = product.attributes || []
+        return finalizeTruth({
           name: product.name,
           fields,
           uncertain: [],
@@ -452,7 +722,9 @@ export async function identifyFromUrl(
           source_catalog_product_id: product.id,
           source_item_id: itemId,
           source_pictures: sourcePictures,
-        }
+          source_title: product.name,
+          source_attributes: sourceAttributes,
+        }, sourceAttributes)
       }
     } catch {
       /* segue para as próximas estratégias */
@@ -468,18 +740,21 @@ export async function identifyFromUrl(
         for (const a of item.attributes || []) {
           const key = ATTR_TO_CANONICAL[a.id]
           if (key && a.value_name) {
+            if (key === 'sku' && !isPlausibleSellerSku(a.value_name)) continue
             fields[key] = {
               value: a.value_name,
               confidence: 'confirmed',
               source: 'ml_item',
               evidence: `Ficha técnica do anúncio ${itemId}`,
+              status: 'CONFIRMED',
             }
           }
         }
         const sourcePictures = (item.pictures || [])
           .map(p => p.secure_url || p.url)
           .filter((u): u is string => Boolean(u))
-        return {
+        const sourceAttributes = item.attributes || []
+        return finalizeTruth({
           name: item.title,
           fields,
           uncertain: [],
@@ -488,7 +763,14 @@ export async function identifyFromUrl(
           source_category_id: item.category_id,
           source_item_id: itemId,
           source_pictures: sourcePictures,
-        }
+          source_title: item.title,
+          source_attributes: sourceAttributes,
+          source_seller: item.seller_id ? { id: item.seller_id } : undefined,
+          source_permalink: item.permalink,
+          source_variations: item.variations,
+          source_condition: item.condition,
+          source_user_product_id: item.user_product_id,
+        }, sourceAttributes)
       }
     } catch {
       /* anúncios de terceiros retornam 403 — cai no slug */
@@ -534,15 +816,16 @@ export function applyUserAnswers(
       confidence: 'confirmed',
       source: 'user',
       evidence: 'Confirmado pelo vendedor',
+      status: 'USER_OVERRIDE',
     }
     answered.add(key)
   }
 
-  return {
+  return finalizeTruth({
     ...truth,
     fields,
     uncertain: truth.uncertain.filter(u => !answered.has(u.field)),
-  }
+  })
 }
 
 /** Enriquece o ProductTruth com a ficha do produto de catálogo equivalente. */
@@ -555,31 +838,52 @@ export function enrichFromCatalog(
   const model = truth.fields.model?.value?.toLowerCase()
   const catBrand = catalogAttributes.BRAND?.toLowerCase()
   const catModel = catalogAttributes.MODEL?.toLowerCase()
+  const gtin = truth.fields.gtin?.value?.replace(/\D/g, '')
+  const catGtin = (catalogAttributes.GTIN || catalogAttributes.EAN || catalogAttributes.UPC)?.replace(/\D/g, '')
 
-  // Só herda a ficha quando marca E modelo batem: evita colar dados de outro produto.
+  // GTIN idêntico ou marca+modelo idênticos são evidência de produto exato.
   const matches =
-    Boolean(brand && catBrand && brand === catBrand) &&
-    Boolean(model && catModel && (model === catModel || catModel.includes(model) || model.includes(catModel)))
+    Boolean(gtin && catGtin && gtin === catGtin) || (
+      Boolean(brand && catBrand && brand === catBrand) &&
+      Boolean(model && catModel && (model === catModel || catModel.includes(model) || model.includes(catModel)))
+    )
 
   if (!matches) return truth
 
   const fields = { ...truth.fields }
   for (const [attrId, value] of Object.entries(catalogAttributes)) {
     const key = ATTR_TO_CANONICAL[attrId]
-    if (!key || fields[key] || !value) continue
+    if (!key || !value) continue
+    const existing = fields[key]
+    if (existing) {
+      const sameValue = existing.value
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase()
+        === value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase()
+      if (sameValue) continue
+      const alreadyRecorded = existing.conflict?.some(conflict => conflict.value === value)
+      fields[key] = {
+        ...existing,
+        status: isProtectedField(existing) ? 'USER_OVERRIDE' : 'CONFLICT',
+        conflict: alreadyRecorded
+          ? existing.conflict
+          : [...(existing.conflict || []), { value, source: 'ml_catalog' }],
+      }
+      continue
+    }
     fields[key] = {
       value,
       confidence: 'high',
       source: 'ml_catalog',
       evidence: `Ficha do produto de catálogo "${productName}" (marca e modelo idênticos)`,
+      status: 'AUTO_FILLED',
     }
   }
 
-  return {
+  return finalizeTruth({
     ...truth,
     fields,
     evidence: [...truth.evidence, `Ficha enriquecida pelo catálogo oficial: ${productName}`],
-  }
+  })
 }
 
 export function truthToPlainText(truth: ProductTruth): string {

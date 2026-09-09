@@ -1,12 +1,17 @@
 'use client'
 
-import { useState, useEffect, useCallback, use } from 'react'
+import { useState, useEffect, useCallback, useEffectEvent, use } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import {
   Loader2, AlertCircle, CheckCircle2, Sparkles, ArrowRight, ArrowLeft,
-  Search, Brain, Wand2, Plug, RefreshCw, HelpCircle,
+  Search, Brain, Wand2, Plug, RefreshCw, HelpCircle, Tags, Camera, BadgeDollarSign, ShieldCheck,
 } from 'lucide-react'
+import {
+  getPipelineProgress,
+  PIPELINE_PROGRESS_STEPS,
+  type PipelineProgressEvent,
+} from '@/lib/assertive/analysis-progress'
 
 interface TruthField { value: string; confidence: string; source: string; evidence: string }
 interface PendingQuestion { field: string; label: string; why: string; suggestion?: string; options?: string[] }
@@ -37,11 +42,8 @@ const FIELD_LABELS: Record<string, string> = {
   line: 'Linha', part_number: 'Número da peça',
 }
 
-const STEPS = [
-  { key: 'researching', icon: Search, label: 'Pesquisando o Mercado Livre' },
-  { key: 'analyzing', icon: Brain, label: 'Analisando as melhores referências' },
-  { key: 'generating', icon: Wand2, label: 'Criando o anúncio Assertive' },
-]
+const STEP_ICONS = [Search, Brain, Tags, Wand2, BadgeDollarSign, Tags, Camera, ShieldCheck]
+const STEPS = PIPELINE_PROGRESS_STEPS.map((step, index) => ({ ...step, icon: STEP_ICONS[index] }))
 
 export default function AnalisePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -55,6 +57,7 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
   const [needsML, setNeedsML] = useState(false)
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [productName, setProductName] = useState('')
+  const [stageEvents, setStageEvents] = useState<PipelineProgressEvent[]>([])
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/assertive/analyses/${id}`)
@@ -65,6 +68,7 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
     }
     const data = await res.json()
     setAnalysis(data.analysis)
+    setStageEvents(data.stage_events || [])
     setProductName(data.analysis.product_truth?.name || data.analysis.product_name || '')
     if (data.analysis.error_message) setError(data.analysis.error_message)
 
@@ -80,12 +84,24 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load])
 
-  // avanço visual das etapas enquanto o servidor processa
+  const pollProgress = useEffectEvent(async () => {
+    const res = await fetch(`/api/assertive/analyses/${id}`)
+    if (!res.ok) return
+    const data = await res.json()
+    const events = (data.stage_events || []) as PipelineProgressEvent[]
+    setAnalysis(data.analysis)
+    setStageEvents(events)
+    setStepIndex(getPipelineProgress(events, data.analysis.status).activeIndex)
+  })
+
+  // A etapa exibida vem do backend; o status legado é apenas fallback.
   useEffect(() => {
     if (!running) return
-    const t1 = setTimeout(() => setStepIndex(1), 6000)
-    const t2 = setTimeout(() => setStepIndex(2), 15000)
-    return () => { clearTimeout(t1); clearTimeout(t2) }
+    // A primeira atualização de estado ocorre após o fetch assíncrono.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void pollProgress()
+    const timer = window.setInterval(() => { void pollProgress() }, 1500)
+    return () => window.clearInterval(timer)
   }, [running])
 
   async function connectML() {
@@ -111,6 +127,7 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
     setRunning(true)
     setError(null)
     setNeedsML(false)
+    setStageEvents([])
 
     try {
       const res = await fetch(`/api/assertive/analyses/${id}/run`, {
@@ -153,6 +170,7 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
   const truth = analysis?.product_truth
   const confirmed = Object.entries(truth?.fields || {})
   const uncertain = truth?.uncertain || []
+  const liveProgress = getPipelineProgress(stageEvents, analysis?.status || 'researching')
 
   return (
     <div className="min-h-screen bg-[#0c0c0c] px-4 py-6 sm:p-6">
@@ -168,12 +186,15 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
           <div className="bg-[#141414] border border-[#1f1f1f] rounded-2xl p-6 sm:p-8">
             <h2 className="text-white font-bold text-lg mb-1">Trabalhando no seu anúncio</h2>
             <p className="text-gray-500 text-sm mb-6">
-              Isso pode levar até dois minutos. Não feche esta página.
+              Etapa atual: {liveProgress.label}. Não feche esta página.
+              {liveProgress.event === 'retry' && ' Nova tentativa automática em andamento.'}
+              {liveProgress.event === 'fallback' && ' O modo seguro de contingência foi ativado.'}
             </p>
             <div className="space-y-4">
               {STEPS.map((s, i) => {
                 const done = i < stepIndex
                 const active = i === stepIndex
+                const completedEvent = stageEvents.find(event => event.stage === s.key && event.event === 'completed')
                 return (
                   <div key={s.key} className="flex items-center gap-3">
                     <div
@@ -189,6 +210,11 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
                     </div>
                     <span className={`text-sm ${active ? 'text-white' : done ? 'text-gray-400' : 'text-gray-600'}`}>
                       {s.label}
+                      {completedEvent?.duration_ms != null && (
+                        <span className="ml-2 text-xs text-gray-600">
+                          {(completedEvent.duration_ms / 1000).toFixed(1)}s
+                        </span>
+                      )}
                     </span>
                   </div>
                 )

@@ -28,7 +28,15 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     .eq('user_id', authorizedUser.id)
     .order('created_at', { ascending: false })
 
-  return Response.json({ analysis, listings: listings || [] })
+  const { data: stageEvents } = await supabase
+    .from('assertive_stage_events')
+    .select('stage, event, duration_ms, error_code, error_message, metadata, created_at')
+    .eq('analysis_id', id)
+    .eq('user_id', authorizedUser.id)
+    .order('created_at', { ascending: false })
+    .limit(20)
+
+  return Response.json({ analysis, listings: listings || [], stage_events: stageEvents || [] })
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

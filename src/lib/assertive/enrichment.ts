@@ -4,6 +4,7 @@ import type { ClassifiedAttribute } from './taxonomy'
 import { matchAttributeValue, type ListingAttribute } from './generator'
 import { runTaskJson } from './ai-router'
 import { searchWeb, buildManufacturerQuery, type WebSource } from './websearch'
+import { isValidGtin } from './identity'
 
 /**
  * AUTOFILL-FIRST.
@@ -261,12 +262,18 @@ export async function enrichAttributes(input: EnrichmentInput): Promise<Enrichme
   for (const a of input.current || []) {
     const spec = byId.get(a.id)
     if (!spec) continue
-    const isUser = a.source === 'user'
-    out.set(a.id, {
-      ...a,
-      status: isUser ? 'USER_OVERRIDE' : 'CONFIRMED',
-    })
-    stats.already_filled++
+    const existing = a as ListingAttribute & Partial<EnrichedAttribute>
+    const status: DataStatus = existing.status
+      || (a.source === 'user'
+        ? 'USER_OVERRIDE'
+        : a.source === 'ai'
+          ? 'NEEDS_CONFIRMATION'
+          : a.source === 'catalog'
+            ? 'AUTO_FILLED'
+            : 'CONFIRMED')
+    if (put(out, spec, a.value_name, status, a.source, existing.evidence, existing.source_url)) {
+      stats.already_filled++
+    }
   }
 
   // ---- 2. ProductTruth
@@ -528,14 +535,6 @@ interface GTINResult {
   source_url?: string
 }
 
-function validateGTIN(gtin: string): boolean {
-  const digits = gtin.replace(/[^0-9]/g, '')
-  if (digits.length !== 8 && digits.length !== 12 && digits.length !== 13 && digits.length !== 14) return false
-  if (/^0+$/.test(digits)) return false
-  if (/^(.)\1+$/.test(digits)) return false
-  return true
-}
-
 async function resolveGTIN(input: {
   truth: ProductTruth
   exactProductAttributes: Array<{ title: string; attributes: Record<string, string> }>
@@ -546,7 +545,7 @@ async function resolveGTIN(input: {
 
   // 1. Truth já tem GTIN?
   const truthGTIN = truth.fields.gtin?.value
-  if (truthGTIN && !INVALID.test(truthGTIN) && validateGTIN(truthGTIN)) {
+  if (truthGTIN && !INVALID.test(truthGTIN) && isValidGtin(truthGTIN)) {
     return {
       value: truthGTIN,
       status: 'CONFIRMED',
@@ -559,7 +558,7 @@ async function resolveGTIN(input: {
   // 2. EXACT_PRODUCT catalog attributes
   for (const exact of exactProductAttributes) {
     const gtinVal = exact.attributes['GTIN'] || exact.attributes['EAN'] || exact.attributes['UPC']
-    if (gtinVal && !INVALID.test(gtinVal) && validateGTIN(gtinVal)) {
+    if (gtinVal && !INVALID.test(gtinVal) && isValidGtin(gtinVal)) {
       return {
         value: gtinVal,
         status: 'AUTO_FILLED',
@@ -606,7 +605,7 @@ ${sourcesBlock.slice(0, 3000)}`,
           { maxTokens: 500 }
         )
 
-        if (extracted.gtin && validateGTIN(extracted.gtin) && !INVALID.test(extracted.gtin)) {
+        if (extracted.gtin && isValidGtin(extracted.gtin) && !INVALID.test(extracted.gtin)) {
           return {
             value: extracted.gtin,
             status: 'AUTO_FILLED',

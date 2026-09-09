@@ -76,6 +76,45 @@ export interface PublicationReadiness {
   user_input_required: Array<{ attribute_id: string; name: string; reason: string }>
 }
 
+export interface EditorReadinessInput {
+  status: string
+  title?: string | null
+  price?: number | null
+  category_id?: string | null
+  photos?: string[] | null
+  validation?: {
+    valid?: boolean
+    checked_at?: string
+    status_code?: number
+    issues?: ValidationIssue[]
+  } | null
+  publication_requirements?: {
+    all_clear?: boolean
+    blockers?: Array<{ attribute_id: string; name: string }>
+    account_warnings?: MLClassifiedWarning[]
+  } | null
+  validated_payload?: MLItemPayload | null
+  validated_payload_hash?: string | null
+}
+
+export interface EditorReadinessResult {
+  canPublish: boolean
+  state: ReadinessState
+  blocker: { target: string; message: string } | null
+}
+
+function isAcceptedMLValidation(validation: {
+  valid?: boolean
+  status_code?: number
+  issues?: ValidationIssue[]
+}): boolean {
+  if (validation.valid !== true) return false
+  if (validation.status_code === 204) return true
+  return validation.status_code === 400
+    && Boolean(validation.issues?.length)
+    && validation.issues!.every(issue => issue.severity === 'warning')
+}
+
 const SELLER_PACKAGE_IDS = new Set([
   'SELLER_PACKAGE_HEIGHT',
   'SELLER_PACKAGE_WIDTH',
@@ -170,8 +209,14 @@ export function payloadHash(payload: MLItemPayload): string {
       .sort()
       .join('|'),
     pictures: (payload.pictures || []).map(p => p.source).join('|'),
-    shipping: payload.shipping,
-    sale_terms: payload.sale_terms,
+    shipping: payload.shipping
+      ? {
+          mode: payload.shipping.mode,
+          local_pick_up: payload.shipping.local_pick_up,
+          free_shipping: payload.shipping.free_shipping,
+        }
+      : undefined,
+    sale_terms: payload.sale_terms?.map(term => ({ id: term.id, value_name: term.value_name })),
   })
 
   let hash = 0
@@ -319,8 +364,8 @@ export function runPreflightChecks(
 /**
  * Combina preflight checks com ML validation para determinar readiness.
  *
- * Regra: HTTP 400 com apenas warnings de conta/logística ≠ BLOCKED.
- * Se errors = 0 e só restam warnings de conta → READY_WITH_WARNINGS.
+ * Regra: HTTP 204 confirma a validação. O ML também retorna HTTP 400 com
+ * causas exclusivamente warning para payloads publicáveis em certas contas.
  */
 export function computeReadiness(
   preflightChecks: PreflightResult[],
@@ -329,7 +374,16 @@ export function computeReadiness(
   validatedAt: string | null,
   shippingPrefs?: SellerShippingPreferences | null
 ): PublicationReadiness {
-  const errors = preflightChecks.filter(c => c.status === 'fail')
+  const mlAccepted = isAcceptedMLValidation(mlValidation)
+  const protocolError: PreflightResult | null = !mlAccepted && !mlValidation.issues.some(i => i.severity === 'error')
+    ? {
+        check: 'ml_validation',
+        status: 'fail',
+        message: `Validação do Mercado Livre não confirmada (HTTP ${mlValidation.status_code ?? 'desconhecido'})`,
+      }
+    : null
+  const checks = protocolError ? [...preflightChecks, protocolError] : preflightChecks
+  const errors = checks.filter(c => c.status === 'fail')
   const warnings = preflightChecks.filter(c => c.status === 'warning')
   const mlErrors = mlValidation.issues.filter(i => i.severity === 'error')
   const mlWarnings = mlValidation.issues.filter(i => i.severity === 'warning')
@@ -340,7 +394,7 @@ export function computeReadiness(
   // Determinar readiness state
   const preflightPassed = errors.length === 0
   const mlHasErrors = mlErrors.length > 0
-  const mlHasOnlyAccountWarnings = !mlHasErrors && mlWarnings.length > 0
+  const mlHasOnlyAccountWarnings = mlAccepted && !mlHasErrors && mlWarnings.length > 0
     && classifiedWarnings.every(w => w.category === 'account' || w.category === 'shipping')
 
   // Identificar blockers que o Assertive NÃO conseguiu resolver
@@ -359,7 +413,7 @@ export function computeReadiness(
     state = hasUnresolvableBlockers ? 'NEEDS_USER_INPUT' : 'BLOCKED'
   } else if (mlHasOnlyAccountWarnings) {
     state = 'READY_WITH_WARNINGS'
-  } else if (mlValidation.valid && (mlValidation.status_code === 204 || mlValidation.status_code === 200)) {
+  } else if (mlAccepted) {
     state = 'READY'
   } else {
     state = 'BLOCKED'
@@ -403,20 +457,79 @@ export function computeReadiness(
     ready,
     state,
     validated_at: validatedAt,
-    payload_hash: validatedPayload ? payloadHash(validatedPayload) : null,
-    checks: preflightChecks,
+    payload_hash: mlAccepted && validatedPayload ? payloadHash(validatedPayload) : null,
+    checks,
     errors,
     warnings,
     ml_issues: mlValidation.issues,
     blocker_count: errors.length + mlErrors.length,
     warning_count: warnings.length + mlWarnings.length,
-    validated_payload: validatedPayload,
+    validated_payload: mlAccepted ? validatedPayload : null,
     classified_warnings: classifiedWarnings,
-    product_payload_ready: preflightPassed && !mlHasErrors,
+    product_payload_ready: preflightPassed && mlAccepted && !mlHasErrors,
     account_ready: true, // sempre true se chegou até aqui
     shipping_ready: shippingOk,
     user_input_required: userInputRequired,
   }
+}
+
+/** Estado único usado pelo editor para não confundir rascunho completo com payload validado. */
+export function evaluateEditorReadiness(listing: EditorReadinessInput): EditorReadinessResult {
+  if (listing.status === 'published') return { canPublish: false, state: 'READY', blocker: null }
+  if (listing.status === 'publishing') {
+    return { canPublish: false, state: 'BLOCKED', blocker: { target: 'publication-preflight', message: 'A publicação já está em andamento.' } }
+  }
+  if (!listing.title?.trim()) {
+    return { canPublish: false, state: 'NEEDS_USER_INPUT', blocker: { target: 'listing-title', message: 'Defina um título para continuar.' } }
+  }
+  if (!listing.price || listing.price <= 0) {
+    return { canPublish: false, state: 'NEEDS_USER_INPUT', blocker: { target: 'listing-price', message: 'Defina um preço maior que zero para continuar.' } }
+  }
+  if (!listing.photos?.length) {
+    return { canPublish: false, state: 'NEEDS_USER_INPUT', blocker: { target: 'listing-photos', message: 'Adicione pelo menos uma foto para continuar.' } }
+  }
+  if (!listing.category_id) {
+    return { canPublish: false, state: 'NEEDS_USER_INPUT', blocker: { target: 'listing-category', message: 'Resolva a categoria do produto para continuar.' } }
+  }
+
+  const requirementBlocker = listing.publication_requirements?.blockers?.[0]
+  if (requirementBlocker || listing.publication_requirements?.all_clear === false) {
+    const name = requirementBlocker?.name || 'os atributos obrigatórios'
+    return {
+      canPublish: false,
+      state: 'NEEDS_USER_INPUT',
+      blocker: {
+        target: requirementBlocker ? `attribute-${requirementBlocker.attribute_id}` : 'publication-requirements',
+        message: `Preencha ${name} para continuar.`,
+      },
+    }
+  }
+
+  const persistedValidation = listing.validation
+  const validationConfirmed = Boolean(
+    persistedValidation
+    && isAcceptedMLValidation(persistedValidation)
+    && persistedValidation.checked_at
+  )
+  if (!validationConfirmed || listing.status !== 'ready_to_publish') {
+    return {
+      canPublish: false,
+      state: 'BLOCKED',
+      blocker: { target: 'publication-preflight', message: 'Valide o anúncio no Mercado Livre para continuar.' },
+    }
+  }
+
+  if (!listing.validated_payload || !listing.validated_payload_hash
+    || payloadHash(listing.validated_payload) !== listing.validated_payload_hash) {
+    return {
+      canPublish: false,
+      state: 'BLOCKED',
+      blocker: { target: 'publication-preflight', message: 'O anúncio mudou. Valide novamente antes de publicar.' },
+    }
+  }
+
+  const hasWarnings = Boolean(listing.publication_requirements?.account_warnings?.length)
+  return { canPublish: true, state: hasWarnings ? 'READY_WITH_WARNINGS' : 'READY', blocker: null }
 }
 
 /**

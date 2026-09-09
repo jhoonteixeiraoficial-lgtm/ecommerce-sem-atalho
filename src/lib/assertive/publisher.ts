@@ -353,6 +353,11 @@ export function predictMLTitle(
   attributes: Array<{ id: string; value_name?: string }>,
   categoryAttributes?: Array<{ id: string; tags?: Record<string, boolean> }>,
 ): string {
+  const normalizePart = (value: string) => value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase()
   // Descobrir quais atributos da categoria têm tag "in_title" ou "inmediate_title"
   const autoAppendIds = new Set<string>()
   if (categoryAttributes) {
@@ -370,9 +375,14 @@ export function predictMLTitle(
   }
 
   const extras: string[] = []
+  const normalizedFamily = normalizePart(familyName)
+  const seenExtras = new Set<string>()
   for (const attr of attributes) {
     if (autoAppendIds.has(attr.id) && attr.value_name) {
+      const normalizedValue = normalizePart(attr.value_name)
+      if (!normalizedValue || normalizedFamily.includes(normalizedValue) || seenExtras.has(normalizedValue)) continue
       extras.push(attr.value_name)
+      seenExtras.add(normalizedValue)
     }
   }
   const parts = [familyName, ...extras].filter(Boolean)
@@ -521,8 +531,22 @@ export async function validateListing(
 ): Promise<ValidationResult> {
   const { ok, status, data } = await mlSend<unknown>('/items/validate', token, 'POST', payload)
 
-  // 204/200 = payload aceito
-  if (ok) return { valid: true, issues: [], status_code: status, raw: data }
+  // O sucesso normal é 204. Em contas sem ME1, o ML também responde 400 com
+  // causas exclusivamente warning para payloads que o POST /items aceita.
+  if (ok && status === 204) return { valid: true, issues: [], status_code: status, raw: data }
+
+  if (ok) {
+    return {
+      valid: false,
+      issues: [{
+        code: `unexpected_validate_status_${status}`,
+        message: `O Mercado Livre não confirmou a validação do anúncio (HTTP ${status}).`,
+        severity: 'error',
+      }],
+      status_code: status,
+      raw: data,
+    }
+  }
 
   if (status === 401 || status === 403) {
     return {
@@ -541,7 +565,7 @@ export async function validateListing(
 
   const issues = parseCauses(data)
   return {
-    valid: issues.length > 0 && issues.every(i => i.severity === 'warning'),
+    valid: status === 400 && issues.length > 0 && issues.every(issue => issue.severity === 'warning'),
     issues: issues.length
       ? issues
       : [{ code: `http_${status}`, message: `O Mercado Livre recusou o anúncio (HTTP ${status}).`, severity: 'error' }],

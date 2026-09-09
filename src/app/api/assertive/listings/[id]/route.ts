@@ -101,11 +101,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }
   }
 
-  // QUALQUER edição invalida preflight — payloadHash do publish vai comparar
+  // QUALQUER edição invalida o preflight e o payload previamente validado.
+  patch.attributes = {
+    ...(current.attributes || {}),
+    ...((patch.attributes as Record<string, unknown>) || {}),
+    publication_requirements: null,
+  }
   patch.validation = {}
-  patch.publication_requirements = null
+  patch.validated_payload = null
+  patch.validated_payload_hash = null
+  patch.status = 'ready'
 
-  await supabase.from('assertive_listings').update(patch).eq('id', id).eq('user_id', authorizedUser.id)
+  const { error } = await supabase.from('assertive_listings').update(patch).eq('id', id).eq('user_id', authorizedUser.id)
+  if (error) return Response.json({ error: 'Falha ao salvar o anúncio.' }, { status: 500 })
 
   try {
     const recomputed = await recomputeListing(id, authorizedUser.id)

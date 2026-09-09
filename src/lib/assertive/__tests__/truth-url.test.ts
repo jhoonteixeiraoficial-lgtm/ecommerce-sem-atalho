@@ -71,6 +71,7 @@ describe('identifyFromUrl - URL de user product do Mercado Livre', () => {
           attributes: [
             { id: 'BRAND', name: 'Marca', value_name: 'Kitest' },
             { id: 'GTIN', name: 'Código universal de produto', value_name: '7898559182505' },
+            { id: 'SELLER_SKU', name: 'SKU', value_name: 'Canela de Polaridade' },
           ],
           pictures: [
             { secure_url: 'https://http2.mlstatic.com/D_1-O.jpg' },
@@ -92,10 +93,20 @@ describe('identifyFromUrl - URL de user product do Mercado Livre', () => {
     expect(truth.fields.brand?.value).toBe('Kitest')
     expect(truth.fields.model?.value.replace(/-/g, '').toUpperCase()).toBe('KA250')
     expect(truth.fields.gtin?.value).toBe('7898559182505')
+    expect(truth.fields.sku).toBeUndefined()
+    expect(truth.identity).toMatchObject({
+      product_type: 'Caneta de polaridade',
+      brand: 'Kitest',
+      model: 'KA250',
+      gtin: '7898559182505',
+      seller_sku: null,
+    })
     expect(truth.source_item_id).toBe('MLB4046224913')
     expect(truth.source_category_id).toBe('MLB60658')
     expect(truth.source_domain_id).toBe('MLB-TOOL_AND_CONSTRUCTION_SUPPLIES')
     expect(truth.source_pictures).toHaveLength(5)
+    expect(truth.source_title).toBe('Kitest Ka250 Testador Pulso Bico Fino 12v 24v')
+    expect(truth.source_attributes).toHaveLength(6)
     expect(mocks.generateJson).not.toHaveBeenCalled()
   })
 })

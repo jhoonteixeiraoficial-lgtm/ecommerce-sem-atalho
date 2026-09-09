@@ -5,7 +5,7 @@ import type { ProductTruth } from './truth'
 import { enrichFromCatalog } from './truth'
 
 type Mutable<T> = { -readonly [P in keyof T]: T[P] }
-import { researchMarket, type ResearchResult } from './research'
+import { exactFactSources, researchMarket, type ResearchResult } from './research'
 import { extractDNA, type WinningListingDNA } from './dna'
 import {
   getCategory,
@@ -18,12 +18,13 @@ import {
 import { generateListing, type GeneratedListing, type ListingAttribute } from './generator'
 import { enrichAttributes, type EnrichedAttribute } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
-import { requireMLToken, getSellerCapabilities, buildItemPayload, buildItemPayloadWithMeta, predictMLTitle, getAutoAppendedAttributeIds, validateListing, type SellerCapabilities, type TitleControlMode } from './publisher'
+import { requireMLToken, getSellerCapabilities, buildItemPayload, predictMLTitle, getAutoAppendedAttributeIds, validateListing, type SellerCapabilities, type TitleControlMode } from './publisher'
 import { searchQueryFor } from './truth'
 import { decrypt } from './encryption'
 import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
 import { computeEffectiveRequirements, type PublicationRequirements } from './publication-requirements'
 import { targetedAttributeResearch } from './targeted-research'
+import { observeAnalysisStage, recordAnalysisStageEvent } from './observability'
 
 export type AnalysisStage =
   | 'input'
@@ -45,7 +46,7 @@ export interface AnalysisRow {
   product_name: string
   category_id: string | null
   domain_id: string | null
-  input_type: 'photo' | 'description' | 'url'
+  input_type: 'photo' | 'single_image' | 'multi_image' | 'description' | 'url' | 'gtin' | 'brand_model'
   input_data: Record<string, unknown>
   product_truth: ProductTruth | Record<string, never>
   research: ResearchResult | Record<string, never>
@@ -119,11 +120,15 @@ export async function resolveCategoryContext(
 ): Promise<CategoryContext> {
   if (!categoryId) return { category: null, attributes: [] }
 
-  const [category, rawAttrs, capabilities] = await Promise.all([
-    getCategory(token, categoryId).catch(() => null),
-    getCategoryAttributes(token, categoryId).catch(() => []),
-    getSellerCapabilities(token).catch(() => null),
-  ])
+  const categoryTask = getCategory(token, categoryId).catch(() => null)
+  const capabilitiesTask = getSellerCapabilities(token).catch(() => null)
+  let rawAttrs: Awaited<ReturnType<typeof getCategoryAttributes>>
+  try {
+    rawAttrs = await getCategoryAttributes(token, categoryId)
+  } catch {
+    throw new Error(`Não foi possível carregar o schema oficial da categoria ${categoryId}.`)
+  }
+  const [category, capabilities] = await Promise.all([categoryTask, capabilitiesTask])
 
   return {
     category,
@@ -226,23 +231,39 @@ export async function runResearch(
 
   await updateAnalysis(analysis.id, analysis.user_id, { status: 'researching', error_message: null })
 
-  const research = await researchMarket(token, query, {
-    deepLimit: 8,
-    categoryHint: opts.categoryOverride || null,
-    sourceCategoryId: truth.source_category_id || null,
-    // permite classificar EXACT vs COMPARABLE
-    truth,
-  })
+  const research = await observeAnalysisStage(
+    {
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: 'research',
+      metadata: { input_type: analysis.input_type, category_source: truth.source_category_id ? 'url_source' : 'discovery' },
+    },
+    () => researchMarket(token, query, {
+      deepLimit: 8,
+      categoryHint: opts.categoryOverride || null,
+      sourceCategoryId: truth.source_category_id || null,
+      sourceDomainId: truth.source_domain_id || null,
+      // permite classificar EXACT vs COMPARABLE
+      truth,
+    })
+  )
 
   await updateAnalysis(analysis.id, analysis.user_id, { status: 'analyzing' })
 
-  const dna = extractDNA(research)
+  const dna = await observeAnalysisStage(
+    {
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: 'dna',
+      metadata: { references: research.competitors.length, exact_catalog_matches: research.exact_catalog_count },
+    },
+    async () => extractDNA(research)
+  )
 
   // Só produto EXATO alimenta a ficha. Comparável jamais vira fato.
   let enriched = truth
-  for (const ref of research.competitors) {
-    if (!ref.usable_as_fact_source) continue
-    enriched = enrichFromCatalog(enriched, ref.attributes, ref.title)
+  for (const source of exactFactSources(research)) {
+    enriched = enrichFromCatalog(enriched, source.attributes, source.title)
   }
 
   await updateAnalysis(analysis.id, analysis.user_id, {
@@ -299,9 +320,7 @@ async function autoResolveAndResearch(
   }
 
   // 2. Para atributos ainda vazios sem suggested_value, tentar pesquisa direcionada
-  const exactProducts = research.competitors
-    .filter(c => c.usable_as_fact_source)
-    .map(c => ({ title: c.title, attributes: c.attributes }))
+  const exactProducts = exactFactSources(research)
 
   for (const issue of issues) {
     if (issue.severity !== 'error') continue
@@ -353,10 +372,18 @@ export async function runGeneration(
   }
 
   const token = await requireMLToken(analysis.user_id)
-  const { category, attributes } = await resolveCategoryContext(token, research.category_id)
+  let { category, attributes } = await observeAnalysisStage(
+    {
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: 'category_schema',
+      metadata: { category_id: research.category_id },
+    },
+    () => resolveCategoryContext(token, research.category_id)
+  )
 
   // P0.3: Category Sanity Guard — verificar se categoria é compatível com o produto
-  let categoryChanged = false
+  let categoryReresolved = false
   let categoryChangeReason = ''
   let categoryChangeEvidence = ''
 
@@ -371,7 +398,6 @@ export async function runGeneration(
         // Marcar como suspeita e tentar re-resolução
         console.error(`[SANITY] HARD MISMATCH on locked category ${research.category_id}: ${msg}`)
         categoryChangeReason = `HARD_MISMATCH: ${sanity.mismatches.join('; ')}`
-        categoryChanged = true
 
         // Tentar re-resolução usando discoverDomain com o nome do produto
         try {
@@ -383,17 +409,40 @@ export async function runGeneration(
             const newSanity = checkCategorySanity(newAttrs, truth.name)
 
             if (newSanity.ok || !newSanity.hasHardMismatch) {
-              categoryChangeEvidence = `Re-resolved from ${research.category_id} to ${newCatId} (${domains[0].category_name})`
-              console.log(`[SANITY] Category re-resolved: ${research.category_id} → ${newCatId}`)
+              const previousCategoryId = research.category_id
+              categoryChangeEvidence = `Re-resolved from ${previousCategoryId} to ${newCatId} (${domains[0].category_name})`
+              console.log(`[SANITY] Category re-resolved: ${previousCategoryId} → ${newCatId}`)
 
               // Atualizar research para usar a nova categoria
               ;(research as Mutable<ResearchResult>).category_id = newCatId
               ;(research as Mutable<ResearchResult>).category_name = domains[0].category_name
               ;(research as Mutable<ResearchResult>).category_source = 'sanity_reresolution'
+              ;(research as Mutable<ResearchResult>).domain_id = domains[0].domain_id || research.domain_id
+              ;(research as Mutable<ResearchResult>).domain_name = domains[0].domain_name || research.domain_name
+              ;(research as Mutable<ResearchResult>).category_resolution = {
+                category_id: newCatId,
+                category_name: domains[0].category_name,
+                domain_id: domains[0].domain_id || research.domain_id,
+                source: 'sanity_reresolution',
+                confidence: 0.8,
+                candidates: domains,
+                reasons: [categoryChangeReason, categoryChangeEvidence],
+                warnings: [],
+              }
+              categoryReresolved = true
 
               // Re-resolver contexto da categoria
-              const newCtx = await resolveCategoryContext(token, newCatId)
-              Object.assign({ category, attributes }, newCtx)
+              const newCtx = await observeAnalysisStage(
+                {
+                  analysis_id: analysis.id,
+                  user_id: analysis.user_id,
+                  stage: 'category_schema',
+                  metadata: { category_id: newCatId, reason: 'sanity_reresolution' },
+                },
+                () => resolveCategoryContext(token, newCatId)
+              )
+              category = newCtx.category
+              attributes = newCtx.attributes
             } else {
               categoryChangeEvidence = `Re-resolution failed: new category ${newCatId} also has mismatches`
               console.error(`[SANITY] Re-resolution failed for ${newCatId}`)
@@ -415,7 +464,13 @@ export async function runGeneration(
     }
   }
 
-  await updateAnalysis(analysis.id, analysis.user_id, { status: 'generating', error_message: null })
+  await updateAnalysis(analysis.id, analysis.user_id, {
+    status: 'generating',
+    error_message: null,
+    ...(categoryReresolved
+      ? { research, category_id: research.category_id, domain_id: research.domain_id }
+      : {}),
+  })
 
   // Preserva o que o vendedor já editou: regenerar não apaga trabalho dele.
   const supabasePrev = createAdminClient()
@@ -431,26 +486,58 @@ export async function runGeneration(
     a => a.source === 'user'
   )
 
-  const generated = await generateListing({
-    config,
-    truth,
-    research,
-    dna,
-    category,
-    attributes,
-    tone: config?.default_tone,
+  const generated = await observeAnalysisStage(
+    {
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: 'generation',
+      metadata: { category_id: category?.id || research.category_id, price_basis: research.price_basis },
+    },
+    () => generateListing({
+      config,
+      truth,
+      research,
+      dna,
+      category,
+      attributes,
+      tone: config?.default_tone,
+    })
+  )
+
+  const previousTitle = typeof previous?.title === 'string' ? previous.title.trim() : ''
+  const previousDescription = typeof previous?.description === 'string' ? previous.description.trim() : ''
+  const previousPrice = Number(previous?.price)
+  if (previousTitle) generated.title = previousTitle
+  if (previousDescription) generated.description = previousDescription
+  if (Number.isFinite(previousPrice) && previousPrice > 0) generated.price = previousPrice
+  await recordAnalysisStageEvent({
+    analysis_id: analysis.id,
+    user_id: analysis.user_id,
+    stage: 'pricing',
+    event: 'completed',
+    duration_ms: 0,
+    metadata: {
+      basis: Number.isFinite(previousPrice) && previousPrice > 0 ? 'SELLER_OVERRIDE' : research.price_basis,
+      auto_applied: Boolean(generated.price) && !(Number.isFinite(previousPrice) && previousPrice > 0),
+    },
   })
 
   // AUTOFILL-FIRST: resolve tudo que for pesquisável antes de perguntar ao vendedor.
-  const enrichment = await enrichAttributes({
-    config,
-    truth,
-    schema: attributes,
-    exactProductAttributes: research.competitors
-      .filter(c => c.usable_as_fact_source)
-      .map(c => ({ title: c.title, attributes: c.attributes })),
-    current: [...userOverrides, ...generated.attributes],
-  })
+  const enrichment = await observeAnalysisStage(
+    {
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: 'attribute_autofill',
+      metadata: { schema_attributes: attributes.length, exact_fact_sources: exactFactSources(research).length },
+    },
+    () => enrichAttributes({
+      config,
+      truth,
+      schema: attributes,
+      exactProductAttributes: exactFactSources(research),
+      current: [...userOverrides, ...generated.attributes],
+    })
+  )
 
   const finalAttributes = enrichment.attributes
   const completeness = computeCompleteness(attributes, finalAttributes)
@@ -465,15 +552,31 @@ export async function runGeneration(
 
   let photoResult: Awaited<ReturnType<typeof collectAndClassifyPhotos>>
   try {
-    photoResult = await collectAndClassifyPhotos({
-      research,
-      truth,
-      config,
-      userPhotos,
-      sourcePhotos,
-      domainId: research.domain_id,
+    photoResult = await observeAnalysisStage(
+      {
+        analysis_id: analysis.id,
+        user_id: analysis.user_id,
+        stage: 'photos',
+        metadata: { user_photos: userPhotos.length, source_photos: sourcePhotos.length },
+      },
+      () => collectAndClassifyPhotos({
+        research,
+        truth,
+        config,
+        userPhotos,
+        sourcePhotos,
+        domainId: research.domain_id,
+      })
+    )
+  } catch (error) {
+    await recordAnalysisStageEvent({
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: 'photos',
+      event: 'fallback',
+      error_code: 'PHOTO_PIPELINE_FALLBACK',
+      error_message: error instanceof Error ? error.message : 'Falha na pipeline de fotos',
     })
-  } catch {
     photoResult = {
       photos: userPhotos.map((url, i) => ({
         url,
@@ -485,6 +588,12 @@ export async function runGeneration(
       })),
       stats: { total_found: 0, from_exact_product: 0, from_competitor: 0, classified: 0, deduplicated: 0 },
       category_requirements: { background: 'white_pure', min_photos: 4, recommended_photos: 6, shot_types: [] },
+      photo_gap: {
+        reference_candidates: 0,
+        missing_count: Math.max(0, 6 - userPhotos.length),
+        missing_roles: [],
+        recommendations: [],
+      },
     }
   }
 
@@ -504,7 +613,7 @@ export async function runGeneration(
 
   // PRE-PUBLISH VALIDATION: montar payload e validar no ML automaticamente
   let publicationRequirements: PublicationRequirements | null = null
-  let resolvedAttributes = [...finalAttributes]
+  const resolvedAttributes = [...finalAttributes]
   let titleControlMode: TitleControlMode = 'seller'
   let predictedTitle = generated.title
   let catAttrs: Array<{ id: string; tags?: Record<string, boolean> }> = []
@@ -542,16 +651,32 @@ export async function runGeneration(
 
       // Validation loop iterativo — max 5 tentativas
       const MAX_VALIDATION_ATTEMPTS = 5
-      let validation = await validateListing(token, buildPayload())
-
-      for (let attempt = 0; attempt < MAX_VALIDATION_ATTEMPTS && !validation.valid; attempt++) {
-        const autoFixed = await autoResolveAndResearch(
-          token, validation.issues, resolvedAttributes, attributes, truth, research, config
-        )
-        if (!autoFixed) break // nada mais para resolver
-
-        validation = await validateListing(token, buildPayload())
-      }
+      const validation = await observeAnalysisStage(
+        {
+          analysis_id: analysis.id,
+          user_id: analysis.user_id,
+          stage: 'preflight',
+          metadata: { category_id: catId },
+        },
+        async () => {
+          let result = await validateListing(token, buildPayload())
+          for (let attempt = 0; attempt < MAX_VALIDATION_ATTEMPTS && !result.valid; attempt++) {
+            const autoFixed = await autoResolveAndResearch(
+              token, result.issues, resolvedAttributes, attributes, truth, research, config
+            )
+            if (!autoFixed) break // nada mais para resolver
+            await recordAnalysisStageEvent({
+              analysis_id: analysis.id,
+              user_id: analysis.user_id,
+              stage: 'preflight',
+              event: 'retry',
+              metadata: { attempt: attempt + 2 },
+            })
+            result = await validateListing(token, buildPayload())
+          }
+          return result
+        }
+      )
 
       publicationRequirements = computeEffectiveRequirements(attributes, validation.issues, resolvedAttributes)
     } catch {
@@ -598,6 +723,7 @@ export async function runGeneration(
         // photo pipeline
         photo_metadata: photoMetadata,
         photo_stats: photoResult.stats,
+        photo_gap_analysis: photoResult.photo_gap,
         // pre-publish validation
         publication_requirements: publicationRequirements,
         // title control
