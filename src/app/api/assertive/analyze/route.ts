@@ -5,6 +5,7 @@ import { getValidMLToken } from '@/lib/assertive/publisher'
 import { getUserAIConfig } from '@/lib/assertive/pipeline'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { observeAnalysisStage } from '@/lib/assertive/observability'
+import { getOwnedAssets, isPublicationAssetAllowed } from '@/lib/assertive/image-assets'
 import { z } from 'zod'
 
 export const runtime = 'nodejs'
@@ -15,6 +16,7 @@ const schema = z.object({
   description: z.string().max(4000).optional(),
   url: z.string().url().max(1000).optional(),
   photos: z.array(z.string().url()).max(8).optional(),
+  photo_asset_ids: z.array(z.string().min(1).max(100)).max(8).optional(),
   gtin: z.string().max(32).optional(),
   brand: z.string().max(120).optional(),
   model: z.string().max(120).optional(),
@@ -33,15 +35,27 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: 'Dados inválidos para iniciar a análise.' }, { status: 400 })
   }
 
-  const { input_type, description, url, photos, gtin, brand, model } = parsed.data
+  const { input_type, description, url, photos, photo_asset_ids, gtin, brand, model } = parsed.data
+  let resolvedPhotos = photos ?? []
+  if (photo_asset_ids?.length) {
+    const uniqueIds = [...new Set(photo_asset_ids)]
+    const owned = await getOwnedAssets(authorizedUser.id, uniqueIds)
+    const byId = new Map(owned.map(asset => [asset.id, asset]))
+    const ordered = photo_asset_ids.map(id => byId.get(id))
+    if (uniqueIds.length !== photo_asset_ids.length
+      || ordered.some(asset => !asset || !isPublicationAssetAllowed(asset))) {
+      return Response.json({ error: 'Uma ou mais fotos não pertencem ao usuário ou não estão aprovadas.' }, { status: 400 })
+    }
+    resolvedPhotos = ordered.map(asset => asset!.public_url!)
+  }
 
-  if (['photo', 'single_image', 'multi_image'].includes(input_type) && (!photos || photos.length === 0)) {
+  if (['photo', 'single_image', 'multi_image'].includes(input_type) && resolvedPhotos.length === 0) {
     return Response.json({ error: 'Envie pelo menos uma foto do produto.' }, { status: 400 })
   }
-  if (input_type === 'single_image' && photos?.length !== 1) {
+  if (input_type === 'single_image' && resolvedPhotos.length !== 1) {
     return Response.json({ error: 'Envie exatamente uma foto para esta modalidade.' }, { status: 400 })
   }
-  if (input_type === 'multi_image' && (photos?.length || 0) < 2) {
+  if (input_type === 'multi_image' && resolvedPhotos.length < 2) {
     return Response.json({ error: 'Envie pelo menos duas fotos para análise múltipla.' }, { status: 400 })
   }
   if (input_type === 'description' && !description?.trim()) {
@@ -70,12 +84,13 @@ export async function POST(req: NextRequest) {
         description: description ?? null,
         url: url ?? null,
         ml_url: url ?? null,
-        photos: photos ?? [],
+        photos: resolvedPhotos,
+        photo_asset_ids: photo_asset_ids ?? [],
         gtin: gtin ?? null,
         brand: brand ?? null,
         model: model ?? null,
       },
-      photos: photos ?? [],
+      photos: resolvedPhotos,
       status: 'identifying',
     })
     .select('id')
@@ -94,7 +109,7 @@ export async function POST(req: NextRequest) {
     else if (input_type === 'description') identificationInput = { type: 'description', description: description! }
     else if (input_type === 'gtin') identificationInput = { type: 'gtin', gtin: gtin! }
     else if (input_type === 'brand_model') identificationInput = { type: 'brand_model', brand: brand!, model: model! }
-    else identificationInput = { type: input_type, photos: photos!, context: description }
+    else identificationInput = { type: input_type, photos: resolvedPhotos, context: description }
 
     const truth = await observeAnalysisStage(
       {

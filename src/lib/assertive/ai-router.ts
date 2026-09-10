@@ -23,6 +23,10 @@ export type AITask =
   | 'winning_listing_dna'
   | 'seo_strategy'
   | 'ml_error_interpretation'
+  // ---- visão: sempre recebe os pixels anexados
+  | 'image_classification'
+  | 'visual_understanding'
+  | 'visual_fidelity'
   // ---- redação: modelo barato basta
   | 'title_draft'
   | 'description_draft'
@@ -41,6 +45,9 @@ const TASK_TIER: Record<AITask, Tier> = {
   winning_listing_dna: 'reasoning',
   seo_strategy: 'reasoning',
   ml_error_interpretation: 'reasoning',
+  image_classification: 'vision',
+  visual_understanding: 'vision',
+  visual_fidelity: 'vision',
   title_draft: 'draft',
   description_draft: 'draft',
   text_rewrite: 'draft',
@@ -54,6 +61,8 @@ export interface RouterResult {
   provider: string
   model: string
   tier: Tier
+  latency_ms: number
+  attempts: number
 }
 
 /** A API da Anthropic não é compatível com o formato OpenAI: chamada nativa. */
@@ -134,12 +143,13 @@ export async function runTask(
   if (tier === 'reasoning') {
     const claudeKey = process.env.ANTHROPIC_API_KEY
     if (claudeKey) {
+      const startedAt = Date.now()
       try {
         const text = await callClaude(claudeKey, systemPrompt, userPrompt, {
           maxTokens: options.maxTokens,
           temperature: options.temperature ?? 0.2,
         })
-        return { text, provider: 'claude', model: CLAUDE_MODEL, tier }
+        return { text, provider: 'claude', model: CLAUDE_MODEL, tier, latency_ms: Date.now() - startedAt, attempts: 1 }
       } catch {
         // sem quebrar o pipeline: segue para o fallback
       }
@@ -150,6 +160,7 @@ export async function runTask(
   const preferCheap = tier === 'draft'
   const res = await generate(preferCheap ? null : userConfig, systemPrompt, userPrompt, {
     ...options,
+    workload: tier,
     temperature: options.temperature ?? (tier === 'reasoning' ? 0.2 : 0.5),
   })
 
@@ -165,4 +176,37 @@ export async function runTaskJson<T>(
 ): Promise<T> {
   const res = await runTask(task, userConfig, systemPrompt, userPrompt, { ...options, json: true })
   return parseJson<T>(res.text)
+}
+
+export async function runTaskJsonWithMeta<T>(
+  task: AITask,
+  userConfig: AIConfig | null,
+  systemPrompt: string,
+  userPrompt: string,
+  options: GenerateOptions = {}
+): Promise<{ data: T; meta: Omit<RouterResult, 'text'> }> {
+  const result = await runTask(task, userConfig, systemPrompt, userPrompt, { ...options, json: true })
+  const { text, ...meta } = result
+  return { data: parseJson<T>(text), meta }
+}
+
+export async function runVisionBatches<T>({
+  images,
+  execute,
+  batchSize = 4,
+}: {
+  images: string[]
+  execute: (batch: string[], batchIndex: number, offset: number) => Promise<T>
+  batchSize?: number
+}): Promise<T[]> {
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 8) {
+    throw new Error('O lote visual deve conter entre 1 e 8 imagens.')
+  }
+
+  const results: T[] = []
+  for (let offset = 0; offset < images.length; offset += batchSize) {
+    const batch = images.slice(offset, offset + batchSize)
+    results.push(await execute(batch, results.length, offset))
+  }
+  return results
 }

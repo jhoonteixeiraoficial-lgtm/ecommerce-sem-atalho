@@ -85,6 +85,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         value_id,
         tier: spec.tier,
         source: 'user',
+        status: 'USER_OVERRIDE',
+        evidence: 'Informado pelo vendedor',
+        isVariationOnly: spec.isVariationOnly,
       }
 
       const idx = current.findIndex(a => a.id === attrId)
@@ -103,6 +106,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           ...(listing.attributes || {}),
           list: current,
           missing: stillMissing,
+          blocking_questions: [],
           publication_requirements: null,
         },
         validation: {},

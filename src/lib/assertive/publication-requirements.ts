@@ -2,6 +2,7 @@ import type { ClassifiedAttribute } from './taxonomy'
 import type { ValidationIssue } from './publisher'
 import type { EnrichedAttribute } from './enrichment'
 import { classifyMLWarning, type MLClassifiedWarning } from './publication-readiness'
+import { isPublishableAttribute } from './attribute-evidence'
 
 export type RequirementLevel = 'blocking_required' | 'recommended' | 'optional' | 'not_applicable'
 
@@ -81,7 +82,7 @@ export function computeEffectiveRequirements(
   const requirements: EffectiveRequirement[] = []
 
   for (const attr of categoryAttributes) {
-    if (attr.readOnly || attr.isVariationOnly) continue
+    if (attr.readOnly) continue
 
     const filled = filledMap.get(attr.id)
     const mlRequired = mlRequiredIds.has(attr.id)
@@ -108,11 +109,7 @@ export function computeEffectiveRequirements(
     }
 
     const hasValue = Boolean(filled?.value_name?.trim())
-    const hasPublishableValue = hasValue && (
-      filled?.status === 'CONFIRMED'
-      || filled?.status === 'AUTO_FILLED'
-      || filled?.status === 'USER_OVERRIDE'
-    )
+    const hasPublishableValue = Boolean(filled && isPublishableAttribute(filled))
     const requiresConfirmation = hasValue && !hasPublishableValue
     const isBlocker = level === 'blocking_required' && !hasPublishableValue
 
@@ -134,11 +131,7 @@ export function computeEffectiveRequirements(
     if (schemaAttributeIds.has(attrId)) continue
     const filled = filledMap.get(attrId)
     const hasValue = Boolean(filled?.value_name?.trim())
-    const hasPublishableValue = hasValue && (
-      filled?.status === 'CONFIRMED'
-      || filled?.status === 'AUTO_FILLED'
-      || filled?.status === 'USER_OVERRIDE'
-    )
+    const hasPublishableValue = Boolean(filled && isPublishableAttribute(filled))
     const mlIssue = mlIssuesMap.get(attrId)
     requirements.push({
       attribute_id: attrId,

@@ -6,6 +6,7 @@ async function adminClient() {
   return createAdminClient()
 }
 import type { ListingAttribute } from './generator'
+import { publishableAttributes } from './attribute-evidence'
 
 const ML_BASE = 'https://api.mercadolibre.com'
 
@@ -227,6 +228,14 @@ export interface MLItemPayload {
   shipping?: { mode: string; local_pick_up: boolean; free_shipping: boolean }
   sale_terms?: Array<{ id: string; value_name: string }>
   family_name?: string
+  variations?: ListingVariation[]
+}
+
+export interface ListingVariation {
+  attribute_combinations: Array<{ id: string; value_id?: string; value_name: string }>
+  attributes: Array<{ id: string; value_id?: string; value_name: string }>
+  price: number
+  available_quantity: number
 }
 
 /**
@@ -282,7 +291,9 @@ export function buildItemPayload(
   capabilities: SellerCapabilities | null,
   shippingPrefs?: SellerShippingPreferences | null
 ): MLItemPayload {
-  const attributes = sanitizeAttributes(input.attributes.filter(a => a.value_name?.trim()))
+  const publishable = publishableAttributes(input.attributes)
+  const attributes = sanitizeAttributes(publishable.filter(attribute => !attribute.isVariationOnly))
+  const variationAttributes = sanitizeAttributes(publishable.filter(attribute => attribute.isVariationOnly))
 
   const sale_terms: Array<{ id: string; value_name: string }> = []
   if (input.warranty_type) sale_terms.push({ id: 'WARRANTY_TYPE', value_name: input.warranty_type })
@@ -313,6 +324,14 @@ export function buildItemPayload(
     free_shipping: input.free_shipping ?? false,
   }
   if (sale_terms.length) payload.sale_terms = sale_terms
+  if (variationAttributes.length) {
+    payload.variations = [{
+      attribute_combinations: variationAttributes,
+      attributes: [],
+      price: Number(input.price),
+      available_quantity: Math.max(1, Math.floor(input.available_quantity || 1)),
+    }]
+  }
 
   if (capabilities?.user_product_model) {
     // Modelo novo: family_name é obrigatório e title é rejeitado pela API.

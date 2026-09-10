@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const runTaskJson = vi.hoisted(() => vi.fn())
+vi.mock('../ai-router', async importOriginal => ({
+  ...(await importOriginal<typeof import('../ai-router')>()),
+  runTaskJson,
+}))
 import { collectAndClassifyPhotos } from '../photos'
 import type { ResearchResult } from '../research'
 import type { ProductTruth } from '../truth'
@@ -76,6 +82,21 @@ const research = {
 } satisfies ResearchResult
 
 describe('photo pipeline safety', () => {
+  beforeEach(() => runTaskJson.mockReset().mockResolvedValue([]))
+
+  it('classifica fotos do vendedor enviando os anexos reais', async () => {
+    const userPhotos = ['https://seller.example/1.jpg', 'https://seller.example/2.jpg']
+    runTaskJson.mockResolvedValue([
+      { role: 'MAIN', is_duplicate: false, quality: 90 },
+      { role: 'DETAIL', is_duplicate: false, quality: 80 },
+    ])
+
+    await collectAndClassifyPhotos({ research, truth, config: null, userPhotos })
+
+    expect(runTaskJson.mock.calls[0][4].images).toEqual(userPhotos)
+    expect(runTaskJson.mock.calls[0][3]).not.toContain(userPhotos[0])
+  })
+
   it('nunca coloca foto de concorrente na galeria final sem confirmação', async () => {
     const result = await collectAndClassifyPhotos({
       research,
@@ -93,14 +114,12 @@ describe('photo pipeline safety', () => {
     )
   })
 
-  it('preserva as cinco fotos da fonte oficial do produto', async () => {
+  it('mantém fotos de URL externa apenas como referência sem direito presumido', async () => {
     const sourcePhotos = Array.from({ length: 5 }, (_, index) => `https://source.example/${index + 1}.jpg`)
     const result = await collectAndClassifyPhotos({ research, truth, config: null, sourcePhotos })
 
-    expect(result.photos).toHaveLength(5)
-    expect(result.photos.every(photo => photo.source === 'SOURCE_URL')).toBe(true)
-    expect(result.photo_gap.missing_count).toBe(3)
-    expect(result.fidelity_check).toMatchObject({ passed: true })
+    expect(result.photos).toEqual([])
+    expect(result.photo_gap.missing_count).toBeGreaterThan(0)
   })
 
   it('rejeita fotos de fonte sem identidade verificável', async () => {

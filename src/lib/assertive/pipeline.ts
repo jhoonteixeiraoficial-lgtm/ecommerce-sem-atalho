@@ -10,6 +10,7 @@ import { extractDNA, type WinningListingDNA } from './dna'
 import {
   getCategory,
   getCategoryAttributes,
+  getCategorySaleTerms,
   classifyAttributes,
   maxTitleLength,
   type ClassifiedAttribute,
@@ -25,6 +26,9 @@ import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
 import { computeEffectiveRequirements, type PublicationRequirements } from './publication-requirements'
 import { targetedAttributeResearch } from './targeted-research'
 import { observeAnalysisStage, recordAnalysisStageEvent } from './observability'
+import { buildBlockingQuestions } from './blocking-questions'
+import { buildListingGallery, type ListingGallery } from './image-pipeline'
+import { attachListingImages } from './image-assets'
 
 export type AnalysisStage =
   | 'input'
@@ -111,31 +115,72 @@ export async function getUserAIConfig(userId: string): Promise<AIConfig | null> 
 export interface CategoryContext {
   category: CategoryInfo | null
   attributes: ClassifiedAttribute[]
+  itemAttributes: ClassifiedAttribute[]
+  variationAttributes: ClassifiedAttribute[]
+  saleTerms: ClassifiedAttribute[]
   capabilities?: SellerCapabilities | null
+  eligibility: { listingAllowed: boolean; status: string | null }
+  limits: { title: number; pictures: number; variationPictures: number }
 }
 
 export async function resolveCategoryContext(
   token: string,
   categoryId: string | null
 ): Promise<CategoryContext> {
-  if (!categoryId) return { category: null, attributes: [] }
+  if (!categoryId) {
+    return {
+      category: null,
+      attributes: [],
+      itemAttributes: [],
+      variationAttributes: [],
+      saleTerms: [],
+      eligibility: { listingAllowed: false, status: null },
+      limits: { title: 60, pictures: 12, variationPictures: 10 },
+    }
+  }
 
-  const categoryTask = getCategory(token, categoryId).catch(() => null)
+  const categoryTask = getCategory(token, categoryId).catch(() => {
+    throw new Error(`Não foi possível carregar os dados oficiais da categoria ${categoryId}.`)
+  })
   const capabilitiesTask = getSellerCapabilities(token).catch(() => null)
+  const saleTermsTask = getCategorySaleTerms(token, categoryId).catch(() => [])
   let rawAttrs: Awaited<ReturnType<typeof getCategoryAttributes>>
   try {
     rawAttrs = await getCategoryAttributes(token, categoryId)
   } catch {
     throw new Error(`Não foi possível carregar o schema oficial da categoria ${categoryId}.`)
   }
-  const [category, capabilities] = await Promise.all([categoryTask, capabilitiesTask])
+  const [category, capabilities, rawSaleTerms] = await Promise.all([
+    categoryTask,
+    capabilitiesTask,
+    saleTermsTask,
+  ])
+
+  const categoryStatus = category.settings?.status?.toLowerCase() || null
+  const listingAllowed = category.settings?.listing_allowed !== false
+    && (!categoryStatus || categoryStatus === 'enabled' || categoryStatus === 'active')
+  if (!listingAllowed) {
+    throw new Error(`A categoria ${categoryId} não aceita novas publicações no Mercado Livre.`)
+  }
+
+  const attributes = classifyAttributes(rawAttrs, {
+    requireSellerPackage: capabilities?.user_product_model ?? false,
+  })
+  const saleTerms = classifyAttributes(rawSaleTerms)
 
   return {
     category,
-    attributes: classifyAttributes(rawAttrs, {
-      requireSellerPackage: capabilities?.user_product_model ?? false,
-    }),
+    attributes,
+    itemAttributes: attributes.filter(attribute => !attribute.isVariationOnly),
+    variationAttributes: attributes.filter(attribute => attribute.isVariationOnly),
+    saleTerms,
     capabilities,
+    eligibility: { listingAllowed: true, status: categoryStatus },
+    limits: {
+      title: maxTitleLength(category),
+      pictures: category.settings?.max_pictures_per_item || 12,
+      variationPictures: category.settings?.max_pictures_per_item_var || 10,
+    },
   }
 }
 
@@ -304,6 +349,7 @@ async function autoResolveAndResearch(
         existing.value_name = issue.suggested_value.value_name || issue.suggested_value.value_id || ''
         existing.source = 'catalog'
         existing.status = 'AUTO_FILLED'
+        existing.evidence = `Valor sugerido pela validação oficial do Mercado Livre (${issue.code})`
       } else {
         const spec = categoryAttributes.find(a => a.id === attrId)
         resolvedAttributes.push({
@@ -313,6 +359,8 @@ async function autoResolveAndResearch(
           source: 'catalog',
           tier: spec?.tier || 'recommended',
           status: 'AUTO_FILLED',
+          evidence: `Valor sugerido pela validação oficial do Mercado Livre (${issue.code})`,
+          isVariationOnly: spec?.isVariationOnly,
         })
       }
       changed = true
@@ -339,6 +387,8 @@ async function autoResolveAndResearch(
           existing.value_name = result.value
           existing.source = 'catalog'
           existing.status = 'AUTO_FILLED'
+          existing.evidence = result.evidence
+          existing.source_url = result.source_url
         } else {
           resolvedAttributes.push({
             id: attrId,
@@ -347,6 +397,9 @@ async function autoResolveAndResearch(
             source: 'catalog',
             tier: spec.tier,
             status: 'AUTO_FILLED',
+            evidence: result.evidence,
+            source_url: result.source_url,
+            isVariationOnly: spec.isVariationOnly,
           })
         }
         changed = true
@@ -597,8 +650,32 @@ export async function runGeneration(
     }
   }
 
-  const photos = photoResult.photos.map(p => p.url)
-  const photoMetadata = photoResult.photos
+  let photos = photoResult.photos.map(p => p.url)
+  let photoMetadata = photoResult.photos
+  let assetGallery: ListingGallery | null = null
+  const renditionAssetIds = Array.isArray(analysis.input_data?.photo_asset_ids)
+    ? analysis.input_data.photo_asset_ids.filter((id): id is string => typeof id === 'string' && Boolean(id))
+    : []
+  if (renditionAssetIds.length) {
+    assetGallery = await observeAnalysisStage(
+      {
+        analysis_id: analysis.id,
+        user_id: analysis.user_id,
+        stage: 'image_enhancement',
+        metadata: { requested_assets: renditionAssetIds.length },
+      },
+      () => buildListingGallery({
+        userId: analysis.user_id,
+        analysisId: analysis.id,
+        renditionAssetIds,
+        productName: truth.name,
+        config,
+        maxPictures: category?.settings?.max_pictures_per_item || 12,
+      })
+    )
+    photos = assetGallery.urls
+    photoMetadata = assetGallery.images
+  }
 
   const scores = computeScores({
     title: generated.title,
@@ -726,6 +803,9 @@ export async function runGeneration(
         photo_gap_analysis: photoResult.photo_gap,
         // pre-publish validation
         publication_requirements: publicationRequirements,
+        blocking_questions: publicationRequirements
+          ? buildBlockingQuestions(publicationRequirements, attributes, resolvedAttributes)
+          : [],
         // title control
         title_control_mode: titleControlMode,
         predicted_title: predictedTitle,
@@ -742,6 +822,15 @@ export async function runGeneration(
     .single()
 
   if (error || !listing) throw new Error('Não foi possível salvar o anúncio gerado.')
+
+  if (assetGallery) {
+    try {
+      await attachListingImages(listing.id, analysis.user_id, assetGallery.listingImages)
+    } catch (attachError) {
+      await supabase.from('assertive_listings').delete().eq('id', listing.id).eq('user_id', analysis.user_id)
+      throw attachError
+    }
+  }
 
   await updateAnalysis(analysis.id, analysis.user_id, { status })
 

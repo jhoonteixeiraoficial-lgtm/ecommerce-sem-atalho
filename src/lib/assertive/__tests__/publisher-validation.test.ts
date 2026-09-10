@@ -10,7 +10,7 @@ vi.mock('../ml-api', () => ({
   mlGet: vi.fn(),
 }))
 
-const { validateListing } = await import('../publisher')
+const { buildItemPayload, validateListing } = await import('../publisher')
 
 describe('validateListing', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -196,5 +196,28 @@ describe('validateListing', () => {
     })
 
     expect(result.valid).toBe(false)
+  })
+})
+
+describe('buildItemPayload evidence filtering', () => {
+  it('exclui atributos não confirmados do payload enviado ao Mercado Livre', () => {
+    const payload = buildItemPayload({
+      title: 'Caneta de polaridade Kitest KA250',
+      category_id: 'MLB60658',
+      price: 129.9,
+      available_quantity: 1,
+      pictures: ['https://example.com/kitest.jpg'],
+      attributes: [
+        { id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'truth', status: 'CONFIRMED' },
+        { id: 'VOLTAGE', name: 'Voltagem', value_name: '220 V', tier: 'required', source: 'ai', status: 'NEEDS_CONFIRMATION' },
+        { id: 'COLOR', name: 'Cor', value_name: 'Preto', tier: 'required', source: 'catalog', status: 'AUTO_FILLED' },
+        { id: 'MODEL', name: 'Modelo', value_name: 'KA250', tier: 'required', source: 'catalog', status: 'AUTO_FILLED', evidence: 'Catálogo exato MLB123' },
+      ],
+    }, null)
+
+    expect(payload.attributes).toEqual([
+      { id: 'BRAND', value_name: 'Kitest' },
+      { id: 'MODEL', value_name: 'KA250' },
+    ])
   })
 })

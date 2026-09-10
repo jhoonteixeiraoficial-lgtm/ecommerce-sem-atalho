@@ -5,6 +5,7 @@ export type ObservedStage =
   | 'dna'
   | 'attribute_autofill'
   | 'photos'
+  | 'image_enhancement'
   | 'generation'
   | 'pricing'
   | 'preflight'

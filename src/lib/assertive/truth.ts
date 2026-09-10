@@ -1,5 +1,6 @@
 import type { AIConfig } from './types'
 import { generateJson, toDataUri } from './ai'
+import { runVisionBatches } from './ai-router'
 import { mlGet } from './ml-api'
 import {
   buildCanonicalIdentity,
@@ -235,7 +236,7 @@ function buildTruth(raw: RawIdentification, source: TruthSource, baseEvidence: s
       confidence,
       source: confidence === 'low' ? 'inference' : source,
       evidence: val?.evidence?.trim() || baseEvidence,
-      status: confidence === 'confirmed' ? 'CONFIRMED' : 'AUTO_FILLED',
+      status: confidence === 'confirmed' ? 'CONFIRMED' : 'NEEDS_CONFIRMATION',
     }
 
     // Palpite não vira fato: vai para a fila de confirmação do usuário.
@@ -310,32 +311,76 @@ export async function identifyFromPhotos(
 ): Promise<ProductTruth> {
   if (!imageUrls.length) throw new Error('Nenhuma foto enviada.')
 
-  // Converte antes de chamar a IA para produzir um erro claro se a imagem estiver inacessível.
-  const dataUris: string[] = []
-  for (const url of imageUrls.slice(0, 8)) {
-    try {
-      dataUris.push(await toDataUri(url))
-    } catch (e) {
-      throw new Error(
-        `Não foi possível ler a foto enviada. ${e instanceof Error ? e.message : ''}`.trim()
+  const batches = await runVisionBatches({
+    images: imageUrls.slice(0, 8),
+    batchSize: 4,
+    execute: async (batch, batchIndex) => {
+      let dataUris: string[]
+      try {
+        dataUris = await Promise.all(batch.map(toDataUri))
+      } catch (error) {
+        throw new Error(
+          `Não foi possível ler a foto enviada. ${error instanceof Error ? error.message : ''}`.trim()
+        )
+      }
+      return generateJson<RawIdentification>(
+        config,
+        IDENTIFY_SYSTEM,
+        `Analise o lote ${batchIndex + 1} das fotos deste produto que será anunciado no Mercado Livre.
+
+      Leia com atenção qualquer texto visível: marca, modelo, código, voltagem, medidas e informações da embalagem.
+      Consolide apenas o que for consistente dentro deste lote e registre divergências em "uncertain".
+      Só afirme o que consegue LER ou VER. O que não estiver visível deve ir para "uncertain".${
+          extraContext ? `\n\nContexto informado pelo vendedor: "${extraContext.slice(0, 500)}"` : ''
+        }`,
+        { images: dataUris, temperature: 0.2 }
       )
+    },
+  })
+
+  return buildTruth(mergePhotoIdentifications(batches), 'photo', 'Identificado a partir da foto enviada pelo vendedor')
+}
+
+function mergePhotoIdentifications(results: RawIdentification[]): RawIdentification {
+  if (results.length === 1) return results[0]
+  const ranked = [...results].sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0))
+  const merged: RawIdentification = {
+    ...ranked[0],
+    fields: {},
+    evidence: [...new Set(results.flatMap(result => result.evidence || []))],
+    uncertain: [],
+  }
+  const fieldNames = new Set(results.flatMap(result => Object.keys(result.fields || {})))
+
+  for (const field of fieldNames) {
+    const observations = results
+      .map(result => result.fields?.[field])
+      .filter((value): value is NonNullable<typeof value> => Boolean(value?.value?.trim()))
+    const values = new Set(observations.map(value => value.value!.trim().toLocaleLowerCase('pt-BR')))
+    if (values.size === 1) {
+      merged.fields![field] = observations.sort((a, b) => confidenceRank(b.confidence) - confidenceRank(a.confidence))[0]
+    } else if (values.size > 1) {
+      merged.uncertain!.push({
+        field,
+        label: field,
+        why: 'As fotos apresentam valores divergentes.',
+        options: [...new Set(observations.map(value => value.value!.trim()))].slice(0, 8),
+      })
     }
   }
 
-  const raw = await generateJson<RawIdentification>(
-    config,
-    IDENTIFY_SYSTEM,
-    `Analise ${dataUris.length > 1 ? `as ${dataUris.length} fotos` : 'a foto'} deste produto que será anunciado no Mercado Livre.
+  for (const uncertain of results.flatMap(result => result.uncertain || [])) {
+    if (uncertain.field && !merged.uncertain!.some(item => item.field === uncertain.field)) {
+      merged.uncertain!.push(uncertain)
+    }
+  }
+  return merged
+}
 
-    Leia com atenção qualquer texto visível: marca, modelo, código, voltagem, medidas e informações da embalagem.
-    Compare todas as imagens, consolide apenas o que for consistente e registre divergências em "uncertain".
-    Só afirme o que consegue LER ou VER. O que não estiver visível deve ir para "uncertain".${
-      extraContext ? `\n\nContexto informado pelo vendedor: "${extraContext.slice(0, 500)}"` : ''
-    }`,
-    { images: dataUris, temperature: 0.2 }
-  )
-
-  return buildTruth(raw, 'photo', 'Identificado a partir da foto enviada pelo vendedor')
+function confidenceRank(confidence?: string): number {
+  if (confidence === 'confirmed') return 3
+  if (confidence === 'high') return 2
+  return 1
 }
 
 interface MLItemLite {

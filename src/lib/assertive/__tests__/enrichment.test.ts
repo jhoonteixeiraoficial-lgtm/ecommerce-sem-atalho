@@ -68,4 +68,32 @@ describe('attribute enrichment evidence contract', () => {
       expect.objectContaining({ field: 'COLOR', options: ['Preto'] }),
     ])
   })
+
+  it('não promove um GTIN apenas inferido porque o checksum é válido', async () => {
+    const result = await enrichAttributes({
+      config: null,
+      truth: {
+        ...truth,
+        fields: {
+          gtin: {
+            value: '7898559182505',
+            confidence: 'high',
+            source: 'inference',
+            evidence: 'Sugestão visual sem leitura literal',
+            status: 'NEEDS_CONFIRMATION',
+          },
+        },
+      },
+      schema: [{
+        id: 'GTIN', name: 'Código universal de produto', value_type: 'string',
+        tier: 'required', fixedValues: false, isVariationOnly: false, readOnly: false,
+      }],
+      exactProductAttributes: [],
+      skipWeb: true,
+    })
+
+    expect(result.attributes).toEqual([
+      expect.objectContaining({ id: 'GTIN', status: 'NEEDS_CONFIRMATION' }),
+    ])
+  })
 })

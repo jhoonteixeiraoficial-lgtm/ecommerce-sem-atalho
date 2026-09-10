@@ -45,6 +45,12 @@ export interface CategoryInfo {
     catalog_domain?: string
     buying_modes?: string[]
     item_conditions?: string[]
+    max_pictures_per_item?: number
+    max_pictures_per_item_var?: number
+    minimum_price?: number
+    maximum_price?: number
+    shipping_modes?: string[]
+    vertical?: string
   }
 }
 
@@ -65,6 +71,13 @@ export async function getCategory(token: string, categoryId: string): Promise<Ca
 
 export async function getCategoryAttributes(token: string, categoryId: string): Promise<MLAttribute[]> {
   return mlGet<MLAttribute[]>(`/categories/${categoryId}/attributes`, token, {
+    ttl: WEEK,
+    persist: true,
+  })
+}
+
+export async function getCategorySaleTerms(token: string, categoryId: string): Promise<MLAttribute[]> {
+  return mlGet<MLAttribute[]>(`/categories/${categoryId}/sale_terms`, token, {
     ttl: WEEK,
     persist: true,
   })

@@ -5,6 +5,7 @@ import { matchAttributeValue, type ListingAttribute } from './generator'
 import { runTaskJson } from './ai-router'
 import { searchWeb, buildManufacturerQuery, type WebSource } from './websearch'
 import { isValidGtin } from './identity'
+import { resolveAttributeStatus } from './attribute-evidence'
 
 /**
  * AUTOFILL-FIRST.
@@ -142,6 +143,7 @@ function put(
     status,
     evidence,
     source_url,
+    isVariationOnly: spec.isVariationOnly,
   })
   return true
 }
@@ -241,7 +243,7 @@ export interface EnrichmentInput {
 
 export async function enrichAttributes(input: EnrichmentInput): Promise<EnrichmentResult> {
   const { config, truth, schema, exactProductAttributes } = input
-  const applicableSchema = schema.filter(a => !a.isVariationOnly)
+  const applicableSchema = schema
   const byId = new Map(applicableSchema.map(a => [a.id, a]))
   const out = new Map<string, EnrichedAttribute>()
 
@@ -263,14 +265,7 @@ export async function enrichAttributes(input: EnrichmentInput): Promise<Enrichme
     const spec = byId.get(a.id)
     if (!spec) continue
     const existing = a as ListingAttribute & Partial<EnrichedAttribute>
-    const status: DataStatus = existing.status
-      || (a.source === 'user'
-        ? 'USER_OVERRIDE'
-        : a.source === 'ai'
-          ? 'NEEDS_CONFIRMATION'
-          : a.source === 'catalog'
-            ? 'AUTO_FILLED'
-            : 'CONFIRMED')
+    const status = resolveAttributeStatus(existing)
     if (put(out, spec, a.value_name, status, a.source, existing.evidence, existing.source_url)) {
       stats.already_filled++
     }
@@ -281,12 +276,12 @@ export async function enrichAttributes(input: EnrichmentInput): Promise<Enrichme
     const attrId = TRUTH_TO_ATTR[key]
     const spec = attrId ? byId.get(attrId) : undefined
     if (!spec) continue
-    const status: DataStatus =
-      field.status === 'USER_OVERRIDE' || field.source === 'user'
+    const status: DataStatus = field.status
+      ?? (field.source === 'user'
         ? 'USER_OVERRIDE'
         : field.confidence === 'confirmed'
           ? 'CONFIRMED'
-          : 'AUTO_FILLED'
+          : 'NEEDS_CONFIRMATION')
     if (put(out, spec, field.value, status, 'truth', field.evidence, field.source_url)) {
       stats.already_filled++
     }
@@ -546,12 +541,14 @@ async function resolveGTIN(input: {
   // 1. Truth já tem GTIN?
   const truthGTIN = truth.fields.gtin?.value
   if (truthGTIN && !INVALID.test(truthGTIN) && isValidGtin(truthGTIN)) {
+    const truthField = truth.fields.gtin
     return {
       value: truthGTIN,
-      status: 'CONFIRMED',
+      status: truthField?.status
+        ?? (truthField?.confidence === 'confirmed' ? 'CONFIRMED' : 'NEEDS_CONFIRMATION'),
       source: 'truth',
-      evidence: truth.fields.gtin?.evidence,
-      source_url: truth.fields.gtin?.source_url,
+      evidence: truthField?.evidence,
+      source_url: truthField?.source_url,
     }
   }
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { payloadHash } from '@/lib/assertive/publication-readiness'
 
 const payload = {
   category_id: 'MLB60658',
@@ -51,6 +52,7 @@ const mocks = vi.hoisted(() => ({
   listing: {} as Record<string, any>,
   updates: [] as Array<{ table: string; patch: Record<string, any> }>,
   mlGet: vi.fn(),
+  buildItemPayload: vi.fn(),
   validateListing: vi.fn(),
   publishListing: vi.fn(),
 }))
@@ -72,7 +74,7 @@ vi.mock('@/lib/assertive/publisher', async importOriginal => {
       user_product_model: true,
       tags: ['user_product_seller'],
     }),
-    buildItemPayload: vi.fn().mockReturnValue(payload),
+    buildItemPayload: mocks.buildItemPayload,
     validateListing: mocks.validateListing,
     publishListing: mocks.publishListing,
   }
@@ -92,6 +94,7 @@ vi.mock('@/lib/supabase/admin', () => ({
         const chain: Record<string, any> = {}
         chain.eq = () => chain
         chain.neq = () => chain
+        chain.is = () => chain
         chain.select = () => chain
         chain.single = async () => ({ data: { id: mocks.listing.id }, error: null })
         chain.then = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) =>
@@ -108,6 +111,7 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.updates = []
+    mocks.buildItemPayload.mockReturnValue(payload)
     mocks.listing = {
       id: 'listing-1',
       user_id: 'user-1',
@@ -120,9 +124,16 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
       condition: 'new',
       listing_type_id: 'gold_special',
       photos: ['https://example.com/kitest.jpg'],
-      attributes: { list: [{ id: 'BRAND', value_name: 'Kitest' }], title_control_mode: 'user_product' },
+      attributes: {
+        list: [{ id: 'BRAND', value_name: 'Kitest' }],
+        title_control_mode: 'user_product',
+        publication_requirements: { all_clear: true, blockers: [] },
+      },
       description: '',
       status: 'ready_to_publish',
+      validation: { valid: true, status_code: 400, checked_at: '2026-09-09T12:00:00.000Z', issues: [warning] },
+      validated_payload: structuredClone(payload),
+      validated_payload_hash: payloadHash(payload),
       ml_item_id: null,
     }
     mocks.validateListing.mockResolvedValue({ valid: true, status_code: 400, issues: [warning] })
@@ -133,6 +144,41 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
       status: 'active',
     })
     mocks.mlGet.mockResolvedValue(marketplaceItem)
+  })
+
+  it('publica exatamente o snapshot validado sem reconstruir o payload', async () => {
+    const validatedPayload = {
+      ...payload,
+      price: 87.4,
+      pictures: [{ source: 'https://example.com/validated-kitest.jpg' }],
+    }
+    mocks.listing.validated_payload = validatedPayload
+    mocks.listing.validated_payload_hash = payloadHash(validatedPayload)
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+
+    expect(response.status).toBe(200)
+    expect(mocks.buildItemPayload).not.toHaveBeenCalled()
+    expect(mocks.validateListing).toHaveBeenCalledWith('token', validatedPayload)
+    expect(mocks.publishListing).toHaveBeenCalledWith('token', validatedPayload, '')
+    expect(mocks.updates.find(update => update.patch.status === 'published')?.patch.published_payload)
+      .toEqual(validatedPayload)
+  })
+
+  it('recusa publicação quando o hash do snapshot não confere', async () => {
+    mocks.listing.validated_payload_hash = 'hash-adulterado'
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+
+    expect(response.status).toBe(409)
+    expect(mocks.validateListing).not.toHaveBeenCalled()
+    expect(mocks.publishListing).not.toHaveBeenCalled()
   })
 
   it('persiste e devolve o estado autoritativo retornado por GET /items/{id}', async () => {

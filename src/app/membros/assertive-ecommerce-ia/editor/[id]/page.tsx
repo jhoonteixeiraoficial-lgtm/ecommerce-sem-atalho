@@ -38,6 +38,7 @@ interface PendingQuestion {
   why: string
   suggestion?: string
   options?: string[]
+  blocking?: boolean
 }
 
 interface ScoreDetail { score: number; max: number; label: string; notes: string[] }
@@ -105,6 +106,7 @@ interface Listing {
     improvements?: string[]
     price_rationale?: string
     missing?: PendingQuestion[]
+    blocking_questions?: PendingQuestion[]
     autofill?: {
       applicable: number
       already_filled: number
@@ -121,13 +123,17 @@ interface Listing {
     web_research?: { used: boolean; reason?: string }
     reasoning_provider?: string
     photo_metadata?: Array<{
+      asset_id?: string
+      parent_asset_id?: string
       url: string
       role: 'MAIN' | 'DETAIL' | 'PACKAGING' | 'LIFESTYLE' | 'INFORMATIONAL'
-      source: 'USER' | 'COMPETITOR' | 'AI_ENHANCED' | 'AI_GENERATED'
+      source: 'USER' | 'COMPETITOR' | 'SOURCE_URL' | 'AI_ENHANCED' | 'AI_GENERATED'
       source_ref?: string
       source_url?: string
       score: number
       ai_enhanced: boolean
+      fidelity_status?: 'ACCEPT' | 'REVIEW' | 'REJECT'
+      label?: string
       position: number
     }>
     photo_stats?: {
@@ -348,6 +354,39 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setSaving(false)
   }
 
+  function orderedPhotoMetadata(urls: string[], metadata = listing?.attributes.photo_metadata || []) {
+    return urls.map((url, position) => {
+      const current = metadata.find(item => item.url === url)
+      return {
+        ...current,
+        url,
+        role: position === 0 ? 'MAIN' as const : current?.role === 'MAIN' ? 'DETAIL' as const : current?.role || 'DETAIL' as const,
+        source: current?.source || 'USER' as const,
+        score: current?.score || 200 - position,
+        ai_enhanced: current?.ai_enhanced || false,
+        position,
+      }
+    })
+  }
+
+  async function saveGallery(urls: string[], metadata = listing?.attributes.photo_metadata || []) {
+    const ordered = orderedPhotoMetadata(urls, metadata)
+    const wasAssetized = Boolean(listing?.attributes.photo_metadata?.length)
+      && listing!.attributes.photo_metadata!.every(item => item.asset_id)
+    const isAssetized = ordered.length ? ordered.every(item => item.asset_id) : wasAssetized
+    if (isAssetized) {
+      await save({
+        listing_images: ordered.map(item => ({
+          asset_id: item.asset_id,
+          position: item.position,
+          role: item.role,
+        })),
+      })
+      return
+    }
+    await save({ photos: urls, photo_metadata: ordered })
+  }
+
   async function submitAnswers() {
     const filled = Object.fromEntries(Object.entries(answers).filter(([, v]) => v.trim()))
     if (!Object.keys(filled).length) return
@@ -362,8 +401,16 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     if (!res.ok) {
       if (data.code === 'ML_NOT_CONNECTED') setNeedsML(true)
       setError(data.error || 'Falha ao aplicar as respostas.')
-    } else if (data.rejected?.length) {
-      setError(`Alguns valores não foram aceitos: ${data.rejected.join('; ')}`)
+    } else {
+      if (data.rejected?.length) {
+        setError(`Alguns valores não foram aceitos: ${data.rejected.join('; ')}`)
+      }
+      const validationResponse = await fetch(`/api/assertive/listings/${id}/validate`, { method: 'POST' })
+      if (!validationResponse.ok) {
+        const validationData = await validationResponse.json()
+        if (validationData.code === 'ML_NOT_CONNECTED') setNeedsML(true)
+        setError(validationData.error || 'As respostas foram salvas, mas a validação automática falhou.')
+      }
     }
     setAnswers({})
     await load()
@@ -378,38 +425,37 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     const res = await fetch('/api/assertive/upload', { method: 'POST', body: form })
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Falha no envio.'); setSaving(false); return }
-    await save({ photos: [...(listing.photos || []), ...data.urls].slice(0, 12) })
+    const uploadedMetadata = (data.urls as string[]).map((url, index) => {
+      const asset = Array.isArray(data.assets) ? data.assets[index] : null
+      return {
+        asset_id: asset?.rendition_asset_id as string | undefined,
+        parent_asset_id: asset?.original_asset_id as string | undefined,
+        url,
+        role: 'DETAIL' as const,
+        source: 'USER' as const,
+        source_ref: asset?.original_asset_id as string | undefined,
+        score: 200,
+        ai_enhanced: false,
+        fidelity_status: asset ? 'ACCEPT' as const : undefined,
+        label: asset ? 'Original normalizada' : undefined,
+        position: 0,
+      }
+    })
+    const urls = [...(listing.photos || []), ...(data.urls as string[])].slice(0, 12)
+    await saveGallery(urls, [...(listing.attributes.photo_metadata || []), ...uploadedMetadata])
   }
 
   async function removePhoto(url: string) {
     if (!listing) return
     const newPhotos = listing.photos.filter(p => p !== url)
-    const meta = listing.attributes.photo_metadata?.filter(m => m.url !== url)
-    await save({ photos: newPhotos })
-    if (meta) {
-      await fetch(`/api/assertive/listings/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attributes: { photo_metadata: meta } }),
-      })
-    }
+    const meta = listing.attributes.photo_metadata?.filter(m => m.url !== url) || []
+    await saveGallery(newPhotos, meta)
   }
 
   async function setPrincipalPhoto(url: string) {
     if (!listing) return
-    const meta = listing.attributes.photo_metadata
-    if (!meta) return
-    const newMeta = meta.map(m => ({
-      ...m,
-      role: m.url === url ? 'MAIN' : m.role === 'MAIN' ? 'DETAIL' : m.role,
-    }))
     const newPhotos = [url, ...listing.photos.filter(p => p !== url)]
-    await save({ photos: newPhotos })
-    await fetch(`/api/assertive/listings/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attributes: { photo_metadata: newMeta } }),
-    })
+    await saveGallery(newPhotos)
   }
 
   async function movePhoto(url: string, direction: 'up' | 'down') {
@@ -420,7 +466,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     if (newIdx < 0 || newIdx >= listing.photos.length) return
     const newPhotos = [...listing.photos]
     ;[newPhotos[idx], newPhotos[newIdx]] = [newPhotos[newIdx], newPhotos[idx]]
-    await save({ photos: newPhotos })
+    await saveGallery(newPhotos)
   }
 
   function handleDragStart(e: React.PointerEvent, index: number) {
@@ -442,7 +488,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     const [moved] = newPhotos.splice(dragState.dragging, 1)
     newPhotos.splice(dragState.over, 0, moved)
     setDragState({ dragging: null, over: null })
-    await save({ photos: newPhotos })
+    await saveGallery(newPhotos)
   }
 
   async function downloadImage(url: string, index: number) {
@@ -528,7 +574,17 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const attrs = listing.attributes?.list || []
   const missingRaw = listing.attributes?.missing || []
   const pubReqs = listing.attributes?.publication_requirements || listing.publication_requirements
-  const blockers = pubReqs?.blockers || []
+  const allBlockers = pubReqs?.blockers || []
+  const blockingQuestions = listing.attributes?.blocking_questions?.length
+    ? listing.attributes.blocking_questions.slice(0, 3)
+    : allBlockers.slice(0, 3).map(blocker => ({
+        field: blocker.attribute_id,
+        label: formatFieldName(blocker),
+        why: blocker.ml_message || getFieldReason(blocker.attribute_id),
+        suggestion: blocker.suggested_value?.value_name,
+        options: undefined,
+        blocking: true,
+      }))
   const accountWarnings = pubReqs?.account_warnings || []
   const scores = listing.scores
   const comp = listing.completeness
@@ -570,7 +626,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   // PREVIEW GATE: Se existem blockers que o Assertive não resolveu,
   // mostrar etapa simplificada "Preciso de você" em vez do editor completo.
   // ============================================================
-  const hasUnresolvedBlockers = blockers.length > 0 && !isPublished
+  const hasUnresolvedBlockers = allBlockers.length > 0 && !isPublished
   const filledCount = pubReqs?.filled_count || 0
   const totalCount = pubReqs?.total_attributes || 0
 
@@ -604,29 +660,40 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
               O Assertive já resolveu {filledCount} de {totalCount} informações automaticamente.
             </p>
             <p className="text-gray-300 text-sm mb-4">
-              Precisamos de você somente para {blockers.length}:
+              Nesta rodada, precisamos de você somente para {blockingQuestions.length}:
             </p>
 
             <div className="space-y-4">
-              {blockers.map(q => (
-                <div key={q.attribute_id} id={`attribute-${q.attribute_id}`}>
+              {blockingQuestions.map(q => (
+                <div key={q.field} id={`attribute-${q.field}`}>
                   <label className="block text-gray-300 text-sm mb-1 font-medium">
-                    {formatFieldName(q)}
+                    {q.label}
                   </label>
                   <p className="text-gray-500 text-xs mb-2">
-                    {getFieldReason(q.attribute_id)}
+                    {q.why}
                   </p>
-                  {q.suggested_value && (
+                  {q.suggestion && (
                     <p className="text-amber-400/70 text-xs mb-1">
-                      Valor sugerido pelo ML: {q.suggested_value.value_name}
+                      Valor sugerido pelo ML: {q.suggestion}
                     </p>
                   )}
-                  <input
-                    value={answers[q.attribute_id] ?? ''}
-                    onChange={e => setAnswers(a => ({ ...a, [q.attribute_id]: e.target.value }))}
-                    placeholder={q.ml_message || `Informe ${q.name}`}
-                    className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
-                  />
+                  {q.options?.length ? (
+                    <select
+                      value={answers[q.field] ?? ''}
+                      onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
+                      className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-amber-500/50"
+                    >
+                      <option value="">Selecione o valor correto</option>
+                      {q.options.map(option => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  ) : (
+                    <input
+                      value={answers[q.field] ?? ''}
+                      onChange={e => setAnswers(a => ({ ...a, [q.field]: e.target.value }))}
+                      placeholder={q.suggestion || `Informe ${q.label}`}
+                      className="w-full bg-[#1c1c1c] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -844,6 +911,15 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                       {meta && meta.source !== 'USER' && (
                         <span className="absolute top-1 right-1 text-[9px] px-1 py-0.5 rounded bg-black/60 text-gray-300">
                           {meta.source === 'COMPETITOR' ? 'Ref.' : meta.source === 'AI_ENHANCED' ? 'IA' : 'Gen.IA'}
+                        </span>
+                      )}
+
+                      {meta?.label && (
+                        <span
+                          title={meta.label}
+                          className="absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate text-[9px] px-1.5 py-0.5 rounded bg-black/70 text-white"
+                        >
+                          {meta.label}
                         </span>
                       )}
 
@@ -1292,7 +1368,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             )}
 
             {/* melhorias opcionais — aparece quando não há blockers e há missing */}
-            {(missing.length > 0 && blockers.length === 0) && !isPublished && (
+            {(missing.length > 0 && allBlockers.length === 0) && !isPublished && (
               <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 flex flex-col" style={{ maxHeight: 'min(70vh, 600px)' }}>
                 <button
                   onClick={() => setOpenSection(openSection === 'missing' ? null : 'missing')}

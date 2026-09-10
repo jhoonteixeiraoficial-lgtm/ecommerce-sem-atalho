@@ -1,12 +1,12 @@
 import type { AIConfig } from './types'
-import type { ProductTruth, PendingQuestion } from './truth'
+import type { ProductTruth, PendingQuestion, DataStatus, TruthField } from './truth'
 import type { WinningListingDNA } from './dna'
 import type { ResearchResult } from './research'
 import type { ClassifiedAttribute, CategoryInfo } from './taxonomy'
 import { generateJson } from './ai'
-import { dnaToPrompt } from './dna'
 import { maxTitleLength, prioritizeAttributes } from './taxonomy'
-import { truthToPlainText } from './truth'
+import { buildCopyBrief } from './copy-brief'
+import { factualDescription as safeDescription, guardTitle, verifyDescriptionClaims } from './copy-guard'
 
 export interface ListingAttribute {
   id: string
@@ -15,6 +15,11 @@ export interface ListingAttribute {
   value_id?: string
   tier: string
   source: 'truth' | 'ai' | 'catalog' | 'user'
+  /** Optional only for persisted drafts created before evidence status existed. */
+  status?: DataStatus
+  evidence?: string
+  source_url?: string
+  isVariationOnly?: boolean
 }
 
 export interface ImagePlanStep {
@@ -327,7 +332,7 @@ function reconcileAttributes(
   const rejected: string[] = []
   const seen = new Set<string>()
 
-  const truthByAttr: Record<string, string> = {}
+  const truthByAttr: Record<string, TruthField> = {}
   const TRUTH_TO_ATTR: Record<string, string> = {
     brand: 'BRAND',
     model: 'MODEL',
@@ -348,10 +353,15 @@ function reconcileAttributes(
   }
   for (const [key, field] of Object.entries(truth.fields)) {
     const attrId = TRUTH_TO_ATTR[key]
-    if (attrId) truthByAttr[attrId] = field.value
+    if (attrId) truthByAttr[attrId] = field
   }
 
-  function push(id: string, rawValue: string, source: ListingAttribute['source']) {
+  function push(
+    id: string,
+    rawValue: string,
+    source: ListingAttribute['source'],
+    provenance?: Pick<ListingAttribute, 'status' | 'evidence' | 'source_url'>
+  ) {
     if (seen.has(id)) return
     const spec = byId.get(id)
     if (!spec) return
@@ -385,11 +395,21 @@ function reconcileAttributes(
       value_id,
       tier: spec.tier,
       source,
+      status: provenance?.status ?? (source === 'ai' ? 'NEEDS_CONFIRMATION' : undefined),
+      evidence: provenance?.evidence,
+      source_url: provenance?.source_url,
+      isVariationOnly: spec.isVariationOnly,
     })
   }
 
   // 1) fatos confirmados do produto têm prioridade sobre a IA
-  for (const [attrId, value] of Object.entries(truthByAttr)) push(attrId, value, 'truth')
+  for (const [attrId, field] of Object.entries(truthByAttr)) {
+    push(attrId, field.value, 'truth', {
+      status: field.status ?? (field.confidence === 'confirmed' ? 'CONFIRMED' : 'NEEDS_CONFIRMATION'),
+      evidence: field.evidence,
+      source_url: field.source_url,
+    })
+  }
   // 2) complementa com o que a IA derivou dos dados
   for (const g of generated) {
     if (g?.id && g?.value_name) push(String(g.id), String(g.value_name), 'ai')
@@ -463,15 +483,23 @@ export async function generateListing(input: GenerateInput): Promise<GeneratedLi
   const titleLimit = maxTitleLength(category)
   // limita o schema enviado à IA para controlar custo, mantendo os mais relevantes
   const schema = prioritizeAttributes(attributes).slice(0, 45)
+  const copyBrief = buildCopyBrief({
+    truth,
+    category,
+    keywords: [...(research.keywords || []), ...(dna.important_keywords || [])],
+    titleShapes: dna.title_patterns.length ? ['TIPO + MARCA + MODELO + DIFERENCIAL CONFIRMADO'] : [],
+    descriptionShapes: dna.description_structure,
+  })
 
-  const userPrompt = `PRODUTO A ANUNCIAR (fatos confirmados — não contradiga):
-${truthToPlainText(truth)}
+  const userPrompt = `BRIEF CONGELADO DO PRODUTO (use somente estes fatos na copy):
+${JSON.stringify(copyBrief)}
 
 CATEGORIA OFICIAL: ${category?.name || 'não determinada'} (${category?.id || 'sem id'})
 LIMITE DO TÍTULO: ${titleLimit} caracteres
 
-INTELIGÊNCIA DE MERCADO (dados reais do Mercado Livre):
-${dnaToPrompt(dna, research.competitors)}
+PADRÕES COMPETITIVOS PERMITIDOS (estrutura, nunca valores dos concorrentes):
+${copyBrief.benchmark_patterns.title_shapes.join(' | ') || 'sem padrão confiável'}
+${copyBrief.benchmark_patterns.description_shapes.join(' | ') || 'estrutura factual'}
 
 FICHA TÉCNICA DISPONÍVEL NESTA CATEGORIA (preencha o máximo possível COM EVIDÊNCIA):
 ${attributeSchemaForPrompt(schema)}
@@ -479,8 +507,8 @@ ${attributeSchemaForPrompt(schema)}
 TAREFA:
 1. Título de até ${titleLimit} caracteres, usando os termos realmente buscados, começando pelo tipo de produto e incluindo marca e modelo quando confirmados.
 2. Duas alternativas de título.
-3. family_name: nome do produto para o catálogo do ML. Incluir: tipo do produto, marca, linha/modelo e termos de busca importantes que o ML NÃO adiciona ao título automaticamente (ex: material se o ML não usa MATERIAL no título, tecnologia, etc). Excluir SOMENTE atributos que o ML comprovadamente acrescentará ao título final (ex: cor se o ML usa COLOR/MAIN_COLOR). Máximo 60 caracteres. Exemplo: "Cadeira Diretor Atlanta HomeNow Couro PU" (se MATERIAL não é auto-appended).
-4. Descrição original e profissional seguindo esta estrutura: ${dna.description_structure.join(' → ')}.
+3. family_name: nome factual do produto para o catálogo do ML, com tipo, marca e modelo protegidos. Máximo 60 caracteres.
+4. Descrição original e profissional. Omita garantia, certificação, compatibilidade, conteúdo da embalagem, medidas ou desempenho que não estejam no brief.
 5. Preencha os atributos com evidência. Os sem evidência vão para "missing" com uma pergunta clara.
 6. Plano de fotos adequado a este produto específico.
 7. Em "improvements", diga objetivamente o que este anúncio entrega a mais que as referências.
@@ -501,11 +529,26 @@ Tom: ${input.tone || 'profissional'}.`
   const raw = await generateJson<RawListing>(config, GENERATOR_SYSTEM, userPrompt, {
     temperature: 0.5,
     maxTokens: 6000,
+    workload: 'draft',
   })
 
-  const title = buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit)
-  const familyName = buildSemanticTitle(truth, String(raw.family_name || truth.name), 60)
-  const description = guardDescription(String(raw.description || ''), title, truth)
+  const rawTitleGuard = guardTitle(copyBrief, String(raw.title || truth.name), titleLimit)
+  const titleGuard = guardTitle(
+    copyBrief,
+    buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit),
+    titleLimit
+  )
+  const title = titleGuard.value
+  const rawFamilyGuard = guardTitle(copyBrief, String(raw.family_name || truth.name), 60)
+  const familyGuard = guardTitle(
+    copyBrief,
+    buildSemanticTitle(truth, String(raw.family_name || truth.name), 60),
+    60
+  )
+  const familyName = familyGuard.value
+  const proposedDescription = guardDescription(String(raw.description || ''), title, truth)
+  const descriptionGuard = verifyDescriptionClaims(proposedDescription, copyBrief)
+  const description = descriptionGuard.valid ? proposedDescription : safeDescription(copyBrief, title)
   const { attributes: reconciled, rejected } = reconcileAttributes(
     raw.attributes || [],
     truth,
@@ -539,6 +582,14 @@ Tom: ${input.tone || 'profissional'}.`
       : 'Não há ofertas ativas suficientes nas referências para sugerir um preço com segurança. Defina o preço manualmente.'
 
   const improvements = (raw.improvements || []).map(String).filter(Boolean)
+  const guardReasons = [...new Set([
+    ...titleGuard.reason_codes,
+    ...rawTitleGuard.reason_codes,
+    ...familyGuard.reason_codes,
+    ...rawFamilyGuard.reason_codes,
+    ...descriptionGuard.reason_codes,
+  ])]
+  if (guardReasons.length) improvements.push(`COPY_GUARD: ${guardReasons.join(', ')}`)
   if (rejected.length) {
     improvements.push(
       `${rejected.length} valor(es) de atributo foram descartados por não existirem na lista oficial do Mercado Livre — o anúncio não publica dado inválido.`
@@ -548,7 +599,9 @@ Tom: ${input.tone || 'profissional'}.`
   return {
     title,
     title_alternatives: (raw.title_alternatives || [])
-      .map(t => buildSemanticTitle(truth, String(t), titleLimit))
+      .map(t => guardTitle(copyBrief, buildSemanticTitle(truth, String(t), titleLimit), titleLimit))
+      .filter(result => result.accepted)
+      .map(result => result.value)
       .filter(t => t && t !== title)
       .filter((alternative, index, alternatives) => alternatives.indexOf(alternative) === index)
       .slice(0, 2),

@@ -33,4 +33,19 @@ describe('Assertive input types migration', () => {
     expect(sql).toContain('DROP CONSTRAINT IF EXISTS assertive_analyses_input_type_check')
     expect(sql).toContain('ADD CONSTRAINT assertive_analyses_input_type_check')
   })
+
+  it('cria ativos imutáveis, operações e posições únicas de imagens', () => {
+    const sql = readFileSync(
+      resolve(process.cwd(), 'supabase/migrations/20260909180000_assertive_image_assets.sql'),
+      'utf8'
+    )
+
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS assertive_image_assets')
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS assertive_image_operations')
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS assertive_listing_images')
+    expect(sql).toContain('UNIQUE (listing_id, position)')
+    expect(sql).toContain("'REFERENCE_ONLY'")
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION assertive_replace_listing_images')
+    expect(sql).toContain('REVOKE ALL ON FUNCTION assertive_replace_listing_images')
+  })
 })

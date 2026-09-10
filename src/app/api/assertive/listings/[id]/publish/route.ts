@@ -3,18 +3,13 @@ import { requireCommunityUser, readJson } from '@/app/api/community/helpers'
 import { createAdminClient } from '@/lib/supabase/admin'
 import {
   requireMLToken,
-  getSellerCapabilities,
-  buildItemPayload,
   validateListing,
   publishListing,
   MLNotConnectedError,
   type MLItemPayload,
-  type SellerCapabilities,
-  type ValidationIssue,
 } from '@/lib/assertive/publisher'
 import { mlGet } from '@/lib/assertive/ml-api'
 import { payloadHash } from '@/lib/assertive/publication-readiness'
-import type { ListingAttribute } from '@/lib/assertive/generator'
 import { z } from 'zod'
 
 export const runtime = 'nodejs'
@@ -134,38 +129,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // ---------------------------------------------------------------- PRE-FLIGHT
   try {
-    const token = await requireMLToken(authorizedUser.id)
-    const capabilities = await getSellerCapabilities(token)
-
-    const payload = buildItemPayload(
-      {
-        title: listing.title,
-        family_name: listing.family_name,
-        category_id: listing.category_id,
-        price: Number(listing.price),
-        available_quantity: listing.available_quantity || 1,
-        condition: listing.condition || 'new',
-        listing_type_id: listing.listing_type_id || 'gold_special',
-        attributes: (listing.attributes?.list || []) as ListingAttribute[],
-        pictures: (listing.photos || []) as string[],
-      },
-      capabilities
+    const payload = listing.validated_payload as MLItemPayload | null
+    const snapshotIsCurrent = Boolean(
+      listing.status === 'ready_to_publish'
+      && listing.validation?.valid === true
+      && listing.attributes?.publication_requirements?.all_clear === true
+      && payload
+      && listing.validated_payload_hash
+      && payloadHash(payload) === listing.validated_payload_hash
     )
 
-    let validation = await validateListing(token, payload)
-
-    if (!validation.valid) {
-      const autoFixed = await autoResolveBlockers(token, payload, validation.issues, capabilities)
-      if (autoFixed.changed) {
-        validation = await validateListing(token, payload)
-      }
+    if (!snapshotIsCurrent || !payload) {
+      return Response.json(
+        { error: 'O anúncio mudou ou não possui validação vigente. Valide novamente antes de publicar.', code: 'REVALIDATION_REQUIRED' },
+        { status: 409 }
+      )
     }
+
+    const token = await requireMLToken(authorizedUser.id)
+    const validation = await validateListing(token, payload)
 
     if (!validation.valid) {
       await supabase
         .from('assertive_listings')
         .update({
           validation: { valid: false, checked_at: new Date().toISOString(), issues: validation.issues },
+          validated_payload: null,
+          validated_payload_hash: null,
+          status: 'needs_input',
           updated_at: new Date().toISOString(),
         })
         .eq('id', id)
@@ -184,7 +175,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // ---------------------------------------------------------------- ATOMIC LOCK
-    const validatedHash = payloadHash(payload)
     const attemptId = crypto.randomUUID()
 
     // Acquire lock atomicamente: só atualiza se não está publishing
@@ -194,13 +184,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         status: 'publishing',
         publishing_started_at: new Date().toISOString(),
         publishing_attempt_id: attemptId,
-        validated_payload_hash: validatedHash,
-        validated_payload: payload,
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
       .eq('user_id', authorizedUser.id)
-      .neq('status', 'publishing')
+      .eq('status', 'ready_to_publish')
+      .is('ml_item_id', null)
+      .eq('validated_payload_hash', listing.validated_payload_hash)
       .select('id')
       .single()
 
@@ -221,7 +211,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const msg = publishError instanceof Error ? publishError.message : 'Falha ao publicar.'
       await releaseLock(supabase, id, authorizedUser.id, {
         last_publication_error: msg,
-        validated_payload: payload,
       })
       return Response.json({ error: msg }, { status: 500 })
     }
@@ -230,7 +219,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       await releaseLock(supabase, id, authorizedUser.id, {
         validation: { valid: false, checked_at: new Date().toISOString(), issues: result.issues || [] },
         last_publication_error: result.error,
-        validated_payload: payload,
         ml_response: result,
       })
       return Response.json({ error: result.error, issues: result.issues }, { status: 422 })
@@ -255,7 +243,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const authoritativeItemId = marketplaceItem?.id || result.item_id
     const authoritativePermalink = marketplaceItem?.permalink || result.permalink
     const authoritativeStatus = marketplaceItem?.status || result.status || 'active'
-    const titleControlMode = listing.attributes?.title_control_mode || (capabilities?.user_product_model ? 'user_product' : 'seller')
+    const titleControlMode = listing.attributes?.title_control_mode || 'seller'
 
     await supabase
       .from('assertive_listings')
@@ -275,7 +263,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         publication_status: authoritativeStatus,
         publishing_started_at: null,
         publishing_attempt_id: null,
-        validated_payload: payload,
         attributes: {
           ...(listing.attributes || {}),
           ml_final_title: mlFinalTitle,
@@ -309,48 +296,4 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     return Response.json({ error: message }, { status: 500 })
   }
-}
-
-// ---------------------------------------------------------------- auto-resolve blockers
-
-async function autoResolveBlockers(
-  token: string,
-  payload: MLItemPayload,
-  issues: ValidationIssue[],
-  capabilities: SellerCapabilities
-): Promise<{ changed: boolean }> {
-  let changed = false
-
-  for (const issue of issues) {
-    if (issue.severity !== 'error') continue
-
-    if (
-      (issue.code?.includes('GTIN') || issue.attribute_ids?.includes('GTIN')) &&
-      !payload.attributes.some(a => a.id === 'GTIN' && a.value_name && !['Na', 'N/A', ''].includes(a.value_name))
-    ) {
-      const gtinAttr = payload.attributes.find(a => a.id === 'GTIN')
-      if (!gtinAttr || !gtinAttr.value_name || /^(na|n\/a|0+)$/i.test(gtinAttr.value_name)) {
-        payload.attributes = payload.attributes.filter(a => a.id !== 'GTIN' && a.id !== 'EMPTY_GTIN_REASON')
-        changed = true
-      }
-    }
-
-    if (issue.attribute_ids?.some(id => id.startsWith('SELLER_PACKAGE_')) && capabilities.user_product_model) {
-      continue
-    }
-
-    if (issue.suggested_value && issue.attribute_id) {
-      const existing = payload.attributes.find(a => a.id === issue.attribute_id)
-      if (!existing || !existing.value_name) {
-        payload.attributes.push({
-          id: issue.attribute_id,
-          value_id: issue.suggested_value.value_id,
-          value_name: issue.suggested_value.value_name,
-        })
-        changed = true
-      }
-    }
-  }
-
-  return { changed }
 }

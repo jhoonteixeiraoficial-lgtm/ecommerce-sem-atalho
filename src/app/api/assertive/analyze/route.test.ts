@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   updated: null as Record<string, unknown> | null,
   identifyProduct: vi.fn(),
   observeAnalysisStage: vi.fn(),
+  getOwnedAssets: vi.fn(),
 }))
 
 vi.mock('server-only', () => ({}))
@@ -24,6 +25,10 @@ vi.mock('@/lib/assertive/pipeline', () => ({
 }))
 vi.mock('@/lib/assertive/observability', () => ({
   observeAnalysisStage: mocks.observeAnalysisStage,
+}))
+vi.mock('@/lib/assertive/image-assets', () => ({
+  getOwnedAssets: mocks.getOwnedAssets,
+  isPublicationAssetAllowed: (asset: { public_url?: string; fidelity_status?: string }) => Boolean(asset.public_url) && asset.fidelity_status === 'ACCEPT',
 }))
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
@@ -76,6 +81,7 @@ describe('POST /api/assertive/analyze', () => {
     mocks.updated = null
     mocks.identifyProduct.mockResolvedValue(truth)
     mocks.observeAnalysisStage.mockImplementation(async (_context, task) => task())
+    mocks.getOwnedAssets.mockResolvedValue([])
   })
 
   it.each([
@@ -116,5 +122,29 @@ describe('POST /api/assertive/analyze', () => {
     )
     expect(mocks.updated).toMatchObject({ product_name: truth.name, product_truth: truth, status: 'researching' })
     expect(mocks.inserted?.input_data).toMatchObject(body)
+  })
+
+  it('resolve somente assets pertencentes ao usuário para a análise por foto', async () => {
+    mocks.body = { input_type: 'single_image', photo_asset_ids: ['rendition-1'] }
+    mocks.getOwnedAssets.mockResolvedValue([{ id: 'rendition-1', public_url: 'https://cdn.example/rendition.jpg', fidelity_status: 'ACCEPT' }])
+
+    const response = await POST(new Request('http://localhost/analyze', { method: 'POST' }) as never)
+
+    expect(response.status).toBe(200)
+    expect(mocks.getOwnedAssets).toHaveBeenCalledWith('user-1', ['rendition-1'])
+    expect(mocks.identifyProduct).toHaveBeenCalledWith(null, {
+      type: 'single_image', photos: ['https://cdn.example/rendition.jpg'], context: undefined,
+    }, 'token')
+    expect(mocks.inserted?.input_data).toMatchObject({ photo_asset_ids: ['rendition-1'] })
+  })
+
+  it('rejeita asset ausente ou de outro usuário', async () => {
+    mocks.body = { input_type: 'single_image', photo_asset_ids: ['foreign-asset'] }
+    mocks.getOwnedAssets.mockResolvedValue([])
+
+    const response = await POST(new Request('http://localhost/analyze', { method: 'POST' }) as never)
+
+    expect(response.status).toBe(400)
+    expect(mocks.identifyProduct).not.toHaveBeenCalled()
   })
 })

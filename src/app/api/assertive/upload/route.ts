@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server'
 import { requireCommunityUser } from '@/app/api/community/helpers'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { createHash, randomUUID } from 'node:crypto'
+import { createDerivedAsset, createOriginalAsset } from '@/lib/assertive/image-assets'
+import { normalizeProductImage } from '@/lib/assertive/image-normalization'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -37,47 +39,91 @@ export async function POST(req: NextRequest) {
   if (!files.length) return Response.json({ error: 'Nenhuma foto enviada.' }, { status: 400 })
   if (files.length > 8) return Response.json({ error: 'Envie no máximo 8 fotos.' }, { status: 400 })
 
-  const supabase = createAdminClient()
-  const urls: string[] = []
+  const prepared: Array<{
+    bytes: Buffer
+    type: string
+    extension: string
+    originalHash: string
+    normalized: Awaited<ReturnType<typeof normalizeProductImage>>
+  }> = []
 
+  // Decodifica tudo antes de persistir para não deixar um lote parcialmente válido.
   for (const file of files) {
     if (file.size === 0) continue
     if (file.size > MAX_BYTES) {
       return Response.json({ error: `"${file.name}" excede 12MB.` }, { status: 400 })
     }
 
-    // navegadores mobile às vezes enviam type vazio: detecta pela extensão
     let type = file.type
     if (!ALLOWED.has(type)) {
       const guessed = file.name.toLowerCase().match(/\.(jpe?g|png|webp|heic|heif)$/)?.[1]
       type = guessed === 'jpg' || guessed === 'jpeg' ? 'image/jpeg' : guessed ? `image/${guessed}` : ''
     }
     if (!ALLOWED.has(type)) {
-      return Response.json(
-        { error: 'Formato não suportado. Envie JPG, PNG ou WebP.' },
-        { status: 400 }
-      )
+      return Response.json({ error: 'Formato não suportado. Envie JPG, PNG, WebP ou HEIC.' }, { status: 400 })
     }
 
     const bytes = Buffer.from(await file.arrayBuffer())
-    const path = `${authorizedUser.id}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${EXT[type]}`
+    try {
+      prepared.push({
+        bytes,
+        type,
+        extension: EXT[type],
+        originalHash: createHash('sha256').update(bytes).digest('hex'),
+        normalized: await normalizeProductImage(bytes),
+      })
+    } catch {
+      return Response.json({ error: `"${file.name}" não é uma imagem válida.` }, { status: 400 })
+    }
+  }
 
-    const { error } = await supabase.storage
-      .from('assertive')
-      .upload(path, bytes, { contentType: type, upsert: false })
+  const urls: string[] = []
+  const assets: Array<{ original_asset_id: string; rendition_asset_id: string; preview_url: string }> = []
 
-    if (error) {
+  for (const item of prepared) {
+    try {
+      const keyPrefix = `${authorizedUser.id}/${randomUUID()}`
+      const original = await createOriginalAsset({
+        user_id: authorizedUser.id,
+        bytes: item.bytes,
+        mime_type: item.type,
+        width: item.normalized.source.width!,
+        height: item.normalized.source.height!,
+        sha256: item.originalHash,
+        storage_key: `${keyPrefix}/original.${item.extension}`,
+      })
+      const renditionHash = createHash('sha256').update(item.normalized.buffer).digest('hex')
+      const rendition = await createDerivedAsset({
+        user_id: authorizedUser.id,
+        bytes: item.normalized.buffer,
+        mime_type: item.normalized.mime_type,
+        width: item.normalized.width,
+        height: item.normalized.height,
+        sha256: renditionHash,
+        parent_asset_id: original.id,
+        kind: 'PUBLICATION_RENDITION',
+        storage_key: `${keyPrefix}/normalized-${renditionHash.slice(0, 16)}.jpg`,
+        provider: 'local',
+        model: 'sharp-v1',
+        fidelity_status: 'ACCEPT',
+        metadata: { operation: 'NORMALIZE', source_sha256: item.originalHash },
+      })
+      if (!rendition.public_url) throw new Error('URL pública da rendição ausente')
+      urls.push(rendition.public_url)
+      assets.push({
+        original_asset_id: original.id,
+        rendition_asset_id: rendition.id,
+        preview_url: rendition.public_url,
+      })
+    } catch (error) {
       return Response.json(
-        { error: `Falha ao salvar a foto: ${error.message}` },
+        { error: `Falha ao salvar a foto: ${error instanceof Error ? error.message : 'erro desconhecido'}` },
         { status: 500 }
       )
     }
-
-    const { data } = supabase.storage.from('assertive').getPublicUrl(path)
-    urls.push(data.publicUrl)
   }
 
   if (!urls.length) return Response.json({ error: 'Nenhuma foto válida.' }, { status: 400 })
 
-  return Response.json({ urls })
+  return Response.json({ assets, urls })
 }

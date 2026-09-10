@@ -16,6 +16,7 @@ const taxonomy = vi.hoisted(() => ({
         { id: 'SABOR', name: 'Sabor', value_type: 'string', tier: 'required', tags: { required: true } },
         { id: 'FORMATO_DO_SUCO', name: 'Formato do suco', value_type: 'string', tier: 'required', tags: { required: true } },
       ]),
+  getCategorySaleTerms: vi.fn().mockResolvedValue([]),
   classifyAttributes: vi.fn((attrs: Array<Record<string, unknown>>) => attrs.map(attr => ({
     ...attr,
     fixedValues: false,

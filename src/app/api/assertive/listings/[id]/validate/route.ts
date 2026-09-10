@@ -6,53 +6,17 @@ import {
   buildItemPayload,
   validateListing,
   MLNotConnectedError,
-  type ValidationIssue,
 } from '@/lib/assertive/publisher'
 import { resolveCategoryContext, recomputeListing } from '@/lib/assertive/pipeline'
 import { computeEffectiveRequirements } from '@/lib/assertive/publication-requirements'
 import { payloadHash } from '@/lib/assertive/publication-readiness'
 import type { ListingAttribute } from '@/lib/assertive/generator'
-import type { ClassifiedAttribute } from '@/lib/assertive/taxonomy'
 import type { EnrichedAttribute } from '@/lib/assertive/enrichment'
+import { publishableAttributes } from '@/lib/assertive/attribute-evidence'
+import { buildBlockingQuestions } from '@/lib/assertive/blocking-questions'
 
 export const runtime = 'nodejs'
 export const maxDuration = 90
-
-interface MissingQuestion {
-  field: string
-  label: string
-  why: string
-  options?: string[]
-}
-
-/** Converte atributos citados pela validação em perguntas objetivas ao vendedor. */
-function issuesToQuestions(
-  issues: ValidationIssue[],
-  schema: ClassifiedAttribute[],
-  filled: ListingAttribute[]
-): MissingQuestion[] {
-  const byId = new Map(schema.map(a => [a.id, a]))
-  const filledIds = new Set(filled.map(a => a.id))
-  const out: MissingQuestion[] = []
-  const seen = new Set<string>()
-
-  for (const issue of issues) {
-    if (issue.severity !== 'error') continue
-    for (const id of issue.attribute_ids || []) {
-      if (filledIds.has(id) || seen.has(id)) continue
-      const spec = byId.get(id)
-      if (!spec) continue
-      seen.add(id)
-      out.push({
-        field: id,
-        label: spec.name,
-        why: issue.message,
-        options: spec.values?.slice(0, 15).map(v => v.name),
-      })
-    }
-  }
-  return out
-}
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireCommunityUser()
@@ -115,7 +79,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
           available_quantity: listing.available_quantity || 1,
           condition: listing.condition || 'new',
           listing_type_id: listing.listing_type_id || 'gold_special',
-          attributes,
+          attributes: publishableAttributes(attributes),
           pictures: (listing.photos || []) as string[],
         },
         capabilities ?? null
@@ -164,6 +128,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
           value_id,
           tier: spec?.tier || 'recommended',
           source: 'catalog',
+          status: 'AUTO_FILLED',
+          evidence: `Valor sugerido pela validação oficial do Mercado Livre (${s.code})`,
         })
         autoApplied.push(spec?.name || attrId)
         payloadChanged = true
@@ -182,27 +148,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         .eq('user_id', authorizedUser.id)
     }
 
-    const questions = issuesToQuestions(result.issues, schema, attributes)
-
-    // perguntas vindas da validação entram na fila de campos faltantes
-    if (questions.length) {
-      const existing = (listing.attributes?.missing || []) as MissingQuestion[]
-      const merged = [...questions, ...existing.filter(e => !questions.some(q => q.field === e.field))]
-      await supabase
-        .from('assertive_listings')
-        .update({
-          attributes: { ...(listing.attributes || {}), list: attributes, missing: merged },
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .eq('user_id', authorizedUser.id)
-    }
-
-    const effectiveAttributes: EnrichedAttribute[] = attributes.map(attribute => ({
-      ...attribute,
-      status: attribute.source === 'user' ? 'USER_OVERRIDE' : 'CONFIRMED',
-    }))
+    const effectiveAttributes = attributes as EnrichedAttribute[]
     const publicationRequirements = computeEffectiveRequirements(schema, result.issues, effectiveAttributes)
+    const blockingQuestions = buildBlockingQuestions(publicationRequirements, schema, attributes)
     const validatedPayload = build()
     const readyToPublish = result.valid && publicationRequirements.all_clear
     const validation = {
@@ -213,6 +161,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       issues: result.issues,
       auto_applied: autoApplied,
       account_model: capabilities?.user_product_model ? 'user_product' : 'classic',
+      blocking_questions: blockingQuestions,
     }
 
     await recomputeListing(id, authorizedUser.id).catch(() => null)
@@ -225,6 +174,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
           ...(listing.attributes || {}),
           list: attributes,
           publication_requirements: publicationRequirements,
+          blocking_questions: blockingQuestions,
         },
         validated_payload: readyToPublish ? validatedPayload : null,
         validated_payload_hash: readyToPublish ? payloadHash(validatedPayload) : null,

@@ -72,6 +72,32 @@ describe('listing generator semantic guards', () => {
     expect(result.title).toBe('Caneta de Polaridade Kitest KA250 12V 24V')
   })
 
+  it('registra fallback quando a IA troca Caneta por Canela', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Testador Circuito Kitest KA250 Canela Polaridade 12V 24V',
+      title_alternatives: [],
+      family_name: 'Testador Kitest KA250 Canela Polaridade',
+      description: 'Caneta de polaridade para verificação elétrica.',
+      attributes: [],
+      missing: [],
+      image_plan: [],
+      improvements: [],
+    })
+
+    const result = await generateListing({
+      config: null,
+      truth,
+      research,
+      dna: dna('EXACT_PRODUCT'),
+      category: { id: 'MLB60658', name: 'Ferramentas', path_from_root: [], settings: { max_title_length: 60 } },
+      attributes: [],
+    })
+
+    expect(result.title).toContain('Caneta')
+    expect(result.title).not.toContain('Canela')
+    expect(result.improvements).toEqual(expect.arrayContaining([expect.stringContaining('COPY_GUARD')]))
+  })
+
   it('remove medida inventada mesmo quando tipo, marca e modelo estão corretos', async () => {
     generateJson.mockResolvedValue({
       title: 'Caneta de Polaridade Kitest KA250 48V',
@@ -174,5 +200,47 @@ describe('listing generator semantic guards', () => {
     expect(result.family_name).toContain('Kitest KA250')
     expect(result.family_name).not.toContain('Vonder')
     expect(result.title_alternatives.join(' ')).not.toContain('Vonder')
+  })
+
+  it('preserva o status não publicável de um atributo inferido', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Caneta de Polaridade Kitest KA250',
+      title_alternatives: [],
+      family_name: 'Caneta de Polaridade Kitest KA250',
+      description: 'Caneta de polaridade para verificação elétrica.',
+      attributes: [{ id: 'COLOR', value_name: 'Preto' }],
+      missing: [],
+      image_plan: [],
+      improvements: [],
+    })
+    const inferredTruth: ProductTruth = {
+      ...truth,
+      fields: {
+        ...truth.fields,
+        color: {
+          value: 'Preto',
+          confidence: 'high',
+          source: 'inference',
+          evidence: 'Aparência provável',
+          status: 'NEEDS_CONFIRMATION',
+        },
+      },
+    }
+
+    const result = await generateListing({
+      config: null,
+      truth: inferredTruth,
+      research,
+      dna: dna('EXACT_PRODUCT'),
+      category: { id: 'MLB60658', name: 'Ferramentas', path_from_root: [] },
+      attributes: [{
+        id: 'COLOR', name: 'Cor', value_type: 'string', tier: 'required',
+        fixedValues: false, isVariationOnly: false, readOnly: false,
+      }],
+    })
+
+    expect(result.attributes).toEqual([
+      expect.objectContaining({ id: 'COLOR', status: 'NEEDS_CONFIRMATION' }),
+    ])
   })
 })

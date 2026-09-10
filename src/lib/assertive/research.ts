@@ -2,6 +2,7 @@ import { mlGet, mapLimitSettled, SITE_ID } from './ml-api'
 import { discoverDomain, getCategory, getCategoryTrends, type DomainSuggestion } from './taxonomy'
 import { evaluateMatch, buildCompetitorMatrix, type MatchClass, type MatrixKey } from './matching'
 import type { ProductTruth } from './truth'
+import { buildBenchmarkSet, type BenchmarkSet } from './benchmark'
 
 const HOUR = 3600
 const SIX_HOURS = 21600
@@ -170,6 +171,8 @@ export interface ResearchResult {
   category_source: 'url_source' | 'category_hint' | 'domain_discovery' | 'sanity_reresolution'
   keywords: string[]
   competitors: CompetitorDossier[]
+  /** Optional only for research snapshots persisted before benchmark provenance existed. */
+  benchmark?: BenchmarkSet
   /** Produtos de catálogo são fonte técnica; só ofertas reais entram em competitors. */
   catalog_matches: CatalogMatch[]
   candidates_found: number
@@ -584,6 +587,7 @@ export async function researchMarket(
       category_resolution: categoryResolution,
       keywords: [],
       competitors: [],
+      benchmark: buildBenchmarkSet([]),
       catalog_matches: [],
       candidates_found: 0,
       price_stats: null,
@@ -692,6 +696,7 @@ export async function researchMarket(
     category_source: categorySource,
     keywords,
     competitors,
+    benchmark: buildBenchmarkSet(competitors),
     catalog_matches: catalogMatches,
     candidates_found: candidateIds.size,
     price_stats: prices.length

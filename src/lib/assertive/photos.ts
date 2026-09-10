@@ -1,13 +1,18 @@
 import type { AIConfig } from './types'
 import type { ResearchResult } from './research'
 import type { ProductTruth } from './truth'
-import { runTaskJson } from './ai-router'
+import { runTaskJson, runVisionBatches } from './ai-router'
 import { getPhotoRequirements } from './category-photos'
+import { z } from 'zod'
 
 export type PhotoRole = 'MAIN' | 'DETAIL' | 'PACKAGING' | 'LIFESTYLE' | 'INFORMATIONAL'
 export type PhotoSource = 'USER' | 'COMPETITOR' | 'SOURCE_URL' | 'AI_ENHANCED' | 'AI_GENERATED'
 
 export interface PhotoMeta {
+  asset_id?: string
+  parent_asset_id?: string
+  fidelity_status?: 'ACCEPT' | 'REVIEW' | 'REJECT'
+  label?: string
   url: string
   role: PhotoRole
   source: PhotoSource
@@ -19,14 +24,22 @@ export interface PhotoMeta {
 }
 
 interface ClassificationResult {
-  url: string
+  url?: string
   role: PhotoRole
   is_duplicate: boolean
   duplicate_of?: number
   quality: number
 }
 
-const ROLE_PROMPT = `Analise cada imagem de produto abaixo e classifique. Para cada URL retorne:
+const classificationSchema = z.array(z.object({
+  url: z.string().optional(),
+  role: z.enum(['MAIN', 'DETAIL', 'PACKAGING', 'LIFESTYLE', 'INFORMATIONAL']),
+  is_duplicate: z.boolean(),
+  duplicate_of: z.number().int().nonnegative().optional(),
+  quality: z.number().min(0).max(100),
+}))
+
+const ROLE_PROMPT = `Analise cada imagem de produto anexada abaixo e classifique. Para cada posição retorne:
 - role: MAIN (fundo branco, produto centralizado, sem texto), DETAIL (close-up, detalhe tecnico, traseira, lateral), PACKAGING (embalagem, caixa, conteudo), LIFESTYLE (produto em uso, ambientado), INFORMATIONAL (texto, dimensoes, comparativo, diagrama)
 - is_duplicate: true se for visualmente muito similar a outra imagem ja listada (mesmo angulo, mesma composicao)
 - duplicate_of: indice (0-based) da imagem que e duplicata, se is_duplicate=true
@@ -34,8 +47,8 @@ const ROLE_PROMPT = `Analise cada imagem de produto abaixo e classifique. Para c
 
 Classifique por POSICAO na lista (0, 1, 2...). Seja preciso: fundo branco = MAIN, embalagem = PACKAGING, texto/diagrama = INFORMATIONAL.`
 
-function buildClassificationPrompt(urls: string[]): string {
-  const list = urls.map((u, i) => `[${i}] ${u}`).join('\n')
+function buildClassificationPrompt(count: number): string {
+  const list = Array.from({ length: count }, (_, i) => `[${i}] anexo ${i + 1}`).join('\n')
   return `${ROLE_PROMPT}\n\nImagens:\n${list}`
 }
 
@@ -141,26 +154,15 @@ export async function collectAndClassifyPhotos(
   const byStrength = [...research.competitors].sort(
     (a, b) => b.competitive_reference_strength - a.competitive_reference_strength
   )
-  const referenceCandidates = byStrength
+  const competitorReferenceCandidates = byStrength
     .filter(candidate => candidate.match_class === 'EXACT_PRODUCT')
     .reduce((total, candidate) => total + candidate.pictures.length, 0)
 
-  const seen = new Set<string>()
-  const candidates: Array<{ url: string; ref: string; matchClass: string }> = []
-
-  // P0.7: FASE 0 — fotos da source URL (INPUT_SOURCE_EXACT)
-  // Prioridade máxima: são do próprio produto selecionado.
-  if (sourceUrlIdentityMatch === 'HIGH') {
-    for (const u of sourceUrlPhotos) {
-      if (!seen.has(u)) {
-        seen.add(u)
-        candidates.push({ url: u, ref: 'source_url', matchClass: 'SOURCE_URL' })
-      }
-    }
-  }
-
-  const totalFound = candidates.length
-  if (totalFound === 0 && userPhotos.length === 0) {
+  const referenceCandidates = competitorReferenceCandidates
+    + (sourceUrlIdentityMatch === 'HIGH' ? new Set(sourceUrlPhotos).size : 0)
+  const uniqueUserPhotos = [...new Set(userPhotos.filter(Boolean))].slice(0, 12)
+  const totalFound = uniqueUserPhotos.length
+  if (totalFound === 0) {
     return {
       photos: [],
       stats: {
@@ -185,24 +187,27 @@ export async function collectAndClassifyPhotos(
     }
   }
 
-  // 2. Classify via AI (if enough images and config available)
+  // Classifica somente imagens publicáveis do vendedor. Referências externas
+  // informam a estratégia, mas direitos de uso nunca são presumidos.
   let classifications: ClassificationResult[] = []
-  const maxClassify = 24
-  const toClassify = candidates.slice(0, maxClassify)
-
-  if (config && toClassify.length >= 2) {
+  if (uniqueUserPhotos.length >= 2) {
     try {
-      const prompt = buildClassificationPrompt(toClassify.map(c => c.url))
-      const result = await runTaskJson<ClassificationResult[]>(
-        'attribute_enrichment',
-        config,
-        'Classificador de imagens de produto. Retorne APENAS o JSON array, sem texto adicional.',
-        prompt,
-        { maxTokens: 3000, temperature: 0.1 }
-      )
-      if (Array.isArray(result)) {
-        classifications = result.slice(0, toClassify.length)
-      }
+      const batches = await runVisionBatches({
+        images: uniqueUserPhotos,
+        batchSize: 4,
+        execute: async batch => {
+          const result = await runTaskJson<ClassificationResult[]>(
+            'image_classification',
+            config,
+            'Classificador de imagens de produto. Retorne APENAS o JSON array, sem texto adicional.',
+            buildClassificationPrompt(batch.length),
+            { images: batch, maxTokens: 1200, temperature: 0.1 }
+          )
+          const parsed = classificationSchema.safeParse(result)
+          return parsed.success ? parsed.data.slice(0, batch.length) : []
+        },
+      })
+      classifications = batches.flat()
     } catch {
       // AI classification unavailable — use heuristics
     }
@@ -210,55 +215,24 @@ export async function collectAndClassifyPhotos(
 
   // 3. Build PhotoMeta array
   const photos: PhotoMeta[] = []
-  let fromExact = 0
   let dedupCount = 0
   const usedUrls = new Set<string>()
 
   // User photos first (highest priority)
-  for (let i = 0; i < userPhotos.length; i++) {
-    const url = userPhotos[i]
+  for (let i = 0; i < uniqueUserPhotos.length; i++) {
+    const url = uniqueUserPhotos[i]
     if (usedUrls.has(url)) continue
-    usedUrls.add(url)
-    photos.push({
-      url,
-      role: i === 0 ? 'MAIN' : 'DETAIL',
-      source: 'USER',
-      score: 200 + (i === 0 ? 10 : 0),
-      ai_enhanced: false,
-      position: photos.length,
-    })
-  }
-
-  // Fotos oficiais da fonte identificada
-  for (let i = 0; i < toClassify.length; i++) {
-    const candidate = toClassify[i]
-    if (usedUrls.has(candidate.url)) {
-      dedupCount++
-      continue
-    }
-
     const cls = classifications[i]
     if (cls?.is_duplicate) {
       dedupCount++
       continue
     }
-
-    const role: PhotoRole = cls?.role || heuristicRole(i, toClassify.length)
-    const quality = cls?.quality || 60
-    const roleScore = scoreByRole(role)
-    // P0.7: SOURCE_URL fotos recebem bonus maior que EXACT_PRODUCT
-    const isSourceUrl = candidate.matchClass === 'SOURCE_URL'
-    const sourceBonus = isSourceUrl ? 20 : candidate.matchClass === 'EXACT_PRODUCT' ? 10 : 0
-
-    usedUrls.add(candidate.url)
-    if (isSourceUrl || candidate.matchClass === 'EXACT_PRODUCT') fromExact++
-
+    usedUrls.add(url)
     photos.push({
-      url: candidate.url,
-      role,
-      source: isSourceUrl ? 'SOURCE_URL' : 'COMPETITOR',
-      source_ref: candidate.ref,
-      score: roleScore + sourceBonus + Math.min(quality, 30),
+      url,
+      role: cls?.role || heuristicRole(i, uniqueUserPhotos.length),
+      source: 'USER',
+      score: 200 + (i === 0 ? 10 : 0) + Math.round((cls?.quality || 60) / 10),
       ai_enhanced: false,
       position: photos.length,
     })
@@ -298,7 +272,7 @@ export async function collectAndClassifyPhotos(
     photos: final,
     stats: {
       total_found: totalFound,
-      from_exact_product: fromExact,
+      from_exact_product: 0,
       from_competitor: fromCompetitor,
       classified: classifications.length,
       deduplicated: dedupCount,
@@ -318,12 +292,10 @@ export async function collectAndClassifyPhotos(
         : [],
     },
     fidelity_check: {
-      passed: fromExact > 0 || userPhotos.length > 0,
-      reason: fromExact > 0
-        ? `${fromExact} fotos do produto exato verificadas`
-        : userPhotos.length > 0
-          ? 'Fotos do usuário são a referência'
-          : 'Nenhuma foto do produto exato encontrada',
+      passed: uniqueUserPhotos.length > 0,
+      reason: uniqueUserPhotos.length > 0
+        ? 'Fotos do usuário são a referência'
+        : 'Nenhuma foto autorizada do produto encontrada',
     },
   }
 }

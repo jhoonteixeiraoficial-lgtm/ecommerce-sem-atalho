@@ -81,6 +81,8 @@ describe('POST /api/assertive/listings/[id]/answers', () => {
       id: 'GTIN',
       value_name: '7898559182505',
       source: 'user',
+      status: 'USER_OVERRIDE',
+      evidence: 'Informado pelo vendedor',
     }))
     expect(attributes.publication_requirements).toBeNull()
     expect(mocks.updatePatch).toMatchObject({

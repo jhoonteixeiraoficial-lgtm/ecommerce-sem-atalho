@@ -52,4 +52,19 @@ describe('effective publication requirements', () => {
       }),
     ])
   })
+
+  it('mantém AUTO_FILLED sem evidência como blocker', () => {
+    const result = computeEffectiveRequirements([requiredColor], [], [{
+      id: 'COLOR',
+      name: 'Cor',
+      value_name: 'Preto',
+      tier: 'required',
+      source: 'catalog',
+      status: 'AUTO_FILLED',
+    }])
+
+    expect(result.blockers).toEqual([
+      expect.objectContaining({ attribute_id: 'COLOR', is_blocker: true, requires_confirmation: true }),
+    ])
+  })
 })

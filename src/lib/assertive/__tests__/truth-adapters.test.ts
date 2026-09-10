@@ -65,7 +65,8 @@ describe('adapters de identidade', () => {
     const truth = await identifyFromPhotos(null, photos)
 
     expect(mocks.toDataUri).toHaveBeenCalledTimes(8)
-    expect(mocks.generateJson.mock.calls[0][3].images).toHaveLength(8)
+    expect(mocks.generateJson).toHaveBeenCalledTimes(2)
+    expect(mocks.generateJson.mock.calls.every(call => call[3].images.length === 4)).toBe(true)
     expect(truth.identity).toMatchObject({
       product_type: 'Caneta de polaridade',
       brand: 'Kitest',
@@ -113,6 +114,15 @@ describe('adapters de identidade', () => {
 
     expect(truth.identity?.product_type).toBe('Caneta de polaridade')
     expect(truth.name).not.toMatch(/frete|oferta|promoção/i)
+  })
+
+  it('não transforma confiança alta da IA em fato publicável', async () => {
+    const truth = await identifyFromDescription(null, 'Caneta de polaridade Kitest KA250')
+
+    expect(truth.fields.product_type).toMatchObject({
+      confidence: 'high',
+      status: 'NEEDS_CONFIRMATION',
+    })
   })
 
   it('seleciona o candidato de identidade mais forte antes da pesquisa', async () => {

@@ -1,4 +1,6 @@
 import type { AIConfig } from './types'
+import { modelNamesForProvider, type AIWorkload } from './ai-models'
+import { fetchImageSafely } from './safe-image-fetch'
 
 interface AIContentPart {
   type: 'text' | 'image_url'
@@ -15,13 +17,14 @@ export interface AIResponse {
   text: string
   provider: string
   model: string
+  latency_ms: number
+  attempts: number
 }
 
 type ProviderId = 'groq' | 'gemini' | 'openai' | 'claude' | 'custom'
 
 interface ProviderSpec {
   base_url: string
-  models: string[]
   /** aceita imagem na mesma API compatível com OpenAI */
   vision: boolean
   /** exige data URI base64 — não aceita URL remota */
@@ -35,33 +38,27 @@ interface ProviderSpec {
 const PROVIDERS: Record<ProviderId, ProviderSpec> = {
   gemini: {
     base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    // ordem = preferência; usada como fallback controlado
-    models: ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'],
     vision: true,
     // CONFIRMADO: a camada compatível do Gemini rejeita URL remota (400 INVALID_ARGUMENT)
     visionRequiresBase64: true,
   },
   groq: {
     base_url: 'https://api.groq.com/openai/v1',
-    models: ['openai/gpt-oss-120b'],
     vision: false,
     visionRequiresBase64: false,
   },
   openai: {
     base_url: 'https://api.openai.com/v1',
-    models: ['gpt-4o-mini', 'gpt-4o'],
     vision: true,
     visionRequiresBase64: false,
   },
   claude: {
     base_url: 'https://api.anthropic.com/v1',
-    models: ['claude-sonnet-4-20250514'],
     vision: false,
     visionRequiresBase64: false,
   },
   custom: {
     base_url: '',
-    models: [],
     vision: false,
     visionRequiresBase64: false,
   },
@@ -71,47 +68,35 @@ function specOf(provider: string): ProviderSpec {
   return PROVIDERS[(provider as ProviderId) in PROVIDERS ? (provider as ProviderId) : 'custom']
 }
 
-function resolve(config: AIConfig) {
+function resolve(config: AIConfig, workload: AIWorkload = 'draft') {
   const spec = specOf(config.provider)
   const base_url = config.base_url || spec.base_url
-  const models = config.model ? [config.model, ...spec.models.filter(m => m !== config.model)] : spec.models
+  const defaults = modelNamesForProvider(config.provider, workload)
+  const models = config.model ? [config.model, ...defaults.filter(m => m !== config.model)] : defaults
   return { base_url, models, api_key: config.api_key || '', spec }
 }
 
 // ---------------------------------------------------------------- imagem
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024
-
 /**
  * Converte uma imagem em data URI base64.
  * Necessário porque o Gemini não busca URLs remotas — causa raiz da falha do fluxo por foto.
  */
 export async function toDataUri(source: string): Promise<string> {
-  if (source.startsWith('data:')) return source
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 20000)
-  try {
-    const res = await fetch(source, { signal: controller.signal })
-    if (!res.ok) throw new Error(`Não foi possível baixar a imagem (HTTP ${res.status})`)
-
-    const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.byteLength === 0) throw new Error('A imagem enviada está vazia')
-    if (buf.byteLength > MAX_IMAGE_BYTES) {
+  if (source.startsWith('data:')) {
+    const match = source.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/\r\n]+={0,2})$/)
+    if (!match) throw new Error('Data URI de imagem inválida. Use JPEG, PNG ou WebP em base64.')
+    const estimatedBytes = Math.floor(match[2].replace(/[\r\n]/g, '').length * 3 / 4)
+    if (!estimatedBytes || estimatedBytes > 8 * 1024 * 1024) {
       throw new Error('Imagem muito grande para análise. Envie uma foto de até 8MB.')
     }
-
-    let mime = res.headers.get('content-type')?.split(';')[0].trim() || ''
-    if (!mime.startsWith('image/')) {
-      // alguns CDNs devolvem octet-stream: detecta pelo magic number
-      if (buf[0] === 0xff && buf[1] === 0xd8) mime = 'image/jpeg'
-      else if (buf[0] === 0x89 && buf[1] === 0x50) mime = 'image/png'
-      else if (buf.slice(8, 12).toString('ascii') === 'WEBP') mime = 'image/webp'
-      else mime = 'image/jpeg'
-    }
-    return `data:${mime};base64,${buf.toString('base64')}`
-  } finally {
-    clearTimeout(timer)
+    return source
   }
+
+  const image = await fetchImageSafely(source)
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.mime_type)) {
+    throw new Error('Formato de imagem não suportado. Use JPEG, PNG ou WebP.')
+  }
+  return `data:${image.mime_type};base64,${image.buffer.toString('base64')}`
 }
 
 // ---------------------------------------------------------------- chamada
@@ -160,13 +145,13 @@ async function callWithModelFallback(
   models: string[],
   messages: AIMessage[],
   opts: { json?: boolean; temperature?: number; maxTokens?: number }
-): Promise<{ text: string; model: string }> {
+): Promise<{ text: string; model: string; attempts: number }> {
   let lastError = 'nenhum modelo configurado'
   // limita o fallback a 3 tentativas para não multiplicar custo
   for (const model of models.slice(0, 3)) {
     try {
       const text = await callChat(base_url, api_key, model, messages, opts)
-      return { text, model }
+      return { text, model, attempts: models.indexOf(model) + 1 }
     } catch (e) {
       lastError = e instanceof Error ? e.message : 'erro desconhecido'
     }
@@ -225,6 +210,7 @@ export interface GenerateOptions {
   maxTokens?: number
   /** URL ou data URI de imagens para análise multimodal */
   images?: string[]
+  workload?: AIWorkload
 }
 
 export async function generate(
@@ -233,7 +219,8 @@ export async function generate(
   userPrompt: string,
   options: GenerateOptions = {}
 ): Promise<AIResponse> {
-  const images = (options.images || []).filter(Boolean).slice(0, 4)
+  const startedAt = Date.now()
+  const images = (options.images || []).filter(Boolean).slice(0, 8)
   const needsVision = images.length > 0
   const chain = buildChain(userConfig, needsVision)
 
@@ -248,7 +235,8 @@ export async function generate(
   let lastError = 'falha desconhecida'
 
   for (const cfg of chain) {
-    const { base_url, models, api_key, spec } = resolve(cfg)
+    const workload = needsVision ? 'vision' : options.workload || 'draft'
+    const { base_url, models, api_key, spec } = resolve(cfg, workload)
     if (!api_key || !base_url || models.length === 0) continue
 
     try {
@@ -268,8 +256,8 @@ export async function generate(
         { role: 'user', content },
       ]
 
-      const { text, model } = await callWithModelFallback(base_url, api_key, models, messages, options)
-      return { text, provider: cfg.provider, model }
+      const { text, model, attempts } = await callWithModelFallback(base_url, api_key, models, messages, options)
+      return { text, provider: cfg.provider, model, latency_ms: Date.now() - startedAt, attempts }
     } catch (e) {
       lastError = e instanceof Error ? e.message : 'erro desconhecido'
     }
@@ -338,7 +326,11 @@ export function supportsVision(provider: string): boolean {
 }
 
 export function availableModels(provider: string): string[] {
-  return specOf(provider).models
+  return [...new Set([
+    ...modelNamesForProvider(provider, 'reasoning'),
+    ...modelNamesForProvider(provider, 'draft'),
+    ...modelNamesForProvider(provider, 'vision'),
+  ])]
 }
 
 // -------------------------------------------------- compatibilidade legada

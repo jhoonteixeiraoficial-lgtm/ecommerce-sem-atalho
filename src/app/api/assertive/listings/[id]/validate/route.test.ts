@@ -8,6 +8,7 @@ interface ListingState extends Record<string, unknown> {
   attributes?: {
     list?: Array<Record<string, unknown>>
     publication_requirements?: Record<string, unknown>
+    blocking_questions?: Array<Record<string, unknown>>
   }
 }
 
@@ -90,7 +91,7 @@ describe('POST /api/assertive/listings/[id]/validate', () => {
       listing_type_id: 'gold_special',
       photos: ['https://example.com/kitest.jpg'],
       attributes: {
-        list: [{ id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'ml_item' }],
+        list: [{ id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'truth', status: 'CONFIRMED', evidence: 'Fonte oficial' }],
       },
       status: 'ready',
       validation: {},
@@ -153,8 +154,8 @@ describe('POST /api/assertive/listings/[id]/validate', () => {
   it('remove GTIN inválido não obrigatório e revalida sem blocker falso', async () => {
     mocks.listing.attributes = {
       list: [
-        { id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'ml_item' },
-        { id: 'GTIN', name: 'Código universal de produto', value_name: '7898559182505', tier: 'recommended', source: 'truth' },
+        { id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'truth', status: 'CONFIRMED', evidence: 'Fonte oficial' },
+        { id: 'GTIN', name: 'Código universal de produto', value_name: '7898559182505', tier: 'recommended', source: 'truth', status: 'CONFIRMED', evidence: 'Fonte oficial' },
       ],
     }
     mocks.resolveCategoryContext.mockResolvedValue({
@@ -199,8 +200,8 @@ describe('POST /api/assertive/listings/[id]/validate', () => {
   it('mantém bloqueio quando o GTIN inválido é obrigatório', async () => {
     mocks.listing.attributes = {
       list: [
-        { id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'ml_item' },
-        { id: 'GTIN', name: 'Código universal de produto', value_name: '7898559182505', tier: 'required', source: 'truth' },
+        { id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'truth', status: 'CONFIRMED', evidence: 'Fonte oficial' },
+        { id: 'GTIN', name: 'Código universal de produto', value_name: '7898559182505', tier: 'required', source: 'truth', status: 'CONFIRMED', evidence: 'Fonte oficial' },
       ],
     }
     mocks.resolveCategoryContext.mockResolvedValue({
@@ -253,6 +254,59 @@ describe('POST /api/assertive/listings/[id]/validate', () => {
       all_clear: false,
       blockers: [expect.objectContaining({ attribute_id: 'MODEL', is_blocker: true })],
     })
+    expect(mocks.listing.validated_payload).toBeNull()
+  })
+
+  it('persiste no máximo três perguntas oficiais por rodada', async () => {
+    const ids = ['BRAND', 'MODEL', 'COLOR', 'VOLTAGE', 'GTIN']
+    mocks.resolveCategoryContext.mockResolvedValue({
+      category: { id: 'MLB60658', name: 'Ferramentas' },
+      capabilities: { ml_user_id: 1, nickname: 'seller', site_id: 'MLB', user_product_model: false, tags: [] },
+      attributes: ids.map(id => ({
+        id,
+        name: id,
+        tier: 'required',
+        value_type: 'string',
+        fixedValues: false,
+        isVariationOnly: false,
+        readOnly: false,
+      })),
+    })
+    mocks.validateListing.mockResolvedValue({ valid: true, status_code: 204, issues: [] })
+
+    await POST(new Request('http://localhost/validate', { method: 'POST' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(mocks.listing.attributes?.blocking_questions).toHaveLength(3)
+    expect(mocks.listing.attributes?.blocking_questions?.every(question => question.blocking === true)).toBe(true)
+  })
+
+  it('não promove atributo obrigatório inferido após HTTP 204', async () => {
+    mocks.listing.attributes = {
+      list: [
+        { id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'truth', status: 'CONFIRMED', evidence: 'Fonte oficial' },
+        { id: 'VOLTAGE', name: 'Voltagem', value_name: '220 V', tier: 'required', source: 'ai', status: 'NEEDS_CONFIRMATION', evidence: 'Sugestão da IA' },
+      ],
+    }
+    mocks.resolveCategoryContext.mockResolvedValue({
+      category: { id: 'MLB60658', name: 'Ferramentas' },
+      capabilities: { ml_user_id: 1, nickname: 'seller', site_id: 'MLB', user_product_model: false, tags: [] },
+      attributes: [
+        { id: 'BRAND', name: 'Marca', tier: 'required', value_type: 'string', fixedValues: false, isVariationOnly: false, readOnly: false },
+        { id: 'VOLTAGE', name: 'Voltagem', tier: 'required', value_type: 'string', fixedValues: false, isVariationOnly: false, readOnly: false },
+      ],
+    })
+    mocks.validateListing.mockResolvedValue({ valid: true, status_code: 204, issues: [] })
+
+    await POST(new Request('http://localhost/validate', { method: 'POST' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(mocks.validateListing.mock.calls[0][1].attributes).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'VOLTAGE' })])
+    )
+    expect(mocks.listing.status).toBe('needs_input')
     expect(mocks.listing.validated_payload).toBeNull()
   })
 })

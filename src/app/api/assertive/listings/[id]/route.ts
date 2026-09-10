@@ -3,6 +3,7 @@ import { requireCommunityUser, readJson } from '@/app/api/community/helpers'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { recomputeListing } from '@/lib/assertive/pipeline'
 import { MLNotConnectedError } from '@/lib/assertive/publisher'
+import { attachListingImages } from '@/lib/assertive/image-assets'
 import { z } from 'zod'
 
 export const runtime = 'nodejs'
@@ -35,6 +36,13 @@ const attributeSchema = z.object({
   source: z.string().max(20).optional(),
 })
 
+const listingImageSchema = z.object({
+  asset_id: z.string().min(1).max(100),
+  position: z.number().int().min(0).max(11),
+  role: z.enum(['MAIN', 'DETAIL', 'PACKAGING', 'LIFESTYLE', 'INFORMATIONAL']),
+  shot_type: z.string().max(80).optional(),
+})
+
 // Whitelist explícita: impede que o cliente altere user_id, status de publicação ou ml_item_id.
 const patchSchema = z.object({
   title: z.string().min(1).max(200).optional(),
@@ -46,16 +54,21 @@ const patchSchema = z.object({
   category_id: z.string().max(30).optional(),
   family_name: z.string().max(120).optional(),
   photos: z.array(z.string().url()).max(12).optional(),
+  listing_images: z.array(listingImageSchema).max(12).optional(),
   // attributes pode vir como array (substituição da lista) ou como objeto (merge de campos aninhados)
   attributes: z.union([z.array(attributeSchema).max(120), z.record(z.unknown())]).optional(),
   photo_metadata: z.array(z.object({
+    asset_id: z.string().max(100).optional(),
+    parent_asset_id: z.string().max(100).optional(),
     url: z.string(),
     role: z.enum(['MAIN', 'DETAIL', 'PACKAGING', 'LIFESTYLE', 'INFORMATIONAL']),
-    source: z.enum(['USER', 'COMPETITOR', 'AI_ENHANCED', 'AI_GENERATED']),
+    source: z.enum(['USER', 'COMPETITOR', 'SOURCE_URL', 'AI_ENHANCED', 'AI_GENERATED']),
     source_ref: z.string().optional(),
     source_url: z.string().optional(),
     score: z.number(),
     ai_enhanced: z.boolean(),
+    fidelity_status: z.enum(['ACCEPT', 'REVIEW', 'REJECT']).optional(),
+    label: z.string().max(80).optional(),
     position: z.number(),
   })).max(12).optional(),
 })
@@ -87,7 +100,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return Response.json({ error: 'Este anúncio já foi publicado e não pode ser editado aqui.' }, { status: 409 })
   }
 
-  const { attributes, photo_metadata, ...rest } = parsed.data
+  if (parsed.data.listing_images) {
+    if (Object.keys(parsed.data).some(key => key !== 'listing_images')) {
+      return Response.json({ error: 'Atualize a galeria separadamente dos outros campos.' }, { status: 400 })
+    }
+    try {
+      await attachListingImages(id, authorizedUser.id, parsed.data.listing_images)
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : 'Falha ao atualizar galeria.' }, { status: 400 })
+    }
+    try {
+      const recomputed = await recomputeListing(id, authorizedUser.id)
+      return Response.json({ ok: true, ...recomputed })
+    } catch (error) {
+      if (error instanceof MLNotConnectedError) return Response.json({ ok: true, warning: error.message })
+      return Response.json({ ok: true })
+    }
+  }
+
+  const { attributes, photo_metadata, listing_images: _listingImages, ...rest } = parsed.data
   const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
 
   if (attributes) {
