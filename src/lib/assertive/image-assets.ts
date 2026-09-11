@@ -4,7 +4,7 @@ import type { PhotoRole } from './photos'
 import { createHash } from 'node:crypto'
 
 export type ImageAssetKind = 'ORIGINAL_EVIDENCE' | 'SOURCE_REFERENCE' | 'DERIVED' | 'GENERATED_SCENE' | 'PUBLICATION_RENDITION'
-export type ImageOrigin = 'USER_UPLOAD' | 'ML_OWN_ITEM' | 'ML_CATALOG' | 'COMPETITOR'
+export type ImageOrigin = 'USER_UPLOAD' | 'ML_OWN_ITEM' | 'ML_CATALOG' | 'COMPETITOR' | 'AI_GENERATED'
 export type ImageRightsStatus = 'USER_OWNED' | 'SELLER_OWNED_CONFIRMED' | 'LICENSED' | 'REFERENCE_ONLY' | 'UNKNOWN'
 export type FidelityStatus = 'ACCEPT' | 'REVIEW' | 'REJECT'
 
@@ -44,7 +44,7 @@ export interface ImageOperation {
   id: string
   user_id: string
   analysis_id: string | null
-  input_asset_id: string
+  input_asset_id: string | null
   output_asset_id: string | null
   operation: 'NORMALIZE' | 'AI_ENHANCE' | 'AI_SCENE' | 'FIDELITY_CHECK'
   status: ImageOperationStatus
@@ -83,19 +83,40 @@ export interface CreateDerivedAssetInput extends Omit<CreateOriginalAssetInput, 
   metadata?: Record<string, unknown>
 }
 
+export interface CreateReferenceAssetInput extends CreateOriginalAssetInput {
+  source_url: string
+  rights_status: Extract<ImageRightsStatus, 'REFERENCE_ONLY' | 'SELLER_OWNED_CONFIRMED' | 'LICENSED'>
+}
+
+export interface CreateGeneratedAssetInput extends Omit<CreateOriginalAssetInput, 'storage_key'> {
+  parent_asset_id?: string
+  storage_key: string
+  provider: string
+  model: string
+  metadata: Record<string, unknown>
+}
+
 const PUBLICATION_RIGHTS = new Set<ImageRightsStatus>(['USER_OWNED', 'SELLER_OWNED_CONFIRMED', 'LICENSED'])
 
 export function isPublicationAssetAllowed(asset: ImageAsset): boolean {
+  const generatedProvenance = asset.kind !== 'GENERATED_SCENE' || Boolean(
+    asset.provider
+      && asset.model
+      && asset.metadata?.truth_brief_hash
+      && asset.metadata?.prompt_hash
+      && asset.metadata?.review_required === true
+  )
   return asset.origin !== 'COMPETITOR'
     && PUBLICATION_RIGHTS.has(asset.rights_status)
     && asset.kind !== 'ORIGINAL_EVIDENCE'
-    && Boolean(asset.parent_asset_id)
+    && (Boolean(asset.parent_asset_id) || asset.kind === 'GENERATED_SCENE')
+    && generatedProvenance
     && Boolean(asset.public_url)
     && asset.fidelity_status === 'ACCEPT'
 }
 
 async function persistAsset(
-  input: CreateOriginalAssetInput | CreateDerivedAssetInput,
+  input: CreateOriginalAssetInput | CreateDerivedAssetInput | CreateReferenceAssetInput | CreateGeneratedAssetInput,
   row: Omit<ImageAsset, 'id' | 'created_at'>
 ): Promise<ImageAsset> {
   const supabase = createAdminClient()
@@ -135,6 +156,29 @@ export async function createOriginalAsset(input: CreateOriginalAssetInput): Prom
   })
 }
 
+export async function createReferenceAsset(input: CreateReferenceAssetInput): Promise<ImageAsset> {
+  return persistAsset(input, {
+    user_id: input.user_id,
+    analysis_id: input.analysis_id || null,
+    kind: 'SOURCE_REFERENCE',
+    origin: 'ML_CATALOG',
+    rights_status: input.rights_status,
+    storage_bucket: 'assertive-originals',
+    storage_key: input.storage_key,
+    public_url: null,
+    sha256: input.sha256,
+    mime_type: input.mime_type,
+    width: input.width,
+    height: input.height,
+    byte_size: input.bytes.byteLength,
+    parent_asset_id: null,
+    provider: null,
+    model: null,
+    fidelity_status: null,
+    metadata: { source_url: input.source_url },
+  })
+}
+
 export async function createDerivedAsset(input: CreateDerivedAssetInput): Promise<ImageAsset> {
   if (!input.parent_asset_id) throw new Error('Imagem derivada precisa de um ativo original.')
   const supabase = createAdminClient()
@@ -159,6 +203,34 @@ export async function createDerivedAsset(input: CreateDerivedAssetInput): Promis
     model: input.model || null,
     fidelity_status: input.fidelity_status || null,
     metadata: input.metadata || {},
+  })
+}
+
+export async function createGeneratedAsset(input: CreateGeneratedAssetInput): Promise<ImageAsset> {
+  if (!input.metadata.truth_brief_hash || !input.metadata.prompt_hash || input.metadata.review_required !== true) {
+    throw new Error('Imagem gerada precisa de proveniência factual e revisão explícita.')
+  }
+  const supabase = createAdminClient()
+  const publicUrl = supabase.storage.from('assertive').getPublicUrl(input.storage_key).data.publicUrl
+  return persistAsset(input, {
+    user_id: input.user_id,
+    analysis_id: input.analysis_id || null,
+    kind: 'GENERATED_SCENE',
+    origin: 'AI_GENERATED',
+    rights_status: 'LICENSED',
+    storage_bucket: 'assertive',
+    storage_key: input.storage_key,
+    public_url: publicUrl,
+    sha256: input.sha256,
+    mime_type: input.mime_type,
+    width: input.width,
+    height: input.height,
+    byte_size: input.bytes.byteLength,
+    parent_asset_id: input.parent_asset_id || null,
+    provider: input.provider,
+    model: input.model,
+    fidelity_status: 'ACCEPT',
+    metadata: input.metadata,
   })
 }
 
@@ -199,7 +271,7 @@ export async function getImageOperationByKey(userId: string, idempotencyKey: str
 export async function beginImageOperation(input: {
   user_id: string
   analysis_id?: string
-  input_asset_id: string
+  input_asset_id?: string
   operation: ImageOperation['operation']
   idempotency_key: string
 }): Promise<ImageOperation> {
@@ -208,7 +280,7 @@ export async function beginImageOperation(input: {
   const { data, error } = await createAdminClient().from('assertive_image_operations').insert({
     user_id: input.user_id,
     analysis_id: input.analysis_id || null,
-    input_asset_id: input.input_asset_id,
+    input_asset_id: input.input_asset_id || null,
     operation: input.operation,
     status: 'RUNNING',
     idempotency_key: input.idempotency_key,

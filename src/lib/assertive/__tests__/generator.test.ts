@@ -6,7 +6,7 @@ import type { ProductTruth } from '../truth'
 const generateJson = vi.hoisted(() => vi.fn())
 vi.mock('../ai', () => ({ generateJson }))
 
-import { generateListing } from '../generator'
+import { buildSemanticTitle, generateListing } from '../generator'
 
 const truth: ProductTruth = {
   name: 'Caneta de polaridade Kitest KA250 12V 24V',
@@ -242,5 +242,107 @@ describe('listing generator semantic guards', () => {
     expect(result.attributes).toEqual([
       expect.objectContaining({ id: 'COLOR', status: 'NEEDS_CONFIRMATION' }),
     ])
+  })
+
+  it('escolhe a alternativa factual com melhor cobertura de busca', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Caneta de Polaridade Kitest KA250',
+      title_alternatives: [
+        'Caneta de Polaridade Kitest KA250 Teste 12V 24V',
+        'Oferta Caneta Kitest KA250',
+      ],
+      family_name: 'Caneta de Polaridade Kitest KA250',
+      description: 'Caneta de polaridade para testar sistemas elétricos automotivos com segurança.',
+      attributes: [], missing: [], image_plan: [], improvements: [],
+    })
+
+    const result = await generateListing({
+      config: null,
+      truth,
+      research: { ...research, keywords: ['teste', '12V', '24V'] },
+      dna: dna('EXACT_PRODUCT'),
+      category: { id: 'MLB60658', name: 'Ferramentas', path_from_root: [], settings: { max_title_length: 60 } },
+      attributes: [],
+    })
+
+    expect(result.title).toBe('Caneta de Polaridade Kitest KA250 Teste 12V 24V')
+  })
+
+  it('nunca entrega título com conector ou pontuação pendurada no final', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Caneta de Polaridade Kitest KA250 12V 24V +',
+      title_alternatives: [],
+      family_name: 'Caneta de Polaridade Kitest KA250 +',
+      description: 'Caneta de polaridade para testar sistemas elétricos automotivos com segurança.',
+      attributes: [], missing: [], image_plan: [], improvements: [],
+    })
+
+    const result = await generateListing({
+      config: null, truth, research, dna: dna('EXACT_PRODUCT'), category: null, attributes: [],
+    })
+
+    expect(result.title).toBe('Caneta de Polaridade Kitest KA250 12V 24V')
+    expect(result.family_name).not.toMatch(/[+(/,:;-]$/)
+  })
+
+  it('remove somente o trecho sem evidência e preserva a copy útil', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Caneta de Polaridade Kitest KA250 12V 24V',
+      title_alternatives: [],
+      family_name: 'Caneta de Polaridade Kitest KA250',
+      description: [
+        'Teste circuitos automotivos com identificação clara de polaridade.',
+        '',
+        'Destaques',
+        '- Operação confirmada em sistemas 12V e 24V.',
+        '- Garantia exclusiva de 5 anos.',
+        '',
+        'Consulte as especificações antes da compra.',
+      ].join('\n'),
+      attributes: [], missing: [], image_plan: [], improvements: [],
+    })
+
+    const result = await generateListing({
+      config: null, truth, research, dna: dna('EXACT_PRODUCT'), category: null, attributes: [],
+    })
+
+    expect(result.description).toContain('Teste circuitos automotivos')
+    expect(result.description).toContain('Operação confirmada em sistemas 12V e 24V')
+    expect(result.description).not.toMatch(/garantia exclusiva|5 anos/i)
+    expect(result.description).toContain('Especificações confirmadas')
+  })
+
+  it('expande uma resposta curta em descrição comercial factual estruturada', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Caneta de Polaridade Kitest KA250 12V 24V',
+      title_alternatives: [],
+      family_name: 'Caneta de Polaridade Kitest KA250',
+      description: 'Caneta Kitest KA250.',
+      attributes: [], missing: [], image_plan: [], improvements: [],
+    })
+
+    const result = await generateListing({
+      config: null, truth, research, dna: dna('EXACT_PRODUCT'), category: null, attributes: [],
+    })
+
+    expect(result.description).toContain('Destaques do produto')
+    expect(result.description).toContain('Especificações confirmadas')
+    expect(result.description).toContain('Antes de comprar')
+    expect(result.description.length).toBeGreaterThan(220)
+  })
+
+  it('remove repetição de token distintivo do modelo no título', () => {
+    const processor = {
+      name: 'Processador AMD Ryzen 5 5500',
+      fields: {
+        product_type: { value: 'Processador', confidence: 'confirmed', source: 'description', evidence: 'texto' },
+        brand: { value: 'AMD', confidence: 'confirmed', source: 'description', evidence: 'texto' },
+        model: { value: 'Ryzen 5 5500', confidence: 'confirmed', source: 'description', evidence: 'texto' },
+      },
+      uncertain: [], evidence: [], confidence: 1,
+    } as ProductTruth
+
+    expect(buildSemanticTitle(processor, 'Processador Ryzen 5 AMD Ryzen 5 5500 Novo', 60))
+      .toBe('Processador AMD Ryzen 5 5500')
   })
 })

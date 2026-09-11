@@ -200,6 +200,34 @@ export function exactFactSources(
     .map(candidate => ({ title: candidate.title, attributes: candidate.attributes }))
 }
 
+export function exactProductReferenceUrls(
+  research: Pick<ResearchResult, 'catalog_matches' | 'competitors'> | null | undefined
+): string[] {
+  if (!research) return []
+  const candidates = [...(research.catalog_matches || []), ...(research.competitors || [])]
+    .filter(candidate => candidate.match_class === 'EXACT_PRODUCT' && candidate.usable_as_fact_source)
+    .sort((a, b) => {
+      const score = (candidate: CatalogMatch | CompetitorDossier): number => {
+        if (!('seller' in candidate)) return 5_000 + candidate.product_match_confidence * 100
+        const bestSeller = candidate.highlight_position
+          ? 10_000 - Math.min(candidate.highlight_position, 100) * 50
+          : 0
+        const seller = candidate.seller
+        const sellerQuality = (seller?.official_store ? 800 : 0)
+          + (seller?.power_seller_status === 'platinum' ? 600 : seller?.power_seller_status ? 300 : 0)
+          + Math.min(500, Math.log10((seller?.transactions_total || 0) + 1) * 100)
+        const relevance = candidate.search_position ? Math.max(0, 300 - candidate.search_position * 10) : 0
+        return 3_000 + bestSeller + sellerQuality + relevance
+          + candidate.competitive_reference_strength * 10
+          + candidate.product_match_confidence * 100
+      }
+      return score(b) - score(a)
+    })
+    .flatMap(candidate => candidate.pictures || [])
+    .filter(Boolean)
+  return [...new Set(candidates)].slice(0, 8)
+}
+
 // ---------------------------------------------------------------- fetchers
 async function searchCatalog(token: string, query: string): Promise<CatalogSearchItem[]> {
   const data = await mlGet<{ results?: CatalogSearchItem[] }>(
@@ -468,6 +496,8 @@ export interface ResearchOptions {
   /** P0.2: category_id direto da fonte (URL do ML) — LOCK */
   sourceCategoryId?: string | null
   sourceDomainId?: string | null
+  /** Contexto semântico inferido na identificação, usado só para descobrir a taxonomia. */
+  domainHint?: string | null
   /** usado para classificar EXACT vs COMPARABLE. Sem ele, nada vira fonte de fato. */
   truth?: ProductTruth | null
 }
@@ -488,7 +518,8 @@ export async function researchMarket(
   // --- categoria/domínio oficiais
   // P0.2: LOCK — se sourceCategoryId existe, é a categoria canônica da URL.
   // Ainda precisamos do discoverDomain para domain_id/domain_name.
-  const domains = await discoverDomain(token, query).catch(() => [])
+  const domainQuery = [query, opts.domainHint].filter(value => value?.trim()).join(' ').slice(0, 200)
+  const domains = await discoverDomain(token, domainQuery).catch(() => [])
   const primary = domains[0] || null
 
   let categoryId: string | null = null

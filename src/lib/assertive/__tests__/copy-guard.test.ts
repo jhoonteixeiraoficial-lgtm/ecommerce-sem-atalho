@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { guardTitle, verifyDescriptionClaims, verifyProtectedIdentityText } from '../copy-guard'
+import { factualDescription, guardTitle, verifyDescriptionClaims, verifyProtectedIdentityText } from '../copy-guard'
 import type { CopyBrief } from '../copy-brief'
 
 const brief: CopyBrief = {
@@ -44,5 +44,14 @@ describe('copy identity and claim guards', () => {
     'Elimina 100% das bactérias',
   ])('rejeita alegação sem fato: %s', claim => {
     expect(verifyDescriptionClaims(claim, brief).valid).toBe(false)
+  })
+
+  it('gera fallback factual completo quando uma descrição é rejeitada', () => {
+    const description = factualDescription(brief, 'Caneta de Polaridade Kitest KA250 12V 24V')
+
+    expect(description).toContain('Destaques do produto')
+    expect(description).toContain('Antes de comprar')
+    expect(description.length).toBeGreaterThanOrEqual(250)
+    expect(verifyDescriptionClaims(description, brief).valid).toBe(true)
   })
 })

@@ -5,8 +5,9 @@ import type { ResearchResult } from './research'
 import type { ClassifiedAttribute, CategoryInfo } from './taxonomy'
 import { generateJson } from './ai'
 import { maxTitleLength, prioritizeAttributes } from './taxonomy'
-import { buildCopyBrief } from './copy-brief'
+import { buildCopyBrief, type CopyBrief } from './copy-brief'
 import { factualDescription as safeDescription, guardTitle, verifyDescriptionClaims } from './copy-guard'
+import { getPhotoRequirements } from './category-photos'
 
 export interface ListingAttribute {
   id: string
@@ -172,6 +173,15 @@ function trimAtWord(value: string, limit: number): string {
   return (boundary > 0 ? clipped.slice(0, boundary) : value.slice(0, limit)).trim()
 }
 
+function completeTitle(value: string, limit: number): string {
+  let clean = trimAtWord(compactMeasurements(value), limit)
+    .replace(/\s*[+/,;:|&-]+\s*$/g, '')
+    .trim()
+  const openParen = clean.lastIndexOf('(')
+  if (openParen > clean.lastIndexOf(')')) clean = clean.slice(0, openParen).trim()
+  return trimAtWord(clean, limit)
+}
+
 function titleWords(value: string): string[] {
   return value
     .normalize('NFD')
@@ -206,15 +216,16 @@ export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit:
   const model = identity?.model || truth.fields.model?.value
 
   if (!productType || (!brand && !model) || truth.confidence < 0.7) {
-    return trimAtWord(compactMeasurements(proposed.trim() || truth.name), limit)
+    return completeTitle(proposed.trim() || truth.name, limit)
   }
 
-  const proposedTitle = trimAtWord(compactMeasurements(proposed.trim()), limit)
+  const proposedTitle = completeTitle(proposed.trim(), limit)
   const proposedWords = titleWords(proposedTitle)
   const containsPart = (part: string | null | undefined) => !part
     || titleWords(part).every(word => proposedWords.includes(word))
-  const repeatsProductType = titleWords(productType)
-    .filter(word => word.length >= 4)
+  const repeatsIdentityToken = [...new Set([productType, brand, model]
+    .flatMap(part => titleWords(part || ''))
+    .filter(word => word.length >= 4))]
     .some(word => proposedWords.filter(candidate => candidate === word).length > 1)
   const prohibitedClaim = /\b(?:frete\s+gr[aá]tis|imperd[ií]vel|oferta|promo[cç][aã]o)\b/i.test(proposedTitle)
 
@@ -223,7 +234,7 @@ export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit:
     && containsPart(productType)
     && containsPart(brand)
     && containsPart(model)
-    && !repeatsProductType
+    && !repeatsIdentityToken
     && !prohibitedClaim
     && !hasUnsupportedMeasurement(proposedTitle, truth)
   ) {
@@ -254,7 +265,7 @@ export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit:
     add(fact.value)
   }
 
-  return trimAtWord(parts.join(' '), limit)
+  return completeTitle(parts.join(' '), limit)
 }
 
 const DESCRIPTION_LABELS: Record<string, string> = {
@@ -291,17 +302,28 @@ function factualDescription(title: string, truth: ProductTruth): string {
   const facts = confirmedDescriptionFields(truth)
     .filter(([key]) => DESCRIPTION_LABELS[key])
     .map(([key, field]) => `- ${DESCRIPTION_LABELS[key]}: ${field.value}`)
+  const productType = truth.identity?.product_type || truth.fields.product_type?.value || truth.name
+  const productFunction = truth.identity?.function || truth.fields.function?.value
+  const overview = productFunction
+    ? `${productType} indicado para ${productFunction}. Consulte os dados confirmados para escolher a versão correta.`
+    : `${productType} com identidade e especificações verificadas para facilitar uma compra segura.`
   return [
     title,
     '',
-    'Informações do produto',
-    truth.identity?.function || truth.identity?.product_type || truth.name,
+    'Sobre o produto',
+    overview,
+    '',
+    'Destaques do produto',
+    `- Produto: ${productType}`,
+    ...(productFunction ? [`- Aplicação: ${productFunction}`] : []),
     ...(facts.length ? ['', 'Especificações confirmadas', ...facts] : []),
+    '',
+    'Antes de comprar',
+    'Confira modelo, variação e demais especificações confirmadas para garantir que esta é a opção adequada para sua necessidade.',
   ].join('\n').trim()
 }
 
-function guardDescription(proposed: string, title: string, truth: ProductTruth): string {
-  const description = proposed.trim()
+function hasUnsupportedDescriptionClaim(description: string, truth: ProductTruth): boolean {
   const facts = confirmedDescriptionFields(truth).map(([, field]) => normalizedPhrase(field.value))
   const unsupportedMeasurements = description.match(/\b\d+(?:[.,]\d+)?\s*(?:v|w|a|hz|kg|g|cm|mm|m|ml|l|anos?|meses?|%)\b/gi)
     ?.some(claim => !facts.some(fact => fact.includes(normalizedPhrase(claim)))) ?? false
@@ -312,10 +334,46 @@ function guardDescription(proposed: string, title: string, truth: ProductTruth):
   const unsupportedCertification = /\b(?:anatel|certifica(?:do|ção)|inmetro)\b/i.test(description)
     && !facts.some(fact => /anatel|certifica|inmetro/.test(fact))
 
-  if (!description || unsupportedMeasurements || unsupportedWarranty || unsupportedPackage || unsupportedCertification) {
+  return unsupportedMeasurements || unsupportedWarranty || unsupportedPackage || unsupportedCertification
+}
+
+function guardDescription(proposed: string, title: string, truth: ProductTruth): string {
+  const repaired = proposed
+    .split('\n')
+    .filter(line => !hasUnsupportedDescriptionClaim(line, truth))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  const substantiveLines = repaired.split('\n')
+    .map(line => line.replace(/^[-*]\s*/, '').trim())
+    .filter(line => line.length >= 20)
+
+  if (!repaired || repaired.length < 80 || substantiveLines.length < 2) {
     return factualDescription(title, truth)
   }
-  return description
+
+  const facts = confirmedDescriptionFields(truth)
+    .filter(([key]) => DESCRIPTION_LABELS[key])
+    .map(([key, field]) => `- ${DESCRIPTION_LABELS[key]}: ${field.value}`)
+  const sections = [repaired]
+  if (facts.length && !/especifica[cç][oõ]es confirmadas/i.test(repaired)) {
+    sections.push(['Especificações confirmadas', ...facts].join('\n'))
+  }
+  if (!/antes de comprar/i.test(repaired)) {
+    sections.push('Antes de comprar\nConfira modelo, variação e especificações confirmadas antes de concluir a compra.')
+  }
+  return sections.join('\n\n')
+}
+
+function titleCandidateScore(value: string, brief: CopyBrief): number {
+  const candidateWords = titleWords(value)
+  const uniqueWords = new Set(candidateWords)
+  const keywordScore = brief.keywords.reduce((score, keyword) => {
+    const words = titleWords(keyword)
+    return score + (words.length && words.every(word => uniqueWords.has(word)) ? 20 + words.length : 0)
+  }, 0)
+  const repeated = candidateWords.filter((word, index) => word.length >= 4 && candidateWords.indexOf(word) !== index).length
+  return keywordScore + Math.min(value.length, brief.category.title_limit) / 10 - repeated * 15
 }
 
 /**
@@ -459,11 +517,11 @@ function buildMissing(
 
 const DEFAULT_IMAGE_PLAN: ImagePlanStep[] = [
   { order: 1, title: 'Foto principal', description: 'Produto inteiro, centralizado, fundo branco, sem textos ou selos', required: true },
-  { order: 2, title: 'Ângulo lateral', description: 'Mostra proporção e formato do produto', required: true },
-  { order: 3, title: 'Detalhe técnico', description: 'Close nas conexões, acabamento ou parte funcional', required: true },
-  { order: 4, title: 'Escala/medidas', description: 'Produto ao lado de referência de tamanho ou com medidas indicadas', required: false },
-  { order: 5, title: 'Conteúdo da embalagem', description: 'Tudo que o comprador recebe, disposto lado a lado', required: false },
-  { order: 6, title: 'Produto em uso', description: 'Aplicação real, mostrando o contexto de utilização', required: false },
+  { order: 2, title: 'Vista complementar', description: 'Outro enquadramento comprovado pelas referências exatas', required: true },
+  { order: 3, title: 'Detalhe técnico', description: 'Close somente em controles, conexões ou partes visíveis', required: true },
+  { order: 4, title: 'Produto em uso', description: 'Aplicação real sem adicionar itens ao produto', required: false },
+  { order: 5, title: 'Acabamento', description: 'Textura, material e detalhes visíveis', required: false },
+  { order: 6, title: 'Vista aproximada', description: 'Composição aproximada preservando a variante confirmada', required: false },
 ]
 
 export interface GenerateInput {
@@ -481,6 +539,7 @@ export async function generateListing(input: GenerateInput): Promise<GeneratedLi
   const { config, truth, research, dna, category, attributes } = input
 
   const titleLimit = maxTitleLength(category)
+  const photoRequirements = getPhotoRequirements(research.domain_id)
   // limita o schema enviado à IA para controlar custo, mantendo os mais relevantes
   const schema = prioritizeAttributes(attributes).slice(0, 45)
   const copyBrief = buildCopyBrief({
@@ -496,6 +555,11 @@ ${JSON.stringify(copyBrief)}
 
 CATEGORIA OFICIAL: ${category?.name || 'não determinada'} (${category?.id || 'sem id'})
 LIMITE DO TÍTULO: ${titleLimit} caracteres
+PLANO VISUAL DA CATEGORIA: ${JSON.stringify({
+    recommended_photos: Math.min(Math.max(photoRequirements.recommended_photos, 5), 7),
+    shot_types: photoRequirements.shot_types,
+    restrictions: photoRequirements.restrictions,
+  })}
 
 PADRÕES COMPETITIVOS PERMITIDOS (estrutura, nunca valores dos concorrentes):
 ${copyBrief.benchmark_patterns.title_shapes.join(' | ') || 'sem padrão confiável'}
@@ -510,7 +574,7 @@ TAREFA:
 3. family_name: nome factual do produto para o catálogo do ML, com tipo, marca e modelo protegidos. Máximo 60 caracteres.
 4. Descrição original e profissional. Omita garantia, certificação, compatibilidade, conteúdo da embalagem, medidas ou desempenho que não estejam no brief.
 5. Preencha os atributos com evidência. Os sem evidência vão para "missing" com uma pergunta clara.
-6. Plano de fotos adequado a este produto específico.
+6. Plano de 5 a 7 fotos adequado a este produto específico. Não proponha embalagem, acessórios, medidas, textos ou detalhes que não estejam confirmados no brief.
 7. Em "improvements", diga objetivamente o que este anúncio entrega a mais que as referências.
 
 Tom: ${input.tone || 'profissional'}.`
@@ -532,20 +596,24 @@ Tom: ${input.tone || 'profissional'}.`
     workload: 'draft',
   })
 
-  const rawTitleGuard = guardTitle(copyBrief, String(raw.title || truth.name), titleLimit)
-  const titleGuard = guardTitle(
-    copyBrief,
-    buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit),
-    titleLimit
-  )
+  const rawTitleGuard = guardTitle(copyBrief, completeTitle(String(raw.title || truth.name), titleLimit), titleLimit)
+  const titleCandidates = [raw.title, ...(raw.title_alternatives || [])]
+    .map(candidate => String(candidate || '').trim())
+    .filter(Boolean)
+    .map(candidate => guardTitle(copyBrief, buildSemanticTitle(truth, candidate, titleLimit), titleLimit))
+  const titleGuard = titleCandidates
+    .filter(candidate => candidate.accepted)
+    .sort((a, b) => titleCandidateScore(b.value, copyBrief) - titleCandidateScore(a.value, copyBrief))[0]
+    || guardTitle(copyBrief, buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit), titleLimit)
   const title = titleGuard.value
-  const rawFamilyGuard = guardTitle(copyBrief, String(raw.family_name || truth.name), 60)
+  const rawFamilyGuard = guardTitle(copyBrief, completeTitle(String(raw.family_name || truth.name), 60), 60)
   const familyGuard = guardTitle(
     copyBrief,
     buildSemanticTitle(truth, String(raw.family_name || truth.name), 60),
     60
   )
   const familyName = familyGuard.value
+  const rawDescriptionGuard = verifyDescriptionClaims(String(raw.description || ''), copyBrief)
   const proposedDescription = guardDescription(String(raw.description || ''), title, truth)
   const descriptionGuard = verifyDescriptionClaims(proposedDescription, copyBrief)
   const description = descriptionGuard.valid ? proposedDescription : safeDescription(copyBrief, title)
@@ -563,15 +631,18 @@ Tom: ${input.tone || 'profissional'}.`
     }
   }
 
-  const imagePlan: ImagePlanStep[] =
+  const proposedImagePlan: ImagePlanStep[] =
     raw.image_plan && raw.image_plan.length >= 3
-      ? raw.image_plan.slice(0, 8).map((s, i) => ({
+      ? raw.image_plan.slice(0, 7).map((s, i) => ({
           order: i + 1,
           title: String(s.title || `Foto ${i + 1}`),
           description: String(s.description || ''),
           required: i < 3 || Boolean(s.required),
         }))
       : DEFAULT_IMAGE_PLAN
+  const imagePlan = [...proposedImagePlan, ...DEFAULT_IMAGE_PLAN.slice(proposedImagePlan.length)]
+    .slice(0, Math.max(5, Math.min(7, proposedImagePlan.length)))
+    .map((step, index) => ({ ...step, order: index + 1 }))
 
   const priceBasis = dna.price_context?.basis || research.price_basis
   const price = priceBasis === 'EXACT_PRODUCT' ? dna.price_context?.suggested ?? null : null
@@ -587,6 +658,7 @@ Tom: ${input.tone || 'profissional'}.`
     ...rawTitleGuard.reason_codes,
     ...familyGuard.reason_codes,
     ...rawFamilyGuard.reason_codes,
+    ...rawDescriptionGuard.reason_codes,
     ...descriptionGuard.reason_codes,
   ])]
   if (guardReasons.length) improvements.push(`COPY_GUARD: ${guardReasons.join(', ')}`)

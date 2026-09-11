@@ -130,9 +130,15 @@ export function factualDescription(brief: CopyBrief, title: string): string {
     title,
     '',
     'Sobre o produto',
-    brief.product_name,
+    `${brief.product_name}. Este anúncio organiza somente as informações confirmadas para apresentar o produto com clareza e sem promessas não verificadas.`,
+    '',
+    'Destaques do produto',
+    `- Produto: ${brief.product_name}`,
     ...(brief.facts.length
       ? ['', 'Especificações confirmadas', ...brief.facts.map(fact => `- ${fact.label}: ${fact.value}`)]
       : []),
+    '',
+    'Antes de comprar',
+    'Confira marca, modelo, variação e demais especificações confirmadas para garantir que esta é a opção adequada para sua necessidade.',
   ].join('\n').trim()
 }

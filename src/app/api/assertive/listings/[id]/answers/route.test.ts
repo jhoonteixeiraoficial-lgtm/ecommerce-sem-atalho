@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   listing: {} as Record<string, unknown>,
+  answers: {} as Record<string, string>,
   updatePatch: null as Record<string, unknown> | null,
   recomputeListing: vi.fn(),
 }))
@@ -12,7 +13,7 @@ vi.mock('@/app/api/community/helpers', () => ({
     response: null,
     authorizedUser: { id: 'user-1' },
   }),
-  readJson: vi.fn().mockResolvedValue({ body: { answers: { GTIN: '7898559182505' } } }),
+  readJson: vi.fn().mockImplementation(async () => ({ body: { answers: mocks.answers } })),
 }))
 vi.mock('@/lib/assertive/publisher', () => ({
   requireMLToken: vi.fn().mockResolvedValue('token'),
@@ -63,6 +64,7 @@ describe('POST /api/assertive/listings/[id]/answers', () => {
       validated_payload: { category_id: 'MLB60658' },
       validated_payload_hash: 'abc123',
     }
+    mocks.answers = { GTIN: '7898559182505' }
     mocks.updatePatch = null
     mocks.recomputeListing.mockResolvedValue({ status: 'ready' })
   })
@@ -91,5 +93,27 @@ describe('POST /api/assertive/listings/[id]/answers', () => {
       validated_payload_hash: null,
       status: 'ready',
     })
+  })
+
+  it('aceita e normaliza dimensões de envio exigidas mesmo fora do schema da categoria', async () => {
+    mocks.answers = {
+      SELLER_PACKAGE_WIDTH: '10',
+      SELLER_PACKAGE_LENGTH: '20 cm',
+      SELLER_PACKAGE_HEIGHT: '5',
+      SELLER_PACKAGE_WEIGHT: '500',
+    }
+
+    const response = await POST(new Request('http://localhost/answers', { method: 'POST' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(response.status).toBe(200)
+    const attributes = (mocks.updatePatch?.attributes as { list: Array<{ id: string; value_name: string }> }).list
+    expect(attributes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'SELLER_PACKAGE_WIDTH', value_name: '10 cm' }),
+      expect.objectContaining({ id: 'SELLER_PACKAGE_LENGTH', value_name: '20 cm' }),
+      expect.objectContaining({ id: 'SELLER_PACKAGE_HEIGHT', value_name: '5 cm' }),
+      expect.objectContaining({ id: 'SELLER_PACKAGE_WEIGHT', value_name: '500 g' }),
+    ]))
   })
 })

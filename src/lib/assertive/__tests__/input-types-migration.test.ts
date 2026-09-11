@@ -48,4 +48,14 @@ describe('Assertive input types migration', () => {
     expect(sql).toContain('CREATE OR REPLACE FUNCTION assertive_replace_listing_images')
     expect(sql).toContain('REVOKE ALL ON FUNCTION assertive_replace_listing_images')
   })
+
+  it('preserva o rótulo de recortes seguros ao substituir a galeria', () => {
+    const sql = readFileSync(
+      resolve(process.cwd(), 'supabase/migrations/20260911235000_assertive_safe_crop_labels.sql'),
+      'utf8'
+    )
+
+    expect(sql).toContain("asset.metadata ->> 'operation' = 'SAFE_CROP'")
+    expect(sql).toContain("THEN 'Recorte da foto original'")
+  })
 })

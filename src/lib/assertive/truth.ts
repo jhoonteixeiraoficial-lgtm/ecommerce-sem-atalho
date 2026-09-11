@@ -288,6 +288,53 @@ export function searchQueryFor(truth: ProductTruth, override?: string): string {
   return parts.join(' ').slice(0, 150)
 }
 
+function literalProductTypeFromDescription(description: string, truth: ProductTruth): string | null {
+  if (truth.fields.product_type?.value) return null
+  const normalizedDescription = description.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR')
+  const anchors = [truth.fields.brand, truth.fields.model]
+    .filter(field => field?.status === 'CONFIRMED' || field?.status === 'USER_OVERRIDE')
+    .map(field => field!.value.trim())
+    .filter(Boolean)
+
+  for (const anchor of anchors) {
+    const match = new RegExp(`\\b${anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').exec(truth.name)
+    if (!match || match.index === 0) continue
+    const candidate = truth.name.slice(0, match.index).replace(/^[\s,.;:()\-/]+|[\s,.;:()\-/]+$/g, '').trim()
+    const words = candidate.split(/\s+/).filter(Boolean)
+    if (candidate.length < 3 || candidate.length > 80 || words.length > 6 || /\d/.test(candidate)) continue
+    if (/^(?:vendo|ofere[cç]o|produto|item|kit)\b/i.test(candidate)) continue
+    const normalizedCandidate = candidate.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR')
+    if (normalizedDescription.includes(normalizedCandidate)) return candidate
+  }
+  return null
+}
+
+/** Acrescenta sinais factuais que desambiguam substantivos genéricos na taxonomia do ML. */
+export function categoryDiscoveryHint(truth: ProductTruth): string {
+  const hints = [
+    truth.category_hint?.trim(),
+  ]
+  const semanticFields: Array<[string, string]> = [
+    ['voltage', 'tensão elétrica voltagem'],
+    ['power', 'potência elétrica'],
+    ['capacity', 'capacidade'],
+    ['compatibility', 'compatibilidade'],
+    ['material', 'material'],
+    ['units_per_pack', 'quantidade por pacote'],
+  ]
+  for (const [fieldId, label] of semanticFields) {
+    const field = truth.fields[fieldId]
+    if (field && field.confidence !== 'low') hints.push(`${label} ${field.value}`)
+  }
+  hints.push(
+    truth.fields.product_type?.confidence !== 'low' ? truth.fields.product_type?.value : undefined,
+    truth.fields.function?.confidence !== 'low' ? truth.fields.function?.value : undefined,
+  )
+  return [...new Set(hints.filter((value): value is string => Boolean(value)))]
+    .join(' ')
+    .slice(0, 350)
+}
+
 // ---------------------------------------------------------------- entradas
 export async function identifyFromDescription(
   config: AIConfig | null,
@@ -300,6 +347,24 @@ export async function identifyFromDescription(
     { temperature: 0.2 }
   )
   const truth = buildTruth(raw, 'description', 'Informado pelo vendedor na descrição')
+  const literalProductType = literalProductTypeFromDescription(description, truth)
+  if (literalProductType) {
+    truth.fields.product_type = {
+      value: literalProductType,
+      confidence: 'confirmed',
+      source: 'description',
+      evidence: `Trecho literal da descrição: "${literalProductType}"`,
+      status: 'CONFIRMED',
+    }
+    truth.uncertain = truth.uncertain.filter(question => question.field !== 'product_type')
+    truth.identity = buildCanonicalIdentity({
+      name: truth.name,
+      fields: truth.fields,
+      categoryHint: truth.category_hint,
+      evidence: truth.evidence,
+      confidence: truth.confidence,
+    })
+  }
   if (raw.search_query) truth.evidence.push(`Busca sugerida: ${raw.search_query}`)
   return truth
 }

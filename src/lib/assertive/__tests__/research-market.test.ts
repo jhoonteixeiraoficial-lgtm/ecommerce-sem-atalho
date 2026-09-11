@@ -7,7 +7,7 @@ vi.mock('../ml-api', async importOriginal => {
   return { ...original, mlGet: mocks.mlGet }
 })
 
-import { exactFactSources, researchMarket } from '../research'
+import { exactFactSources, exactProductReferenceUrls, researchMarket } from '../research'
 import type { ResearchResult } from '../research'
 import type { ProductTruth } from '../truth'
 
@@ -21,6 +21,7 @@ const truth: ProductTruth = {
   uncertain: [],
   evidence: ['fonte oficial'],
   confidence: 1,
+  category_hint: 'Ferramentas Automotivas > Diagnóstico e Testes',
   source_category_id: 'MLB60658',
   source_domain_id: 'MLB-TOOL_AND_CONSTRUCTION_SUPPLIES',
 }
@@ -102,6 +103,7 @@ describe('researchMarket', () => {
     const result = await researchMarket('token', truth.name, {
       sourceCategoryId: truth.source_category_id,
       sourceDomainId: truth.source_domain_id,
+      domainHint: truth.category_hint,
       truth,
       deepLimit: 8,
     })
@@ -123,6 +125,8 @@ describe('researchMarket', () => {
     const searchPaths = mocks.mlGet.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/products/search?'))
     expect(searchPaths.some(path => path.includes('q=7898559182505'))).toBe(true)
     expect(searchPaths.some(path => decodeURIComponent(path).includes('q=Kitest KA250'))).toBe(true)
+    const discoveryPath = mocks.mlGet.mock.calls.map(([path]) => String(path)).find(path => path.startsWith('/sites/MLB/domain_discovery/search'))
+    expect(decodeURIComponent(discoveryPath || '')).toContain('Ferramentas Automotivas > Diagnóstico e Testes')
   })
 })
 
@@ -139,5 +143,43 @@ describe('exactFactSources', () => {
     } as unknown as ResearchResult)
 
     expect(sources).toEqual([{ title: 'Seguro', attributes: { BRAND: 'Kitest' } }])
+  })
+
+  it('usa somente fotos de correspondências exatas autorizadas como fonte factual', () => {
+    const urls = exactProductReferenceUrls({
+      catalog_matches: [
+        { pictures: ['https://cdn.example/exact.jpg'], match_class: 'EXACT_PRODUCT', usable_as_fact_source: true },
+      ],
+      competitors: [
+        { pictures: ['https://cdn.example/exact.jpg', 'https://cdn.example/exact-2.jpg'], match_class: 'EXACT_PRODUCT', usable_as_fact_source: true },
+        { pictures: ['https://cdn.example/comparable.jpg'], match_class: 'COMPARABLE_PRODUCT', usable_as_fact_source: false },
+      ],
+    } as ResearchResult)
+
+    expect(urls).toEqual(['https://cdn.example/exact.jpg', 'https://cdn.example/exact-2.jpg'])
+  })
+
+  it('prioriza referências exatas com sinais oficiais de melhor vendedor', () => {
+    const urls = exactProductReferenceUrls({
+      catalog_matches: [
+        { pictures: ['https://cdn.example/catalog.jpg'], match_class: 'EXACT_PRODUCT', usable_as_fact_source: true, product_match_confidence: 0.99 },
+      ],
+      competitors: [
+        {
+          pictures: ['https://cdn.example/ordinary.jpg'], match_class: 'EXACT_PRODUCT', usable_as_fact_source: true,
+          product_match_confidence: 0.99, highlight_position: null, search_position: 4,
+          competitive_reference_strength: 70, seller: null,
+        },
+        {
+          pictures: ['https://cdn.example/best-seller.jpg'], match_class: 'EXACT_PRODUCT', usable_as_fact_source: true,
+          product_match_confidence: 0.99, highlight_position: 1, search_position: 1,
+          competitive_reference_strength: 95,
+          seller: { official_store: true, power_seller_status: 'platinum', transactions_total: 10000 },
+        },
+      ],
+    } as ResearchResult)
+
+    expect(urls[0]).toBe('https://cdn.example/best-seller.jpg')
+    expect(urls).toContain('https://cdn.example/catalog.jpg')
   })
 })

@@ -6,6 +6,7 @@ export type ObservedStage =
   | 'attribute_autofill'
   | 'photos'
   | 'image_enhancement'
+  | 'image_generation'
   | 'generation'
   | 'pricing'
   | 'preflight'

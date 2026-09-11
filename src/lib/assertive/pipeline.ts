@@ -5,7 +5,7 @@ import type { ProductTruth } from './truth'
 import { enrichFromCatalog } from './truth'
 
 type Mutable<T> = { -readonly [P in keyof T]: T[P] }
-import { exactFactSources, researchMarket, type ResearchResult } from './research'
+import { exactFactSources, exactProductReferenceUrls, researchMarket, type ResearchResult } from './research'
 import { extractDNA, type WinningListingDNA } from './dna'
 import {
   getCategory,
@@ -20,15 +20,17 @@ import { generateListing, type GeneratedListing, type ListingAttribute } from '.
 import { enrichAttributes, type EnrichedAttribute } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
 import { requireMLToken, getSellerCapabilities, buildItemPayload, predictMLTitle, getAutoAppendedAttributeIds, validateListing, type SellerCapabilities, type TitleControlMode } from './publisher'
-import { searchQueryFor } from './truth'
+import { categoryDiscoveryHint, searchQueryFor } from './truth'
 import { decrypt } from './encryption'
 import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
 import { computeEffectiveRequirements, type PublicationRequirements } from './publication-requirements'
 import { targetedAttributeResearch } from './targeted-research'
 import { observeAnalysisStage, recordAnalysisStageEvent } from './observability'
 import { buildBlockingQuestions } from './blocking-questions'
-import { buildListingGallery, type ListingGallery } from './image-pipeline'
+import { buildAnalysisListingGallery, type ListingGallery } from './image-pipeline'
 import { attachListingImages } from './image-assets'
+import { buildCopyBrief } from './copy-brief'
+import { hasPendingImageReview } from './publication-readiness'
 
 export type AnalysisStage =
   | 'input'
@@ -288,6 +290,7 @@ export async function runResearch(
       categoryHint: opts.categoryOverride || null,
       sourceCategoryId: truth.source_category_id || null,
       sourceDomainId: truth.source_domain_id || null,
+      domainHint: categoryDiscoveryHint(truth) || null,
       // permite classificar EXACT vs COMPARABLE
       truth,
     })
@@ -602,6 +605,8 @@ export async function runGeneration(
 
   // P0.7: fotos da source URL (ML URL informada pelo usuário)
   const sourcePhotos = (truth.source_pictures || []) as string[]
+  const exactReferencePhotos = exactProductReferenceUrls(research)
+  const generatedReferencePhotos = [...new Set([...sourcePhotos, ...exactReferencePhotos])]
 
   let photoResult: Awaited<ReturnType<typeof collectAndClassifyPhotos>>
   try {
@@ -656,26 +661,38 @@ export async function runGeneration(
   const renditionAssetIds = Array.isArray(analysis.input_data?.photo_asset_ids)
     ? analysis.input_data.photo_asset_ids.filter((id): id is string => typeof id === 'string' && Boolean(id))
     : []
-  if (renditionAssetIds.length) {
-    assetGallery = await observeAnalysisStage(
-      {
-        analysis_id: analysis.id,
-        user_id: analysis.user_id,
-        stage: 'image_enhancement',
-        metadata: { requested_assets: renditionAssetIds.length },
+  const imageBrief = buildCopyBrief({ truth, category })
+  const confirmedFactIds = new Set(imageBrief.facts.map(fact => fact.id))
+  const identityReady = truth.confidence >= 0.7
+    && confirmedFactIds.has('product_type')
+    && ['brand', 'model', 'variant', 'material', 'color'].some(id => confirmedFactIds.has(id))
+  assetGallery = await observeAnalysisStage(
+    {
+      analysis_id: analysis.id,
+      user_id: analysis.user_id,
+      stage: renditionAssetIds.length ? 'image_enhancement' : 'image_generation',
+      metadata: {
+        input_type: analysis.input_type,
+        requested_assets: renditionAssetIds.length,
+        reference_assets: generatedReferencePhotos.length,
       },
-      () => buildListingGallery({
-        userId: analysis.user_id,
-        analysisId: analysis.id,
-        renditionAssetIds,
-        productName: truth.name,
-        config,
-        maxPictures: category?.settings?.max_pictures_per_item || 12,
-      })
-    )
-    photos = assetGallery.urls
-    photoMetadata = assetGallery.images
-  }
+    },
+    () => buildAnalysisListingGallery({
+      userId: analysis.user_id,
+      analysisId: analysis.id,
+      inputType: analysis.input_type,
+      renditionAssetIds,
+      referenceUrls: generatedReferencePhotos,
+      productName: truth.name,
+      facts: imageBrief.facts.map(fact => ({ label: fact.label, value: fact.value })),
+      identityReady,
+      config,
+      maxPictures: category?.settings?.max_pictures_per_item || 12,
+      imagePlan: generated.image_plan,
+    })
+  )
+  photos = assetGallery.urls
+  photoMetadata = assetGallery.images
 
   const scores = computeScores({
     title: generated.title,
@@ -762,6 +779,7 @@ export async function runGeneration(
   }
 
   const hasRealBlockers = !generated.title?.trim() || !generated.price || generated.price <= 0 || photos.length === 0
+    || assetGallery.reviewRequiredAssetIds.length > 0
     || (publicationRequirements && publicationRequirements.blocker_count > 0)
   const status = hasRealBlockers ? 'needs_input' : 'ready'
 
@@ -801,6 +819,12 @@ export async function runGeneration(
         photo_metadata: photoMetadata,
         photo_stats: photoResult.stats,
         photo_gap_analysis: photoResult.photo_gap,
+        image_review: {
+          outcome: assetGallery.outcome,
+          required_asset_ids: assetGallery.reviewRequiredAssetIds,
+          confirmed_asset_ids: [],
+          warning: assetGallery.warning || null,
+        },
         // pre-publish validation
         publication_requirements: publicationRequirements,
         blocking_questions: publicationRequirements
@@ -823,7 +847,7 @@ export async function runGeneration(
 
   if (error || !listing) throw new Error('Não foi possível salvar o anúncio gerado.')
 
-  if (assetGallery) {
+  if (assetGallery.listingImages.length) {
     try {
       await attachListingImages(listing.id, analysis.user_id, assetGallery.listingImages)
     } catch (attachError) {
@@ -890,6 +914,7 @@ export async function recomputeListing(listingId: string, userId: string) {
   // Status: não rebaixa status de 'ready_to_publish' por schema interno.
   // 'needs_input' só quando faltam dados reais do ML (título, preço, foto).
   const hasRealBlockers = !listing.title?.trim() || !listing.price || Number(listing.price) <= 0 || !listing.photos?.length
+    || hasPendingImageReview(listing.attributes || {})
   const status =
     listing.status === 'published' || listing.status === 'publishing'
       ? listing.status

@@ -82,6 +82,12 @@ export interface EditorReadinessInput {
   price?: number | null
   category_id?: string | null
   photos?: string[] | null
+  attributes?: Record<string, unknown> & {
+    image_review?: {
+      required_asset_ids?: string[]
+      confirmed_asset_ids?: string[]
+    }
+  } | null
   validation?: {
     valid?: boolean
     checked_at?: string
@@ -101,6 +107,12 @@ export interface EditorReadinessResult {
   canPublish: boolean
   state: ReadinessState
   blocker: { target: string; message: string } | null
+}
+
+export function hasPendingImageReview(attributes: EditorReadinessInput['attributes']): boolean {
+  const required = attributes?.image_review?.required_asset_ids || []
+  const confirmed = new Set(attributes?.image_review?.confirmed_asset_ids || [])
+  return required.some(assetId => !confirmed.has(assetId))
 }
 
 function isAcceptedMLValidation(validation: {
@@ -487,6 +499,13 @@ export function evaluateEditorReadiness(listing: EditorReadinessInput): EditorRe
   }
   if (!listing.photos?.length) {
     return { canPublish: false, state: 'NEEDS_USER_INPUT', blocker: { target: 'listing-photos', message: 'Adicione pelo menos uma foto para continuar.' } }
+  }
+  if (hasPendingImageReview(listing.attributes)) {
+    return {
+      canPublish: false,
+      state: 'NEEDS_USER_INPUT',
+      blocker: { target: 'listing-photos', message: 'Confirme a imagem gerada por IA antes de publicar.' },
+    }
   }
   if (!listing.category_id) {
     return { canPublish: false, state: 'NEEDS_USER_INPUT', blocker: { target: 'listing-category', message: 'Resolva a categoria do produto para continuar.' } }

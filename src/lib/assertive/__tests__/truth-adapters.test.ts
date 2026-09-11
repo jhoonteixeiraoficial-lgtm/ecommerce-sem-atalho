@@ -116,6 +116,27 @@ describe('adapters de identidade', () => {
     expect(truth.name).not.toMatch(/frete|oferta|promoção/i)
   })
 
+  it('recupera o tipo de produto literal antes da marca quando a IA o omite', async () => {
+    mocks.generateJson.mockResolvedValueOnce({
+      name: 'Processador AMD Ryzen 5 5500 6 núcleos 12 threads AM4',
+      confidence: 0.99,
+      category_hint: 'Componentes > Computadores > Processadores',
+      fields: {
+        brand: { value: 'AMD', confidence: 'confirmed', evidence: 'texto menciona AMD' },
+        model: { value: 'Ryzen 5 5500', confidence: 'confirmed', evidence: 'texto menciona Ryzen 5 5500' },
+      },
+      uncertain: [],
+    })
+
+    const truth = await identifyFromDescription(null, 'Processador AMD Ryzen 5 5500 para computadores desktop.')
+
+    expect(truth.fields.product_type).toMatchObject({
+      value: 'Processador', source: 'description', confidence: 'confirmed', status: 'CONFIRMED',
+    })
+    expect(truth.identity?.product_type).toBe('Processador')
+    expect(truth.identity?.unknowns).not.toContain('product_type')
+  })
+
   it('não transforma confiança alta da IA em fato publicável', async () => {
     const truth = await identifyFromDescription(null, 'Caneta de polaridade Kitest KA250')
 

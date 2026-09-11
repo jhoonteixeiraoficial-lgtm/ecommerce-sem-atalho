@@ -181,6 +181,24 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
     expect(mocks.publishListing).not.toHaveBeenCalled()
   })
 
+  it('recusa publicação de imagem gerada ainda não confirmada pelo usuário', async () => {
+    mocks.listing.attributes.image_review = {
+      required_asset_ids: ['generated-1'],
+      confirmed_asset_ids: [],
+    }
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+    const body = await response.json()
+
+    expect(response.status).toBe(409)
+    expect(body.code).toBe('IMAGE_REVIEW_REQUIRED')
+    expect(mocks.validateListing).not.toHaveBeenCalled()
+    expect(mocks.publishListing).not.toHaveBeenCalled()
+  })
+
   it('persiste e devolve o estado autoritativo retornado por GET /items/{id}', async () => {
     const response = await POST(new Request('http://localhost/publish', {
       method: 'POST',

@@ -92,6 +92,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
   }
 
+  const requiredImageReviews = listing.attributes?.image_review?.required_asset_ids || []
+  const confirmedImageReviews = new Set(listing.attributes?.image_review?.confirmed_asset_ids || [])
+  if (requiredImageReviews.some((assetId: string) => !confirmedImageReviews.has(assetId))) {
+    return Response.json(
+      { error: 'Confirme a imagem gerada por IA antes de publicar.', code: 'IMAGE_REVIEW_REQUIRED' },
+      { status: 409 }
+    )
+  }
+
   // ---------------------------------------------------------------- LOCK: status = publishing
   if (listing.status === 'publishing') {
     const startedAt = listing.publishing_started_at ? new Date(listing.publishing_started_at).getTime() : 0

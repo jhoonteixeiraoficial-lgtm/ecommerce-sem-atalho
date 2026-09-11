@@ -13,7 +13,31 @@ const schema = z.object({
   answers: z.record(z.string().max(60), z.string().max(500)),
 })
 
+const SELLER_PACKAGE_FIELDS: Record<string, { name: string; unit: 'cm' | 'g' }> = {
+  SELLER_PACKAGE_HEIGHT: { name: 'Altura da embalagem', unit: 'cm' },
+  SELLER_PACKAGE_WIDTH: { name: 'Largura da embalagem', unit: 'cm' },
+  SELLER_PACKAGE_LENGTH: { name: 'Comprimento da embalagem', unit: 'cm' },
+  SELLER_PACKAGE_WEIGHT: { name: 'Peso da embalagem', unit: 'g' },
+}
 
+function normalizeSellerPackageValue(attrId: string, value: string): string | null {
+  const field = SELLER_PACKAGE_FIELDS[attrId]
+  if (!field) return null
+  const match = value.trim().toLowerCase().replace(',', '.').match(/^(\d+(?:\.\d+)?)\s*(mm|cm|m|g|kg)?$/)
+  if (!match) return null
+  let amount = Number(match[1])
+  const sourceUnit = match[2] || field.unit
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  if (field.unit === 'cm') {
+    if (!['mm', 'cm', 'm'].includes(sourceUnit)) return null
+    if (sourceUnit === 'mm') amount /= 10
+    if (sourceUnit === 'm') amount *= 100
+  } else {
+    if (!['g', 'kg'].includes(sourceUnit)) return null
+    if (sourceUnit === 'kg') amount *= 1000
+  }
+  return `${Number(amount.toFixed(2))} ${field.unit}`
+}
 
 /**
  * Recebe as respostas do vendedor para os campos que faltavam.
@@ -52,7 +76,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     for (const [attrId, rawValue] of Object.entries(parsed.data.answers)) {
       const value = rawValue.trim()
       const spec = byId.get(attrId)
-      if (!spec) continue
+      const sellerPackageField = SELLER_PACKAGE_FIELDS[attrId]
+      if (!spec && !sellerPackageField) continue
 
       if (!value) {
         const idx = current.findIndex(a => a.id === attrId)
@@ -61,9 +86,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }
 
       let value_id: string | undefined
-      let value_name = value
+      let value_name = sellerPackageField ? normalizeSellerPackageValue(attrId, value) : value
+      if (!value_name) {
+        rejected.push(`${sellerPackageField?.name || spec?.name || attrId}: valor inválido`)
+        continue
+      }
 
-      if (spec.values?.length) {
+      if (spec?.values?.length) {
         const match = matchAttributeValue(value, spec.values)
         if (match) {
           value_id = match.id
@@ -74,20 +103,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         }
       }
 
-      if (spec.value_max_length && value_name.length > spec.value_max_length) {
+      if (spec?.value_max_length && value_name.length > spec.value_max_length) {
         value_name = value_name.slice(0, spec.value_max_length)
       }
 
       const entry: ListingAttribute = {
         id: attrId,
-        name: spec.name,
+        name: spec?.name || sellerPackageField!.name,
         value_name,
         value_id,
-        tier: spec.tier,
+        tier: spec?.tier || 'required',
         source: 'user',
         status: 'USER_OVERRIDE',
         evidence: 'Informado pelo vendedor',
-        isVariationOnly: spec.isVariationOnly,
+        isVariationOnly: spec?.isVariationOnly || false,
       }
 
       const idx = current.findIndex(a => a.id === attrId)

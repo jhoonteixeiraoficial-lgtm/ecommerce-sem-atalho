@@ -40,4 +40,34 @@ describe('image asset publication boundary', () => {
   ])('rejeita ativo sem direito ou fidelidade: %o', override => {
     expect(isPublicationAssetAllowed({ ...asset, ...override })).toBe(false)
   })
+
+  it('aceita cena gerada sem pai quando a proveniência factual está completa', () => {
+    expect(isPublicationAssetAllowed({
+      ...asset,
+      kind: 'GENERATED_SCENE',
+      origin: 'ML_CATALOG',
+      rights_status: 'LICENSED',
+      parent_asset_id: null,
+      provider: 'gemini',
+      model: 'gemini-3-pro-image',
+      metadata: {
+        truth_brief_hash: 'brief-hash',
+        prompt_hash: 'prompt-hash',
+        review_required: true,
+      },
+    })).toBe(true)
+  })
+
+  it('rejeita cena gerada sem pai quando falta proveniência factual', () => {
+    expect(isPublicationAssetAllowed({
+      ...asset,
+      kind: 'GENERATED_SCENE',
+      origin: 'ML_CATALOG',
+      rights_status: 'LICENSED',
+      parent_asset_id: null,
+      provider: 'gemini',
+      model: 'gemini-3-pro-image',
+      metadata: { review_required: true },
+    })).toBe(false)
+  })
 })

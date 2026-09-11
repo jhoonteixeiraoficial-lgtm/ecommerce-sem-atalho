@@ -33,7 +33,11 @@ const attributeSchema = z.object({
   value_name: z.string().max(500),
   value_id: z.string().max(60).optional(),
   tier: z.string().max(30).optional(),
-  source: z.string().max(20).optional(),
+  source: z.enum(['truth', 'ai', 'catalog', 'user']).optional(),
+  status: z.enum(['CONFIRMED', 'AUTO_FILLED', 'NEEDS_CONFIRMATION', 'UNKNOWN', 'NOT_APPLICABLE', 'CONFLICT', 'USER_OVERRIDE']).optional(),
+  evidence: z.string().max(2000).optional(),
+  source_url: z.string().url().max(2000).optional(),
+  isVariationOnly: z.boolean().optional(),
 })
 
 const listingImageSchema = z.object({
@@ -55,8 +59,7 @@ const patchSchema = z.object({
   family_name: z.string().max(120).optional(),
   photos: z.array(z.string().url()).max(12).optional(),
   listing_images: z.array(listingImageSchema).max(12).optional(),
-  // attributes pode vir como array (substituição da lista) ou como objeto (merge de campos aninhados)
-  attributes: z.union([z.array(attributeSchema).max(120), z.record(z.unknown())]).optional(),
+  attributes: z.array(attributeSchema).max(120).optional(),
   photo_metadata: z.array(z.object({
     asset_id: z.string().max(100).optional(),
     parent_asset_id: z.string().max(100).optional(),
@@ -118,15 +121,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
   }
 
-  const { attributes, photo_metadata, listing_images: _listingImages, ...rest } = parsed.data
+  const { attributes, photo_metadata } = parsed.data
+  const rest = { ...parsed.data }
+  delete rest.attributes
+  delete rest.photo_metadata
+  delete rest.listing_images
   const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
 
   if (attributes) {
-    if (Array.isArray(attributes)) {
-      patch.attributes = { ...(current.attributes || {}), list: attributes }
-    } else {
-      patch.attributes = { ...(current.attributes || {}), ...attributes }
-    }
+    patch.attributes = { ...(current.attributes || {}), list: attributes }
   }
   if (photo_metadata) {
     patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }

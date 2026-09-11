@@ -439,4 +439,39 @@ describe('PublicationReadiness - editor', () => {
       message: 'Preencha Código universal de produto para continuar.',
     })
   })
+
+  it('bloqueia publicação enquanto uma imagem gerada aguarda confirmação visual', () => {
+    const readiness = evaluateEditorReadiness({
+      ...baseListing,
+      attributes: {
+        image_review: {
+          required_asset_ids: ['generated-1'],
+          confirmed_asset_ids: [],
+        },
+      },
+    })
+
+    expect(readiness).toMatchObject({
+      canPublish: false,
+      state: 'NEEDS_USER_INPUT',
+      blocker: {
+        target: 'listing-photos',
+        message: 'Confirme a imagem gerada por IA antes de publicar.',
+      },
+    })
+  })
+
+  it('libera a imagem gerada depois da confirmação visual do usuário', () => {
+    const readiness = evaluateEditorReadiness({
+      ...baseListing,
+      attributes: {
+        image_review: {
+          required_asset_ids: ['generated-1'],
+          confirmed_asset_ids: ['generated-1'],
+        },
+      },
+    })
+
+    expect(readiness.canPublish).toBe(true)
+  })
 })

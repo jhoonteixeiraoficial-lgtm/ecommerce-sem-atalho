@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, use, useRef } from 'react'
+import { useState, useEffect, useEffectEvent, useCallback, use, useRef } from 'react'
 import Link from 'next/link'
 import { evaluateEditorReadiness } from '@/lib/assertive/publication-readiness'
 import { resolveMarketplacePublication } from '@/lib/assertive/marketplace-publication'
@@ -10,6 +10,7 @@ import {
   Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera, Search,
   ExternalLink, Sparkles, TrendingUp, Truck, Store, ChevronDown, Plug,
   ArrowUp, ArrowDown, Star, Info, AlertTriangle,
+  Pencil, Save,
 } from 'lucide-react'
 
 interface ListingAttribute {
@@ -149,6 +150,13 @@ interface Listing {
     ml_final_title?: string
     auto_appended_attributes?: string[]
     publication_requirements?: PublicationRequirementsView | null
+    image_review?: {
+      outcome?: 'enhanced' | 'normalized_fallback' | 'generated_pending_review' | 'generation_failed' | 'identity_required'
+      required_asset_ids?: string[]
+      confirmed_asset_ids?: string[]
+      warning?: string | null
+      confirmed_at?: string
+    }
   }
   image_plan: Array<{ order: number; title: string; description: string; required: boolean }>
   completeness: {
@@ -281,6 +289,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [showConfirm, setShowConfirm] = useState(false)
   const [openSection, setOpenSection] = useState<string | null>('missing')
+  const [editingAttributes, setEditingAttributes] = useState(false)
+  const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({})
   const uploadRef = useRef<HTMLInputElement>(null)
 
   const [title, setTitle] = useState('')
@@ -301,6 +311,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setDescription(data.description || '')
     setPrice(data.price != null ? String(data.price) : '')
     setQuantity(String(data.available_quantity || 1))
+    setAttributeDrafts(Object.fromEntries((data.attributes?.list || []).map(attribute => [attribute.id, attribute.value_name])))
 
     const aRes = await fetch(`/api/assertive/analyses/${data.analysis_id}`)
     if (aRes.ok) {
@@ -323,15 +334,16 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
+  const onLightboxKeyDown = useEffectEvent((e: KeyboardEvent) => {
+    if (e.key === 'Escape') setLightbox({ open: false, index: 0 })
+    else if (e.key === 'ArrowLeft') moveLightbox('prev')
+    else if (e.key === 'ArrowRight') moveLightbox('next')
+  })
+
   useEffect(() => {
     if (!lightbox.open) return
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setLightbox({ open: false, index: 0 })
-      else if (e.key === 'ArrowLeft') moveLightbox('prev')
-      else if (e.key === 'ArrowRight') moveLightbox('next')
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onLightboxKeyDown)
+    return () => window.removeEventListener('keydown', onLightboxKeyDown)
   }, [lightbox.open])
 
   async function connectML() {
@@ -413,6 +425,53 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       }
     }
     setAnswers({})
+    await load()
+    setSaving(false)
+  }
+
+  async function saveAttributes() {
+    if (!listing) return
+    const updated = (listing.attributes.list || []).map(attribute => {
+      const value = (attributeDrafts[attribute.id] ?? attribute.value_name).trim()
+      const changed = value !== attribute.value_name
+      return {
+        ...attribute,
+        value_name: value,
+        value_id: changed ? undefined : attribute.value_id,
+        source: changed ? 'user' : attribute.source,
+        status: changed ? 'USER_OVERRIDE' : attribute.status,
+      }
+    }).filter(attribute => attribute.value_name)
+    await save({ attributes: updated })
+    setEditingAttributes(false)
+  }
+
+  function cancelAttributeEditing() {
+    if (!listing) return
+    setAttributeDrafts(Object.fromEntries((listing.attributes.list || []).map(attribute => [attribute.id, attribute.value_name])))
+    setEditingAttributes(false)
+  }
+
+  async function confirmGeneratedImage(assetId: string) {
+    setSaving(true)
+    setError(null)
+    const res = await fetch(`/api/assertive/listings/${id}/images/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_id: assetId }),
+    })
+    const data = await res.json()
+    if (!res.ok) setError(data.error || 'Não foi possível confirmar a imagem.')
+    await load()
+    setSaving(false)
+  }
+
+  async function retryGeneratedImage() {
+    setSaving(true)
+    setError(null)
+    const res = await fetch(`/api/assertive/listings/${id}/images/retry`, { method: 'POST' })
+    const data = await res.json()
+    if (!res.ok) setError(data.error || 'Não foi possível gerar outra imagem.')
     await load()
     setSaving(false)
   }
@@ -599,6 +658,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     publication_requirements: pubReqs,
   })
   const canPublish = editorReadiness.canPublish
+  const imageReview = listing.attributes?.image_review
+  const confirmedImageIds = new Set(imageReview?.confirmed_asset_ids || [])
+  const pendingImageIds = (imageReview?.required_asset_ids || []).filter(assetId => !confirmedImageIds.has(assetId))
   const competitors = research?.competitors || []
 
   // Ordenar missing: obrigatórios primeiro, depois recommended, depois optional
@@ -869,6 +931,58 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 onChange={e => { uploadPhotos(e.target.files); e.target.value = '' }}
               />
 
+              {imageReview?.warning && (
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-200">
+                  <span>{imageReview.warning}</span>
+                  {!isPublished && (
+                    <button
+                      type="button"
+                      onClick={retryGeneratedImage}
+                      disabled={saving}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/10 disabled:opacity-50"
+                    >
+                      {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      Gerar outra opção
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {pendingImageIds.length > 0 && (
+                <div data-testid="ai-image-review" className="mb-4 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+                  <p className="text-sm font-medium text-blue-200">Confira a imagem gerada por IA</p>
+                  <p className="mt-1 text-xs text-blue-200/70">Confirme visualmente produto, modelo, cor e quantidade antes de validar o anúncio.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {pendingImageIds.map(assetId => (
+                      <button
+                        key={assetId}
+                        onClick={() => confirmGeneratedImage(assetId)}
+                        disabled={saving}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-400 px-3 py-2 text-xs font-semibold text-black transition hover:bg-blue-300 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Confirmar imagem
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={retryGeneratedImage}
+                      disabled={saving}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-400/30 px-3 py-2 text-xs font-semibold text-blue-200 transition hover:bg-blue-400/10 disabled:opacity-50"
+                    >
+                      {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      Gerar outra opção
+                    </button>
+                    <button
+                      onClick={() => uploadRef.current?.click()}
+                      disabled={saving}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-400/30 px-3 py-2 text-xs font-semibold text-blue-200 transition hover:bg-blue-400/10 disabled:opacity-50"
+                    >
+                      <Upload className="h-3.5 w-3.5" /> Enviar foto própria
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                 {listing.photos.map((url, i) => {
                   const meta = listing.attributes.photo_metadata?.find(m => m.url === url)
@@ -925,7 +1039,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
                       {/* actions overlay */}
                       {!isPublished && (
-                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition flex items-end justify-between">
+                        <div className="absolute z-20 bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition flex items-end justify-between">
                           <div className="flex gap-0.5">
                             {i > 0 && (
                               <button onClick={e => { e.stopPropagation(); movePhoto(url, 'up') }} className="p-1 rounded bg-black/50 text-white hover:bg-white/20 transition" title="Mover para cima">
@@ -961,7 +1075,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                         <button
                           onClick={() => removePhoto(url)}
                           aria-label="Remover"
-                          className="absolute top-1 right-1 bg-black/70 text-white rounded-full p-1 hover:bg-red-500 transition sm:hidden"
+                          className="absolute z-20 top-1 right-1 bg-black/70 text-white rounded-full p-1 hover:bg-red-500 transition sm:hidden"
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -1229,7 +1343,18 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <h2 className="text-white font-semibold flex items-center gap-2">
                   <ListChecks className="w-4 h-4 text-amber-500" /> Ficha técnica
                 </h2>
-                <span className="text-gray-500 text-xs">{attrs.length} preenchidos</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500 text-xs">{attrs.length} preenchidos</span>
+                  {!isPublished && !editingAttributes && (
+                    <button
+                      data-testid="edit-attributes"
+                      onClick={() => setEditingAttributes(true)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-amber-500/30 px-2.5 py-1.5 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/10"
+                    >
+                      <Pencil className="h-3 w-3" /> Editar atributos
+                    </button>
+                  )}
+                </div>
               </div>
 
               {attrs.length > 0 ? (
@@ -1250,7 +1375,17 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                           )}
                         </div>
                         <div className="text-right shrink-0 max-w-[55%]">
-                          <span className="text-white text-sm">{a.value_name}</span>
+                          {editingAttributes ? (
+                            <input
+                              id={`attribute-${a.id}`}
+                              aria-label={`Editar ${a.name}`}
+                              value={attributeDrafts[a.id] ?? a.value_name}
+                              onChange={event => setAttributeDrafts(current => ({ ...current, [a.id]: event.target.value }))}
+                              className="w-full min-w-32 rounded-lg border border-[#333] bg-[#1c1c1c] px-2.5 py-1.5 text-right text-sm text-white focus:border-amber-500/50 focus:outline-none"
+                            />
+                          ) : (
+                            <span className="text-white text-sm">{a.value_name}</span>
+                          )}
                           {badge && (
                             <span className={`block text-[10px] ${badge.className}`}>{badge.label}</span>
                           )}
@@ -1258,6 +1393,26 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                       </div>
                     )
                   })}
+                  {editingAttributes && (
+                    <div className="flex justify-end gap-2 pt-4">
+                      <button
+                        onClick={cancelAttributeEditing}
+                        disabled={saving}
+                        className="rounded-lg border border-[#333] px-3 py-2 text-xs font-semibold text-gray-300 hover:bg-white/5 disabled:opacity-50"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        data-testid="save-attributes"
+                        onClick={saveAttributes}
+                        disabled={saving}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-black hover:bg-amber-400 disabled:opacity-50"
+                      >
+                        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                        Salvar atributos
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <p className="text-gray-500 text-sm">Nenhum atributo preenchido ainda.</p>

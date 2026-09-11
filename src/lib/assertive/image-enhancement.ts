@@ -47,7 +47,8 @@ export async function preparePublicationImage(input: {
     const fidelity = await verifyImageFidelity({
       original: original.buffer,
       candidate: candidate.buffer,
-      mime_type: original.mime_type,
+      original_mime_type: original.mime_type,
+      candidate_mime_type: candidate.mime_type,
       productName: input.productName,
       config: input.config || null,
     })

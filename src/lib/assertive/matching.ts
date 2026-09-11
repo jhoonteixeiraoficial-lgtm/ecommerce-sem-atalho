@@ -111,10 +111,31 @@ export function evaluateMatch(truth: ProductTruth, candidate: CandidateIdentity)
     }
   }
 
+  const variantChecks: Array<[keyof ProductTruth['fields'], string[], string]> = [
+    ['color', ['COLOR', 'MAIN_COLOR'], 'Cor'],
+    ['material', ['MATERIAL', 'BODY_MATERIAL'], 'Material'],
+    ['voltage', ['VOLTAGE'], 'Voltagem'],
+    ['power', ['POWER'], 'Potência'],
+    ['capacity', ['CAPACITY'], 'Capacidade'],
+    ['units_per_pack', ['UNITS_PER_PACK'], 'Quantidade'],
+    ['line', ['LINE'], 'Linha'],
+    ['variant', ['VARIANT'], 'Variante'],
+  ]
+  const variantConflicts = variantChecks.flatMap(([truthKey, attributeIds, label]) => {
+    const truthField = truth.fields[truthKey]
+    const isConfirmed = truthField?.confidence === 'confirmed'
+      || ['CONFIRMED', 'AUTO_FILLED', 'USER_OVERRIDE'].includes(truthField?.status || '')
+    const candidateValue = attributeIds.map(id => attrs[id]).find(Boolean)
+    return isConfirmed && candidateValue && norm(truthField.value) !== norm(candidateValue) ? [label] : []
+  })
+  for (const label of variantConflicts) reasons.push(`${label} divergente`)
+  score = Math.max(0, score - variantConflicts.length * 40)
+
   score = Math.min(100, score)
 
   // ---- classificação: exige evidência forte para EXACT
-  const strongIdentity = gtinMatch || (brandMatch && modelMatch) || (mpnMatch && brandMatch)
+  const strongIdentity = variantConflicts.length === 0
+    && (gtinMatch || (brandMatch && modelMatch) || (mpnMatch && brandMatch))
   const match_class: MatchClass = strongIdentity
     ? 'EXACT_PRODUCT'
     : score >= 20

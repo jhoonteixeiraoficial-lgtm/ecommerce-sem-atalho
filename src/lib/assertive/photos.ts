@@ -10,7 +10,7 @@ export type PhotoSource = 'USER' | 'COMPETITOR' | 'SOURCE_URL' | 'AI_ENHANCED' |
 
 export interface PhotoMeta {
   asset_id?: string
-  parent_asset_id?: string
+  parent_asset_id?: string | null
   fidelity_status?: 'ACCEPT' | 'REVIEW' | 'REJECT'
   label?: string
   url: string

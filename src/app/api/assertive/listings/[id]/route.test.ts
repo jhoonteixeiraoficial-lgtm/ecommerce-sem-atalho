@@ -98,4 +98,36 @@ describe('PATCH /api/assertive/listings/[id]', () => {
     expect(mocks.updatePatch).toBeNull()
     expect(mocks.recomputeListing).toHaveBeenCalledWith('listing-1', 'user-1')
   })
+
+  it('preserva a confirmação explícita quando o usuário edita um atributo', async () => {
+    mocks.body = {
+      attributes: [{
+        id: 'BRAND', name: 'Marca', value_name: 'Kitest', tier: 'required', source: 'user', status: 'USER_OVERRIDE',
+      }],
+    }
+
+    const response = await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(mocks.updatePatch?.attributes).toMatchObject({
+      list: [{ id: 'BRAND', value_name: 'Kitest', source: 'user', status: 'USER_OVERRIDE' }],
+    })
+  })
+
+  it('rejeita tentativa de alterar a revisão de imagem pelo PATCH genérico', async () => {
+    mocks.body = {
+      attributes: {
+        image_review: { required_asset_ids: [], confirmed_asset_ids: [] },
+      },
+    }
+
+    const response = await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(mocks.updatePatch).toBeNull()
+  })
 })

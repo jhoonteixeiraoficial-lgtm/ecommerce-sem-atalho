@@ -4,6 +4,8 @@ const generateListing = vi.hoisted(() => vi.fn())
 const analysisUpdates = vi.hoisted(() => [] as Array<Record<string, unknown>>)
 const observeAnalysisStage = vi.hoisted(() => vi.fn())
 const recordAnalysisStageEvent = vi.hoisted(() => vi.fn())
+const buildAnalysisListingGallery = vi.hoisted(() => vi.fn())
+const attachListingImages = vi.hoisted(() => vi.fn())
 const database = vi.hoisted(() => ({
   previous: null as Record<string, unknown> | null,
   listingInsert: null as Record<string, unknown> | null,
@@ -85,6 +87,8 @@ vi.mock('../photos', () => ({
     photo_gap: { reference_candidates: 0, missing_count: 6, missing_roles: [], recommendations: [] },
   }),
 }))
+vi.mock('../image-pipeline', () => ({ buildAnalysisListingGallery }))
+vi.mock('../image-assets', () => ({ attachListingImages }))
 vi.mock('../observability', () => ({
   observeAnalysisStage,
   recordAnalysisStageEvent,
@@ -96,6 +100,11 @@ describe('category sanity re-resolution', () => {
   beforeEach(() => {
     observeAnalysisStage.mockReset().mockImplementation(async (_context, task) => task())
     recordAnalysisStageEvent.mockReset().mockResolvedValue(true)
+    buildAnalysisListingGallery.mockReset().mockResolvedValue({
+      images: [], urls: [], listingImages: [], outcome: 'identity_required', reviewRequiredAssetIds: [],
+      warning: 'Confirme a identidade.',
+    })
+    attachListingImages.mockReset().mockResolvedValue(undefined)
   })
 
   it('gera com o novo schema quando a categoria original tem hard mismatch', async () => {
@@ -111,12 +120,20 @@ describe('category sanity re-resolution', () => {
       id: 'analysis-1', user_id: 'user-1', product_name: 'Cadeira HomeNow Atlanta',
       category_id: 'MLB-OLD', domain_id: null, input_type: 'url', input_data: {}, photos: [],
       product_truth: {
-        name: 'Cadeira HomeNow Atlanta', fields: {}, uncertain: [], evidence: [], confidence: 1,
+        name: 'Cadeira HomeNow Atlanta',
+        fields: {
+          product_type: { value: 'Cadeira gamer', confidence: 'confirmed', source: 'description', evidence: 'texto informado', status: 'CONFIRMED' },
+          brand: { value: 'HomeNow', confidence: 'confirmed', source: 'description', evidence: 'texto informado', status: 'CONFIRMED' },
+        },
+        uncertain: [], evidence: [], confidence: 1,
       },
       research: {
         query: 'Cadeira HomeNow Atlanta', category_id: 'MLB-OLD', category_name: 'Bebidas',
         category_source: 'url_source', category_resolution: {}, domain_id: null, domain_name: null,
-        keywords: [], competitors: [], catalog_matches: [], candidates_found: 0, price_stats: null,
+        keywords: [], competitors: [], catalog_matches: [{
+          title: 'Cadeira HomeNow Atlanta', attributes: {}, pictures: ['https://example.com/exact-chair.jpg'],
+          match_class: 'EXACT_PRODUCT', product_match_confidence: 95, usable_as_fact_source: true,
+        }], candidates_found: 0, price_stats: null,
         price_basis: 'NONE', exact_product_count: 0, exact_catalog_count: 0, competitor_matrix: {},
         regional: { status: 'NOT_SUPPORTED', note: '', states: [], fulfillment_pct: 0, free_shipping_pct: 0 }, warnings: [],
       },
@@ -144,6 +161,17 @@ describe('category sanity re-resolution', () => {
     )
     expect(recordAnalysisStageEvent).toHaveBeenCalledWith(expect.objectContaining({
       stage: 'pricing', event: 'completed',
+    }))
+    expect(buildAnalysisListingGallery).toHaveBeenCalledWith(expect.objectContaining({
+      inputType: 'url',
+      renditionAssetIds: [],
+      productName: 'Cadeira HomeNow Atlanta',
+      identityReady: true,
+      referenceUrls: ['https://example.com/exact-chair.jpg'],
+      facts: expect.arrayContaining([
+        { label: 'Produto', value: 'Cadeira gamer' },
+        { label: 'Marca', value: 'HomeNow' },
+      ]),
     }))
   })
 
