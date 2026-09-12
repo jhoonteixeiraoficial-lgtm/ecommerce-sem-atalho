@@ -5,6 +5,7 @@ import {
   requireMLToken,
   validateListing,
   publishListing,
+  hasMandatoryFreeShippingIssue,
   MLNotConnectedError,
   type MLItemPayload,
 } from '@/lib/assertive/publisher'
@@ -157,6 +158,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const token = await requireMLToken(authorizedUser.id)
     const validation = await validateListing(token, payload)
+
+    if (hasMandatoryFreeShippingIssue(validation.issues) && !listing.free_shipping_mandatory) {
+      await supabase
+        .from('assertive_listings')
+        .update({
+          free_shipping: true,
+          free_shipping_mandatory: true,
+          validation: { valid: false, checked_at: new Date().toISOString(), issues: validation.issues },
+          validated_payload: null,
+          validated_payload_hash: null,
+          status: 'needs_input',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('user_id', authorizedUser.id)
+
+      return Response.json({
+        error: 'O Mercado Livre passou a exigir frete grátis. Revise e valide novamente antes de publicar.',
+        code: 'REVALIDATION_REQUIRED',
+      }, { status: 409 })
+    }
 
     if (!validation.valid) {
       await supabase

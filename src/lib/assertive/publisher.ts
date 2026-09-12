@@ -123,6 +123,30 @@ export interface SellerShippingPreferences {
   available_modes: string[]
 }
 
+export type ShippingMode = 'me2' | 'me1' | 'custom'
+
+const SUPPORTED_SHIPPING_MODES = new Set<ShippingMode>(['me2', 'me1', 'custom'])
+
+export function resolveShippingMode(
+  requested: ShippingMode | undefined,
+  preferences?: SellerShippingPreferences | null
+): ShippingMode {
+  const available = (preferences?.available_modes || [])
+    .filter((mode): mode is ShippingMode => SUPPORTED_SHIPPING_MODES.has(mode as ShippingMode))
+  if (requested) {
+    if (preferences && !available.includes(requested)) {
+      throw new Error('A modalidade de envio escolhida não está disponível para esta conta.')
+    }
+    return requested
+  }
+  const officialDefault = preferences?.default_shipping_mode as ShippingMode | null
+  if (available.includes('me2')) return 'me2'
+  if (officialDefault && SUPPORTED_SHIPPING_MODES.has(officialDefault) && available.includes(officialDefault)) {
+    return officialDefault
+  }
+  return available[0] || 'me2'
+}
+
 export async function getSellerCapabilities(token: string): Promise<SellerCapabilities> {
   const me = await mlGet<{
     id: number
@@ -197,7 +221,9 @@ export interface ListingPayloadInput {
   currency_id?: string
   attributes: ListingAttribute[]
   pictures: string[]
+  shipping_mode?: ShippingMode
   free_shipping?: boolean
+  free_shipping_mandatory?: boolean
   warranty_type?: string
   warranty_time?: string
 }
@@ -311,17 +337,12 @@ export function buildItemPayload(
     attributes,
   }
 
-  // Escolher modo de envio dinamicamente — NÃO hardcode me2
-  const shippingMode = shippingPrefs?.has_me2
-    ? 'me2'
-    : shippingPrefs?.has_me1
-      ? 'me1'
-      : shippingPrefs?.available_modes?.[0] || 'not_specified'
+  const shippingMode = resolveShippingMode(input.shipping_mode, shippingPrefs)
 
   payload.shipping = {
     mode: shippingMode,
     local_pick_up: false,
-    free_shipping: input.free_shipping ?? false,
+    free_shipping: input.free_shipping_mandatory || input.free_shipping === true,
   }
   if (sale_terms.length) payload.sale_terms = sale_terms
   if (variationAttributes.length) {
@@ -438,6 +459,14 @@ export interface ValidationResult {
   issues: ValidationIssue[]
   status_code?: number
   raw?: unknown
+}
+
+export function hasMandatoryFreeShippingIssue(issues: ValidationIssue[]): boolean {
+  return issues.some(issue => {
+    const value = `${issue.code} ${issue.message}`
+    return /mandatory[\s_.-]*free[\s_.-]*shipping|free[\s_.-]*shipping[\s_.-]*mandatory/i.test(value)
+      || /(?:frete|envio)\s+gr[aá]tis.{0,40}obrigat|obrigat.{0,40}(?:frete|envio)\s+gr[aá]tis/i.test(value)
+  })
 }
 
 interface MLCause {

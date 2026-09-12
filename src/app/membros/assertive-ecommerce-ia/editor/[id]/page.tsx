@@ -88,6 +88,10 @@ interface Listing {
   status: string
   photos: string[]
   available_quantity: number
+  listing_type_id: 'gold_special' | 'gold_pro'
+  shipping_mode: 'me2' | 'me1' | 'custom'
+  free_shipping: boolean
+  free_shipping_mandatory: boolean
   ml_item_id: string | null
   ml_permalink: string | null
   publication_status?: string | null
@@ -212,6 +216,22 @@ interface Research {
   warnings?: string[]
 }
 
+interface ShippingAvailability {
+  available_modes: Array<'me2' | 'me1' | 'custom'>
+  default_mode: 'me2' | 'me1' | 'custom'
+}
+
+const LISTING_TYPES = [
+  { id: 'gold_special' as const, label: 'Clássico', detail: 'Tarifa padrão, sem parcelamento grátis.' },
+  { id: 'gold_pro' as const, label: 'Premium', detail: 'Maior exposição e parcelamento sem juros.' },
+]
+
+const SHIPPING_MODES = [
+  { id: 'me2' as const, label: 'Mercado Envios 2', detail: 'Etiquetas e logística integradas ao Mercado Livre.' },
+  { id: 'me1' as const, label: 'Mercado Envios 1', detail: 'Modalidade contratada para contas habilitadas.' },
+  { id: 'custom' as const, label: 'Transporte próprio', detail: 'A entrega fica sob responsabilidade do vendedor.' },
+]
+
 function brl(v: number | null | undefined) {
   if (v === null || v === undefined) return '—'
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
@@ -286,6 +306,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [needsML, setNeedsML] = useState(false)
+  const [shippingAvailability, setShippingAvailability] = useState<ShippingAvailability | null>(null)
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [showConfirm, setShowConfirm] = useState(false)
   const [openSection, setOpenSection] = useState<string | null>('missing')
@@ -321,18 +342,36 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setLoading(false)
   }, [id])
 
+  const refreshShippingAvailability = useCallback(async () => {
+    try {
+      const response = await fetch('/api/assertive/ml/status')
+      const data = response.ok ? await response.json() : null
+      setShippingAvailability(data?.connected && data.shipping ? data.shipping : null)
+    } catch {
+      setShippingAvailability(null)
+    }
+  }, [])
+
   // load() é assíncrono: o primeiro setState só ocorre após o await, nunca durante o render.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load])
 
+  // A atualização de estado acontece somente após a resposta assíncrona do endpoint oficial.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { void refreshShippingAvailability() }, [refreshShippingAvailability])
+
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       if (e.origin !== window.location.origin) return
-      if (e.data?.type === 'ml-connected' && e.data.ok) { setNeedsML(false); setError(null) }
+      if (e.data?.type === 'ml-connected' && e.data.ok) {
+        setNeedsML(false)
+        setError(null)
+        void refreshShippingAvailability()
+      }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [])
+  }, [refreshShippingAvailability])
 
   const onLightboxKeyDown = useEffectEvent((e: KeyboardEvent) => {
     if (e.key === 'Escape') setLightbox({ open: false, index: 0 })
@@ -662,6 +701,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const confirmedImageIds = new Set(imageReview?.confirmed_asset_ids || [])
   const pendingImageIds = (imageReview?.required_asset_ids || []).filter(assetId => !confirmedImageIds.has(assetId))
   const competitors = research?.competitors || []
+  const currentListingType = listing.listing_type_id || 'gold_special'
+  const currentShippingMode = listing.shipping_mode || 'me2'
+  const availableShippingModes = new Set(
+    shippingAvailability?.available_modes || [currentShippingMode]
+  )
 
   // Ordenar missing: obrigatórios primeiro, depois recommended, depois optional
   const REQUIRED_FIELDS = new Set([
@@ -1319,6 +1363,123 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
               )}
             </section>
 
+            {/* tipo de anúncio e entrega */}
+            <section id="publication-options" className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
+              <h2 className="text-white font-semibold flex items-center gap-2 mb-1">
+                <Truck className="w-4 h-4 text-amber-500" /> Tipo e entrega
+              </h2>
+              <p className="text-gray-500 text-xs mb-5">
+                Escolhas enviadas na validação oficial e mantidas na publicação.
+              </p>
+
+              <div className="space-y-5">
+                <fieldset>
+                  <legend className="text-gray-300 text-sm font-medium mb-2">Tipo de anúncio</legend>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {LISTING_TYPES.map(option => {
+                      const selected = currentListingType === option.id
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          data-testid={`listing-type-${option.id}`}
+                          aria-pressed={selected}
+                          onClick={() => !selected && save({ listing_type_id: option.id })}
+                          disabled={isPublished || saving}
+                          className={`rounded-lg border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                            selected
+                              ? 'border-amber-500/60 bg-amber-500/10'
+                              : 'border-[#2a2a2a] bg-[#1a1a1a] hover:border-[#3a3a3a]'
+                          }`}
+                        >
+                          <span className={selected ? 'text-amber-300 text-sm font-semibold' : 'text-white text-sm font-semibold'}>
+                            {option.label}
+                          </span>
+                          <span className="block text-gray-500 text-xs mt-1 leading-relaxed">{option.detail}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-gray-300 text-sm font-medium mb-2">Logística</legend>
+                  <div className="grid gap-2">
+                    {SHIPPING_MODES.map(option => {
+                      const selected = currentShippingMode === option.id
+                      const available = availableShippingModes.has(option.id)
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          data-testid={`shipping-mode-${option.id}`}
+                          aria-pressed={selected}
+                          onClick={() => available && !selected && save({ shipping_mode: option.id })}
+                          disabled={isPublished || saving || !available}
+                          className={`flex items-center justify-between gap-3 rounded-lg border p-3 text-left transition disabled:cursor-not-allowed ${
+                            selected
+                              ? 'border-amber-500/60 bg-amber-500/10'
+                              : available
+                                ? 'border-[#2a2a2a] bg-[#1a1a1a] hover:border-[#3a3a3a]'
+                                : 'border-[#222] bg-[#171717] opacity-45'
+                          }`}
+                        >
+                          <span>
+                            <span className={selected ? 'text-amber-300 text-sm font-semibold' : 'text-white text-sm font-semibold'}>
+                              {option.label}
+                            </span>
+                            <span className="block text-gray-500 text-xs mt-1">{option.detail}</span>
+                          </span>
+                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+                            {!available
+                              ? 'Indisponível'
+                              : shippingAvailability?.default_mode === option.id
+                                ? 'Padrão da conta'
+                                : selected ? 'Selecionado' : ''}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-gray-300 text-sm font-medium mb-2">Frete grátis</legend>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { value: false, label: 'Não' },
+                      { value: true, label: 'Sim' },
+                    ].map(option => {
+                      const selected = Boolean(listing.free_shipping) === option.value
+                      return (
+                        <button
+                          key={String(option.value)}
+                          type="button"
+                          data-testid={`free-shipping-${option.value ? 'yes' : 'no'}`}
+                          aria-pressed={selected}
+                          onClick={() => !selected && save({ free_shipping: option.value })}
+                          disabled={isPublished || saving || Boolean(listing.free_shipping_mandatory)}
+                          className={`rounded-lg border px-3 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                            selected
+                              ? 'border-amber-500/60 bg-amber-500/10 text-amber-300'
+                              : 'border-[#2a2a2a] bg-[#1a1a1a] text-gray-400 hover:border-[#3a3a3a]'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {listing.free_shipping_mandatory && (
+                    <p data-testid="mandatory-free-shipping" className="mt-2 flex items-start gap-1.5 text-xs leading-relaxed text-amber-300">
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      O Mercado Livre determinou frete grátis obrigatório para esta configuração.
+                    </p>
+                  )}
+                </fieldset>
+              </div>
+            </section>
+
             {/* descrição */}
             <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
               <div className="flex items-center justify-between mb-3">
@@ -1651,6 +1812,17 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                     <span className="text-white font-medium">{listing.available_quantity || 1}</span>
                   </div>
                   <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Anúncio</span>
+                    <span className="text-white font-medium">{currentListingType === 'gold_pro' ? 'Premium' : 'Clássico'}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Entrega</span>
+                    <span className="text-white font-medium">
+                      {SHIPPING_MODES.find(option => option.id === currentShippingMode)?.label || currentShippingMode}
+                      {listing.free_shipping ? ' · grátis' : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
                     <span className="text-gray-400">Fotos</span>
                     <span className="text-white font-medium">{listing.photos?.length || 0}</span>
                   </div>
@@ -1828,6 +2000,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             <div className="bg-[#1a1a1a] rounded-lg p-3 mb-5">
               <p className="text-white text-sm line-clamp-2">{listing.title}</p>
               <p className="text-amber-400 font-semibold mt-1">{brl(listing.price)}</p>
+              <p className="text-gray-400 text-xs mt-2">
+                {currentListingType === 'gold_pro' ? 'Premium' : 'Clássico'} ·{' '}
+                {SHIPPING_MODES.find(option => option.id === currentShippingMode)?.label || currentShippingMode}
+                {listing.free_shipping ? ' · Frete grátis' : ''}
+              </p>
             </div>
             <div className="flex gap-2">
               <button

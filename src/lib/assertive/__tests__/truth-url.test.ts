@@ -109,4 +109,35 @@ describe('identifyFromUrl - URL de user product do Mercado Livre', () => {
     expect(truth.source_attributes).toHaveLength(6)
     expect(mocks.generateJson).not.toHaveBeenCalled()
   })
+
+  it('lê o título embutido em uma URL direta de anúncio de terceiro', async () => {
+    mocks.mlGet.mockRejectedValue(new Error('403 access_denied'))
+
+    const truth = await identifyFromUrl(
+      null,
+      'https://produto.mercadolivre.com.br/MLB-5997713980-tnis-grand-court-base-30-adidas-_JM?searchVariation=193690699015',
+      'ml-token'
+    )
+
+    expect(truth.name).toBe('Tnis grand court base 30 adidas')
+    expect(truth.source_title).toBe(truth.name)
+    expect(truth.source_permalink).toContain('MLB-5997713980')
+    expect(truth.source_item_id).toBeUndefined()
+    expect(mocks.generateJson).not.toHaveBeenCalled()
+  })
+
+  it('usa deterministicamente o slug quando um user product de terceiro retorna 403', async () => {
+    mocks.mlGet.mockRejectedValue(new Error('403 forbidden'))
+
+    const truth = await identifyFromUrl(
+      null,
+      'https://www.mercadolivre.com.br/bota-galocha-pvc-forrada-impermeavel-leve-antiderrapante/up/MLBU3925291781#wid=MLB6689098476',
+      'ml-token'
+    )
+
+    expect(truth.name).toBe('Bota galocha pvc forrada impermeavel leve antiderrapante')
+    expect(truth.confidence).toBe(0.7)
+    expect(truth.evidence).toEqual(expect.arrayContaining([expect.stringContaining('título do anúncio na URL')]))
+    expect(mocks.generateJson).not.toHaveBeenCalled()
+  })
 })

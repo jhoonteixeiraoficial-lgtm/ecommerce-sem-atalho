@@ -673,8 +673,31 @@ export async function identifyProduct(
   }
 }
 
+function titleFromMarketplaceUrl(value: string): string {
+  let segments: string[]
+  try {
+    segments = new URL(value).pathname.split('/').filter(Boolean).map(segment => decodeURIComponent(segment))
+  } catch {
+    segments = value.split(/[?#]/, 1)[0].split('/').filter(Boolean)
+  }
+
+  const directItemTitle = segments
+    .map(segment => segment.match(/^MLB-?\d{6,}-(.+)$/i)?.[1] || '')
+    .find(Boolean)
+  const genericSlug = segments
+    .filter(segment => segment.includes('-') && !/^MLBU?-?\d/i.test(segment) && !segment.includes('.'))
+    .sort((left, right) => right.length - left.length)[0]
+  const title = (directItemTitle || genericSlug || '')
+    .replace(/-?_?JM$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return title ? title[0].toLocaleUpperCase('pt-BR') + title.slice(1) : ''
+}
+
 export async function identifyFromUrl(
-  config: AIConfig | null,
+  _config: AIConfig | null,
   url: string,
   mlToken: string | null
 ): Promise<ProductTruth> {
@@ -888,15 +911,7 @@ export async function identifyFromUrl(
   }
 
   // 4) Slug da URL — funciona para anúncios de terceiros, que a API bloqueia
-  const clean = url.split('?')[0]
-  const segments = clean.split('/').filter(Boolean)
-  const slug = segments
-    .filter(s => s.includes('-') && !/^MLB-?\d/i.test(s) && !s.includes('.'))
-    .sort((a, b) => b.length - a.length)[0]
-
-  const fromSlug = slug
-    ? decodeURIComponent(slug).replace(/-/g, ' ').replace(/\b_?JM\b/gi, '').trim()
-    : ''
+  const fromSlug = titleFromMarketplaceUrl(url)
 
   if (!fromSlug || fromSlug.length < 4) {
     throw new Error(
@@ -904,9 +919,15 @@ export async function identifyFromUrl(
     )
   }
 
-  const truth = await identifyFromDescription(config, fromSlug)
-  truth.evidence = [`Identificado pelo título do anúncio na URL: "${fromSlug}"`]
-  return truth
+  return finalizeTruth({
+    name: fromSlug,
+    fields: {},
+    uncertain: [],
+    evidence: [`Identificado pelo título do anúncio na URL: "${fromSlug}"`],
+    confidence: 0.7,
+    source_title: fromSlug,
+    source_permalink: url,
+  })
 }
 
 // ---------------------------------------------------------------- edição

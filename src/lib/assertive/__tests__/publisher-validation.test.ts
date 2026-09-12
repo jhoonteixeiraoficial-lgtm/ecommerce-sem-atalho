@@ -10,7 +10,7 @@ vi.mock('../ml-api', () => ({
   mlGet: vi.fn(),
 }))
 
-const { buildItemPayload, validateListing } = await import('../publisher')
+const { buildItemPayload, hasMandatoryFreeShippingIssue, validateListing } = await import('../publisher')
 
 describe('validateListing', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -219,5 +219,77 @@ describe('buildItemPayload evidence filtering', () => {
       { id: 'BRAND', value_name: 'Kitest' },
       { id: 'MODEL', value_name: 'KA250' },
     ])
+  })
+})
+
+describe('buildItemPayload publication options', () => {
+  const baseInput = {
+    title: 'Caneta de polaridade Kitest KA-030',
+    category_id: 'MLB260688',
+    price: 129.9,
+    available_quantity: 1,
+    pictures: ['https://example.com/kitest.jpg'],
+    attributes: [],
+  }
+  const shippingPreferences = {
+    modes: ['me2', 'me1', 'custom'],
+    default_shipping_mode: 'me1',
+    has_me1: true,
+    has_me2: true,
+    available_modes: ['me2', 'me1', 'custom'],
+  }
+
+  it.each(['me2', 'me1', 'custom'] as const)('respeita a modalidade %s escolhida pelo vendedor', shippingMode => {
+    const payload = buildItemPayload({ ...baseInput, shipping_mode: shippingMode }, null, shippingPreferences)
+
+    expect(payload.shipping?.mode).toBe(shippingMode)
+  })
+
+  it('usa ME2 por padrão quando a conta oferece a modalidade', () => {
+    const payload = buildItemPayload(baseInput, null, shippingPreferences)
+
+    expect(payload.shipping?.mode).toBe('me2')
+  })
+
+  it('usa o padrão oficial quando a conta não oferece ME2', () => {
+    const payload = buildItemPayload(baseInput, null, {
+      ...shippingPreferences,
+      modes: ['me1', 'custom'],
+      available_modes: ['me1', 'custom'],
+      has_me2: false,
+    })
+
+    expect(payload.shipping?.mode).toBe('me1')
+  })
+
+  it('rejeita modalidade que a conta não oferece', () => {
+    expect(() => buildItemPayload(
+      { ...baseInput, shipping_mode: 'me1' },
+      null,
+      { ...shippingPreferences, modes: ['me2'], has_me1: false, available_modes: ['me2'] }
+    )).toThrow('modalidade de envio')
+  })
+
+  it('força frete grátis quando a política oficial é obrigatória', () => {
+    const payload = buildItemPayload({
+      ...baseInput,
+      free_shipping: false,
+      free_shipping_mandatory: true,
+    }, null, shippingPreferences)
+
+    expect(payload.shipping?.free_shipping).toBe(true)
+  })
+
+  it('reconhece a exigência oficial de frete grátis', () => {
+    expect(hasMandatoryFreeShippingIssue([{
+      code: 'item.shipping.mandatory_free_shipping',
+      message: 'Free shipping is mandatory for this listing',
+      severity: 'error',
+    }])).toBe(true)
+    expect(hasMandatoryFreeShippingIssue([{
+      code: 'shipping.lost_me1_by_user',
+      message: 'ME1 unavailable',
+      severity: 'warning',
+    }])).toBe(false)
   })
 })

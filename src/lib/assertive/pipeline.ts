@@ -19,7 +19,20 @@ import {
 import { generateListing, type GeneratedListing, type ListingAttribute } from './generator'
 import { enrichAttributes, type EnrichedAttribute } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
-import { requireMLToken, getSellerCapabilities, buildItemPayload, predictMLTitle, getAutoAppendedAttributeIds, validateListing, type SellerCapabilities, type TitleControlMode } from './publisher'
+import {
+  requireMLToken,
+  getSellerCapabilities,
+  getSellerShippingPreferences,
+  buildItemPayload,
+  predictMLTitle,
+  getAutoAppendedAttributeIds,
+  validateListing,
+  resolveShippingMode,
+  hasMandatoryFreeShippingIssue,
+  type SellerCapabilities,
+  type ShippingMode,
+  type TitleControlMode,
+} from './publisher'
 import { categoryDiscoveryHint, searchQueryFor } from './truth'
 import { decrypt } from './encryption'
 import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
@@ -532,7 +545,7 @@ export async function runGeneration(
   const supabasePrev = createAdminClient()
   const { data: previous } = await supabasePrev
     .from('assertive_listings')
-    .select('attributes, photos, price, title, description')
+    .select('attributes, photos, price, title, description, listing_type_id, shipping_mode, free_shipping, free_shipping_mandatory')
     .eq('analysis_id', analysis.id)
     .eq('user_id', analysis.user_id)
     .is('ml_item_id', null)
@@ -541,6 +554,13 @@ export async function runGeneration(
   const userOverrides = ((previous?.attributes?.list || []) as ListingAttribute[]).filter(
     a => a.source === 'user'
   )
+  const listingTypeId = previous?.listing_type_id === 'gold_pro' ? 'gold_pro' : 'gold_special'
+  const requestedShippingMode = ['me2', 'me1', 'custom'].includes(previous?.shipping_mode || '')
+    ? previous?.shipping_mode as ShippingMode
+    : undefined
+  let shippingMode: ShippingMode = requestedShippingMode || 'me2'
+  let freeShipping = Boolean(previous?.free_shipping || previous?.free_shipping_mandatory)
+  let freeShippingMandatory = Boolean(previous?.free_shipping_mandatory)
 
   const generated = await observeAnalysisStage(
     {
@@ -716,6 +736,14 @@ export async function runGeneration(
     try {
       const token = await requireMLToken(analysis.user_id)
       const capabilities = await getSellerCapabilities(token).catch(() => null)
+      const shippingPreferences = capabilities
+        ? await getSellerShippingPreferences(token, capabilities.ml_user_id)
+        : null
+      try {
+        shippingMode = resolveShippingMode(requestedShippingMode, shippingPreferences)
+      } catch {
+        shippingMode = resolveShippingMode(undefined, shippingPreferences)
+      }
       const catId = generated.category_id || research.category_id || ''
 
       // Detectar title_control_mode
@@ -733,10 +761,13 @@ export async function runGeneration(
         price: Number(generated.price),
         available_quantity: 1,
         condition: 'new',
-        listing_type_id: 'gold_special',
+        listing_type_id: listingTypeId,
+        shipping_mode: shippingMode,
+        free_shipping: freeShipping,
+        free_shipping_mandatory: freeShippingMandatory,
         attributes: resolvedAttributes,
         pictures: photos,
-      }, capabilities)
+      }, capabilities, shippingPreferences)
 
       // Predição do título final (modo user_product)
       if (titleControlMode === 'user_product') {
@@ -754,10 +785,21 @@ export async function runGeneration(
         },
         async () => {
           let result = await validateListing(token, buildPayload())
-          for (let attempt = 0; attempt < MAX_VALIDATION_ATTEMPTS && !result.valid; attempt++) {
-            const autoFixed = await autoResolveAndResearch(
-              token, result.issues, resolvedAttributes, attributes, truth, research, config
-            )
+          for (
+            let attempt = 0;
+            attempt < MAX_VALIDATION_ATTEMPTS && (!result.valid || hasMandatoryFreeShippingIssue(result.issues));
+            attempt++
+          ) {
+            let autoFixed = false
+            if (hasMandatoryFreeShippingIssue(result.issues) && !freeShippingMandatory) {
+              freeShipping = true
+              freeShippingMandatory = true
+              autoFixed = true
+            } else {
+              autoFixed = await autoResolveAndResearch(
+                token, result.issues, resolvedAttributes, attributes, truth, research, config
+              )
+            }
             if (!autoFixed) break // nada mais para resolver
             await recordAnalysisStageEvent({
               analysis_id: analysis.id,
@@ -841,6 +883,10 @@ export async function runGeneration(
       scores,
       status,
       available_quantity: 1,
+      listing_type_id: listingTypeId,
+      shipping_mode: shippingMode,
+      free_shipping: freeShipping,
+      free_shipping_mandatory: freeShippingMandatory,
     })
     .select('id')
     .single()

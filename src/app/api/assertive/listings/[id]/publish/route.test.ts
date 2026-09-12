@@ -12,7 +12,7 @@ const payload = {
   family_name: 'Testador Circuito Kitest KA250 Canela Polaridade',
   pictures: [{ source: 'https://example.com/kitest.jpg' }],
   attributes: [{ id: 'BRAND', value_name: 'Kitest' }],
-  shipping: { mode: 'not_specified', local_pick_up: false, free_shipping: false },
+  shipping: { mode: 'me2', local_pick_up: false, free_shipping: false },
 }
 
 const warning = {
@@ -197,6 +197,38 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
     expect(body.code).toBe('IMAGE_REVIEW_REQUIRED')
     expect(mocks.validateListing).not.toHaveBeenCalled()
     expect(mocks.publishListing).not.toHaveBeenCalled()
+  })
+
+  it('exige nova confirmação quando o ML passa a impor frete grátis', async () => {
+    mocks.validateListing.mockResolvedValue({
+      valid: true,
+      status_code: 400,
+      issues: [{
+        code: 'item.shipping.mandatory_free_shipping',
+        message: 'Free shipping is mandatory for this listing',
+        severity: 'warning',
+      }],
+    })
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({ code: 'REVALIDATION_REQUIRED' })
+    expect(mocks.publishListing).not.toHaveBeenCalled()
+    expect(mocks.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: 'assertive_listings',
+        patch: expect.objectContaining({
+          free_shipping: true,
+          free_shipping_mandatory: true,
+          validated_payload: null,
+          status: 'needs_input',
+        }),
+      }),
+    ]))
   })
 
   it('persiste e devolve o estado autoritativo retornado por GET /items/{id}', async () => {

@@ -5,7 +5,11 @@ import {
   requireMLToken,
   buildItemPayload,
   validateListing,
+  getSellerShippingPreferences,
+  resolveShippingMode,
+  hasMandatoryFreeShippingIssue,
   MLNotConnectedError,
+  type ShippingMode,
 } from '@/lib/assertive/publisher'
 import { resolveCategoryContext, recomputeListing } from '@/lib/assertive/pipeline'
 import { computeEffectiveRequirements } from '@/lib/assertive/publication-requirements'
@@ -66,6 +70,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   try {
     const token = await requireMLToken(authorizedUser.id)
     const { attributes: schema, capabilities } = await resolveCategoryContext(token, listing.category_id)
+    const shippingPreferences = capabilities
+      ? await getSellerShippingPreferences(token, capabilities.ml_user_id)
+      : null
+    const requestedShippingMode = ['me2', 'me1', 'custom'].includes(listing.shipping_mode)
+      ? listing.shipping_mode as ShippingMode
+      : undefined
+    let effectiveShippingMode: ShippingMode
+    try {
+      effectiveShippingMode = resolveShippingMode(requestedShippingMode, shippingPreferences)
+    } catch {
+      effectiveShippingMode = resolveShippingMode(undefined, shippingPreferences)
+    }
+    const shippingModeChanged = effectiveShippingMode !== listing.shipping_mode
+    listing.shipping_mode = effectiveShippingMode
 
     const attributes = ((listing.attributes?.list || []) as ListingAttribute[]).slice()
 
@@ -79,10 +97,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
           available_quantity: listing.available_quantity || 1,
           condition: listing.condition || 'new',
           listing_type_id: listing.listing_type_id || 'gold_special',
+          shipping_mode: effectiveShippingMode,
+          free_shipping: Boolean(listing.free_shipping),
+          free_shipping_mandatory: Boolean(listing.free_shipping_mandatory),
           attributes: publishableAttributes(attributes),
           pictures: (listing.photos || []) as string[],
         },
-        capabilities ?? null
+        capabilities ?? null,
+        shippingPreferences
       )
     }
 
@@ -96,7 +118,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
     // O ML às vezes informa o valor exato que falta. Aplicamos e revalidamos uma vez.
     const autoApplied: string[] = []
+    if (shippingModeChanged) autoApplied.push('Modalidade de envio ajustada à conta do Mercado Livre')
     let payloadChanged = false
+    if (hasMandatoryFreeShippingIssue(result.issues) && !listing.free_shipping_mandatory) {
+      listing.free_shipping = true
+      listing.free_shipping_mandatory = true
+      autoApplied.push('Frete grátis obrigatório pelo Mercado Livre')
+      payloadChanged = true
+    }
     const gtinSpec = schema.find(attribute => attribute.id === 'GTIN')
     const invalidOptionalGtin = result.issues.some(issue =>
       issue.severity === 'error' && issue.code === 'item.attribute.invalid_product_identifier'
@@ -142,6 +171,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         .from('assertive_listings')
         .update({
           attributes: { ...(listing.attributes || {}), list: attributes },
+          shipping_mode: effectiveShippingMode,
+          free_shipping: Boolean(listing.free_shipping),
+          free_shipping_mandatory: Boolean(listing.free_shipping_mandatory),
           updated_at: new Date().toISOString(),
         })
         .eq('id', id)
@@ -178,6 +210,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         },
         validated_payload: readyToPublish ? validatedPayload : null,
         validated_payload_hash: readyToPublish ? payloadHash(validatedPayload) : null,
+        shipping_mode: effectiveShippingMode,
+        free_shipping: Boolean(listing.free_shipping),
+        free_shipping_mandatory: Boolean(listing.free_shipping_mandatory),
         status: readyToPublish ? 'ready_to_publish' : 'needs_input',
         updated_at: new Date().toISOString(),
       })

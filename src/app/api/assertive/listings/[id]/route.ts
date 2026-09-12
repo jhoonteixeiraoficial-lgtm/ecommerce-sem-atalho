@@ -54,7 +54,9 @@ const patchSchema = z.object({
   price: z.number().min(0).max(9999999).nullable().optional(),
   available_quantity: z.number().int().min(1).max(99999).optional(),
   condition: z.enum(['new', 'used', 'not_specified']).optional(),
-  listing_type_id: z.string().max(40).optional(),
+  listing_type_id: z.enum(['gold_special', 'gold_pro']).optional(),
+  shipping_mode: z.enum(['me2', 'me1', 'custom']).optional(),
+  free_shipping: z.boolean().optional(),
   category_id: z.string().max(30).optional(),
   family_name: z.string().max(120).optional(),
   photos: z.array(z.string().url()).max(12).optional(),
@@ -103,6 +105,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return Response.json({ error: 'Este anúncio já foi publicado e não pode ser editado aqui.' }, { status: 409 })
   }
 
+  const shippingPolicyInputsChanged = (
+    (parsed.data.price !== undefined && parsed.data.price !== null && parsed.data.price !== Number(current.price))
+    || (parsed.data.listing_type_id !== undefined && parsed.data.listing_type_id !== current.listing_type_id)
+    || (parsed.data.shipping_mode !== undefined && parsed.data.shipping_mode !== current.shipping_mode)
+    || (parsed.data.category_id !== undefined && parsed.data.category_id !== current.category_id)
+    || (parsed.data.condition !== undefined && parsed.data.condition !== current.condition)
+  )
+  if (parsed.data.free_shipping === false && current.free_shipping_mandatory && !shippingPolicyInputsChanged) {
+    return Response.json({ error: 'O frete grátis é obrigatório para esta configuração do anúncio.' }, { status: 409 })
+  }
+
   if (parsed.data.listing_images) {
     if (Object.keys(parsed.data).some(key => key !== 'listing_images')) {
       return Response.json({ error: 'Atualize a galeria separadamente dos outros campos.' }, { status: 400 })
@@ -127,6 +140,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   delete rest.photo_metadata
   delete rest.listing_images
   const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
+  if (shippingPolicyInputsChanged) patch.free_shipping_mandatory = false
 
   if (attributes) {
     patch.attributes = { ...(current.attributes || {}), list: attributes }

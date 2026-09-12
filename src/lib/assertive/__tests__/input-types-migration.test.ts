@@ -58,4 +58,17 @@ describe('Assertive input types migration', () => {
     expect(sql).toContain("asset.metadata ->> 'operation' = 'SAFE_CROP'")
     expect(sql).toContain("THEN 'Recorte da foto original'")
   })
+
+  it('persiste escolhas seguras de anúncio e entrega', () => {
+    const sql = readFileSync(
+      resolve(process.cwd(), 'supabase/migrations/20260912001000_assertive_publication_options.sql'),
+      'utf8'
+    )
+
+    expect(sql).toContain('shipping_mode TEXT NOT NULL DEFAULT \'me2\'')
+    expect(sql).toContain("shipping_mode IN ('me2','me1','custom')")
+    expect(sql).toContain('free_shipping BOOLEAN NOT NULL DEFAULT false')
+    expect(sql).toContain('free_shipping_mandatory BOOLEAN NOT NULL DEFAULT false')
+    expect(sql).toContain('NOT free_shipping_mandatory OR free_shipping')
+  })
 })

@@ -50,6 +50,10 @@ describe('PATCH /api/assertive/listings/[id]', () => {
       user_id: 'user-1',
       status: 'ready_to_publish',
       price: 129.9,
+      listing_type_id: 'gold_special',
+      shipping_mode: 'me2',
+      free_shipping: false,
+      free_shipping_mandatory: false,
       attributes: {
         list: [],
         publication_requirements: { all_clear: true, blockers: [] },
@@ -129,5 +133,71 @@ describe('PATCH /api/assertive/listings/[id]', () => {
 
     expect(response.status).toBe(400)
     expect(mocks.updatePatch).toBeNull()
+  })
+
+  it('persiste tipo, modalidade e frete escolhidos pelo vendedor', async () => {
+    mocks.body = { listing_type_id: 'gold_pro', shipping_mode: 'custom', free_shipping: true }
+
+    const response = await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(mocks.updatePatch).toMatchObject(mocks.body)
+  })
+
+  it.each([
+    { shipping_mode: 'drop_off' },
+    { listing_type_id: 'gold_premium_fake' },
+  ])('rejeita opção de publicação inválida: %o', async invalid => {
+    mocks.body = invalid
+
+    const response = await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(mocks.updatePatch).toBeNull()
+  })
+
+  it('não permite desligar frete grátis enquanto ele é obrigatório', async () => {
+    mocks.listing.free_shipping = true
+    mocks.listing.free_shipping_mandatory = true
+    mocks.body = { free_shipping: false }
+
+    const response = await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(mocks.updatePatch).toBeNull()
+  })
+
+  it('reavalia obrigatoriedade do frete quando o preço muda', async () => {
+    mocks.listing.free_shipping = true
+    mocks.listing.free_shipping_mandatory = true
+    mocks.body = { price: 249.9 }
+
+    await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(mocks.updatePatch).toMatchObject({ price: 249.9, free_shipping_mandatory: false })
+  })
+
+  it('reavalia obrigatoriedade do frete quando categoria ou condição mudam', async () => {
+    mocks.listing.free_shipping = true
+    mocks.listing.free_shipping_mandatory = true
+    mocks.body = { category_id: 'MLB1234', condition: 'used' }
+
+    await PATCH(new Request('http://localhost/listing-1', { method: 'PATCH' }) as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    expect(mocks.updatePatch).toMatchObject({
+      category_id: 'MLB1234',
+      condition: 'used',
+      free_shipping_mandatory: false,
+    })
   })
 })

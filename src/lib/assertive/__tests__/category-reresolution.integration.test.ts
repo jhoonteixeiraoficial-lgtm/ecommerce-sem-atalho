@@ -162,6 +162,12 @@ describe('category sanity re-resolution', () => {
     expect(recordAnalysisStageEvent).toHaveBeenCalledWith(expect.objectContaining({
       stage: 'pricing', event: 'completed',
     }))
+    expect(database.listingInsert).toMatchObject({
+      listing_type_id: 'gold_special',
+      shipping_mode: 'me2',
+      free_shipping: false,
+      free_shipping_mandatory: false,
+    })
     expect(buildAnalysisListingGallery).toHaveBeenCalledWith(expect.objectContaining({
       inputType: 'url',
       renditionAssetIds: [],
@@ -182,6 +188,10 @@ describe('category sanity re-resolution', () => {
       price: 149.9,
       title: 'Título confirmado pelo vendedor',
       description: 'Descrição confirmada pelo vendedor',
+      listing_type_id: 'gold_pro',
+      shipping_mode: 'custom',
+      free_shipping: true,
+      free_shipping_mandatory: false,
     }
     database.listingInsert = null
     generateListing.mockResolvedValue({
@@ -209,6 +219,10 @@ describe('category sanity re-resolution', () => {
       title: 'Título confirmado pelo vendedor',
       description: 'Descrição confirmada pelo vendedor',
       price: 149.9,
+      listing_type_id: 'gold_pro',
+      shipping_mode: 'custom',
+      free_shipping: true,
+      free_shipping_mandatory: false,
     })
   })
 })

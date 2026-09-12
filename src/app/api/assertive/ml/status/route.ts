@@ -1,6 +1,12 @@
 import { requireCommunityUser } from '@/app/api/community/helpers'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { getValidMLToken, getSellerCapabilities } from '@/lib/assertive/publisher'
+import {
+  getValidMLToken,
+  getSellerCapabilities,
+  getSellerShippingPreferences,
+  resolveShippingMode,
+  type ShippingMode,
+} from '@/lib/assertive/publisher'
 
 export const runtime = 'nodejs'
 
@@ -31,12 +37,20 @@ export async function GET() {
 
   try {
     const capabilities = await getSellerCapabilities(token)
+    const shippingPreferences = await getSellerShippingPreferences(token, capabilities.ml_user_id)
+    const availableModes = shippingPreferences.available_modes.filter(
+      (mode): mode is ShippingMode => ['me2', 'me1', 'custom'].includes(mode)
+    )
     return Response.json({
       connected: true,
       nickname: capabilities.nickname || data.nickname,
       ml_user_id: capabilities.ml_user_id,
       site_id: capabilities.site_id,
       account_model: capabilities.user_product_model ? 'user_product' : 'classic',
+      shipping: {
+        available_modes: availableModes,
+        default_mode: resolveShippingMode(undefined, shippingPreferences),
+      },
     })
   } catch {
     return Response.json({ connected: true, nickname: data.nickname })
