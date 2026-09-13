@@ -1,7 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { adminClient } = vi.hoisted(() => ({
+  adminClient: {
+    from: vi.fn(),
+    storage: { from: vi.fn() },
+  },
+}))
 
 vi.mock('server-only', () => ({}))
-import { isPublicationAssetAllowed, type ImageAsset } from '../image-assets'
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => adminClient }))
+import { createReferenceAsset, isPublicationAssetAllowed, type ImageAsset } from '../image-assets'
 
 const asset = {
   id: 'asset-1',
@@ -69,5 +77,55 @@ describe('image asset publication boundary', () => {
       model: 'gemini-3-pro-image',
       metadata: { review_required: true },
     })).toBe(false)
+  })
+})
+
+describe('reference asset persistence', () => {
+  beforeEach(() => {
+    adminClient.from.mockReset()
+    adminClient.storage.from.mockReset()
+  })
+
+  it('reuses one matching private reference when historical duplicates exist', async () => {
+    const existing = {
+      ...asset,
+      kind: 'SOURCE_REFERENCE' as const,
+      origin: 'COMPETITOR' as const,
+      rights_status: 'REFERENCE_ONLY' as const,
+      public_url: null,
+      parent_asset_id: null,
+      fidelity_status: null,
+    }
+    let limited = false
+    const query = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      limit: vi.fn(() => {
+        limited = true
+        return query
+      }),
+      maybeSingle: vi.fn(() => Promise.resolve(limited
+        ? { data: existing, error: null }
+        : { data: null, error: { message: 'multiple rows returned' } })),
+    }
+    query.select.mockReturnValue(query)
+    query.eq.mockReturnValue(query)
+    adminClient.from.mockReturnValue(query)
+
+    await expect(createReferenceAsset({
+      user_id: 'user-1',
+      analysis_id: 'analysis-1',
+      bytes: Buffer.from('reference'),
+      mime_type: 'image/jpeg',
+      width: 800,
+      height: 800,
+      sha256: existing.sha256,
+      storage_key: 'user-1/analysis-1/reference.jpg',
+      source_url: 'https://source.example/reference.jpg',
+      origin: 'COMPETITOR',
+      rights_status: 'REFERENCE_ONLY',
+      metadata: { source_item_id: 'MLB1' },
+    })).resolves.toEqual(existing)
+    expect(adminClient.storage.from).not.toHaveBeenCalled()
   })
 })

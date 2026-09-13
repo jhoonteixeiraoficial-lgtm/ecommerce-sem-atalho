@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { z } from 'zod'
 import { requireCommunityUser, readJson } from '@/app/api/community/helpers'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { confirmImageJob, findImageReviewJob, getImageJobSnapshot } from '@/lib/assertive/image-jobs'
 
 export const runtime = 'nodejs'
 
@@ -26,11 +27,43 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .maybeSingle()
 
   if (!listing) return Response.json({ error: 'Anúncio não encontrado.' }, { status: 404 })
-  if (listing.status === 'published') {
+  if (listing.status === 'published' || listing.status === 'publishing') {
     return Response.json({ error: 'Anúncio publicado não pode ser alterado.' }, { status: 409 })
   }
 
   const review = listing.attributes?.image_review || {}
+  if (process.env.ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED === 'true') {
+    try {
+      const progressive = await findImageReviewJob(
+        id,
+        auth.authorizedUser.id,
+        parsed.data.asset_id
+      )
+      if (progressive.progressive) {
+        if (progressive.position === null) {
+          return Response.json({ error: 'Esta imagem não está pendente de revisão neste anúncio.' }, { status: 400 })
+        }
+        await confirmImageJob(
+          id,
+          auth.authorizedUser.id,
+          progressive.position,
+          parsed.data.asset_id
+        )
+        const confirmed = [...new Set([
+          ...(Array.isArray(review.confirmed_asset_ids) ? review.confirmed_asset_ids : []),
+          parsed.data.asset_id,
+        ])]
+        return Response.json({
+          ok: true,
+          confirmed_asset_ids: confirmed,
+          snapshot: await getImageJobSnapshot(id, auth.authorizedUser.id),
+        })
+      }
+    } catch {
+      return Response.json({ error: 'Não foi possível confirmar a imagem.' }, { status: 500 })
+    }
+  }
+
   const required = Array.isArray(review.required_asset_ids) ? review.required_asset_ids : []
   const generatedAssets = new Set(
     (listing.attributes?.photo_metadata || [])

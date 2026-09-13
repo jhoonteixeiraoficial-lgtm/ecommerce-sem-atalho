@@ -16,7 +16,7 @@ import {
   type ClassifiedAttribute,
   type CategoryInfo,
 } from './taxonomy'
-import { generateListing, type GeneratedListing, type ListingAttribute } from './generator'
+import { generateListing, type GeneratedListing, type ImagePlanStep, type ListingAttribute } from './generator'
 import { enrichAttributes, type EnrichedAttribute } from './enrichment'
 import { computeCompleteness, computeScores } from './scoring'
 import {
@@ -44,6 +44,8 @@ import { buildAnalysisListingGallery, type ListingGallery } from './image-pipeli
 import { attachListingImages } from './image-assets'
 import { buildCopyBrief } from './copy-brief'
 import { hasPendingImageReview } from './publication-readiness'
+import { buildProgressiveImageSlots, type ProgressiveImageSlotPlan } from './image-job-contract'
+import { ensureProgressiveImageJobs } from './image-jobs'
 
 export type AnalysisStage =
   | 'input'
@@ -75,6 +77,13 @@ export interface AnalysisRow {
   error_message: string | null
   created_at: string
   updated_at: string
+}
+
+export function normalizeProgressiveImagePlan(
+  imagePlan: ImagePlanStep[] = [],
+  facts: Array<{ label: string; value: string }> = []
+): ProgressiveImageSlotPlan[] {
+  return buildProgressiveImageSlots(imagePlan, facts)
 }
 
 export async function loadAnalysis(analysisId: string, userId: string): Promise<AnalysisRow | null> {
@@ -434,6 +443,7 @@ export async function runGeneration(
   const truth = analysis.product_truth as ProductTruth
   const research = analysis.research as ResearchResult
   const dna = analysis.dna as WinningListingDNA
+  const progressiveImagesEnabled = process.env.ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED === 'true'
 
   if (!truth?.name) throw new Error('A identificação do produto ainda não foi concluída.')
   if (!research?.category_id && !research?.query) {
@@ -545,7 +555,7 @@ export async function runGeneration(
   const supabasePrev = createAdminClient()
   const { data: previous } = await supabasePrev
     .from('assertive_listings')
-    .select('attributes, photos, price, title, description, listing_type_id, shipping_mode, free_shipping, free_shipping_mandatory')
+    .select('id, status, attributes, photos, price, title, description, listing_type_id, shipping_mode, free_shipping, free_shipping_mandatory')
     .eq('analysis_id', analysis.id)
     .eq('user_id', analysis.user_id)
     .is('ml_item_id', null)
@@ -618,7 +628,7 @@ export async function runGeneration(
   const finalAttributes = enrichment.attributes
   const completeness = computeCompleteness(attributes, finalAttributes)
 
-  // PHOTO PIPELINE: coleta fotos de concorrentes, classifica e deduplica
+  // PHOTO PIPELINE: a flag nova desacopla a galeria da geração do restante do anúncio.
   const userPhotos = ((previous?.photos as string[] | undefined)?.length
     ? (previous!.photos as string[])
     : analysis.photos || []) as string[]
@@ -628,56 +638,6 @@ export async function runGeneration(
   const exactReferencePhotos = exactProductReferenceUrls(research)
   const generatedReferencePhotos = [...new Set([...sourcePhotos, ...exactReferencePhotos])]
 
-  let photoResult: Awaited<ReturnType<typeof collectAndClassifyPhotos>>
-  try {
-    photoResult = await observeAnalysisStage(
-      {
-        analysis_id: analysis.id,
-        user_id: analysis.user_id,
-        stage: 'photos',
-        metadata: { user_photos: userPhotos.length, source_photos: sourcePhotos.length },
-      },
-      () => collectAndClassifyPhotos({
-        research,
-        truth,
-        config,
-        userPhotos,
-        sourcePhotos,
-        domainId: research.domain_id,
-      })
-    )
-  } catch (error) {
-    await recordAnalysisStageEvent({
-      analysis_id: analysis.id,
-      user_id: analysis.user_id,
-      stage: 'photos',
-      event: 'fallback',
-      error_code: 'PHOTO_PIPELINE_FALLBACK',
-      error_message: error instanceof Error ? error.message : 'Falha na pipeline de fotos',
-    })
-    photoResult = {
-      photos: userPhotos.map((url, i) => ({
-        url,
-        role: (i === 0 ? 'MAIN' : 'DETAIL') as PhotoMeta['role'],
-        source: 'USER' as PhotoMeta['source'],
-        score: 100,
-        ai_enhanced: false,
-        position: i,
-      })),
-      stats: { total_found: 0, from_exact_product: 0, from_competitor: 0, classified: 0, deduplicated: 0 },
-      category_requirements: { background: 'white_pure', min_photos: 4, recommended_photos: 6, shot_types: [] },
-      photo_gap: {
-        reference_candidates: 0,
-        missing_count: Math.max(0, 6 - userPhotos.length),
-        missing_roles: [],
-        recommendations: [],
-      },
-    }
-  }
-
-  let photos = photoResult.photos.map(p => p.url)
-  let photoMetadata = photoResult.photos
-  let assetGallery: ListingGallery | null = null
   const renditionAssetIds = Array.isArray(analysis.input_data?.photo_asset_ids)
     ? analysis.input_data.photo_asset_ids.filter((id): id is string => typeof id === 'string' && Boolean(id))
     : []
@@ -686,33 +646,125 @@ export async function runGeneration(
   const identityReady = truth.confidence >= 0.7
     && confirmedFactIds.has('product_type')
     && ['brand', 'model', 'variant', 'material', 'color'].some(id => confirmedFactIds.has(id))
-  assetGallery = await observeAnalysisStage(
-    {
-      analysis_id: analysis.id,
-      user_id: analysis.user_id,
-      stage: renditionAssetIds.length ? 'image_enhancement' : 'image_generation',
-      metadata: {
-        input_type: analysis.input_type,
-        requested_assets: renditionAssetIds.length,
-        reference_assets: generatedReferencePhotos.length,
+  let photoResult: Awaited<ReturnType<typeof collectAndClassifyPhotos>>
+  let photos: string[]
+  let photoMetadata: PhotoMeta[]
+  let assetGallery: ListingGallery
+
+  if (progressiveImagesEnabled) {
+    const preservedPhotos = Array.isArray(previous?.photos)
+      ? previous.photos.filter((url): url is string => typeof url === 'string' && Boolean(url))
+      : []
+    const preservedMetadata = previous?.attributes?.photo_metadata
+    photoMetadata = Array.isArray(preservedMetadata)
+      ? preservedMetadata as PhotoMeta[]
+      : preservedPhotos.map((url, position) => ({
+          url,
+          role: position === 0 ? 'MAIN' : 'DETAIL',
+          source: 'USER',
+          score: 100,
+          ai_enhanced: false,
+          position,
+        }))
+    photos = preservedPhotos
+    photoResult = {
+      photos: photoMetadata,
+      stats: {
+        total_found: preservedPhotos.length,
+        from_exact_product: 0,
+        from_competitor: 0,
+        classified: preservedPhotos.length,
+        deduplicated: 0,
       },
-    },
-    () => buildAnalysisListingGallery({
-      userId: analysis.user_id,
-      analysisId: analysis.id,
-      inputType: analysis.input_type,
-      renditionAssetIds,
-      referenceUrls: generatedReferencePhotos,
-      productName: truth.name,
-      facts: imageBrief.facts.map(fact => ({ label: fact.label, value: fact.value })),
-      identityReady,
-      config,
-      maxPictures: category?.settings?.max_pictures_per_item || 12,
-      imagePlan: generated.image_plan,
-    })
-  )
-  photos = assetGallery.urls
-  photoMetadata = assetGallery.images
+      category_requirements: { background: 'white_pure', min_photos: 4, recommended_photos: 6, shot_types: [] },
+      photo_gap: {
+        reference_candidates: generatedReferencePhotos.length + renditionAssetIds.length,
+        missing_count: Math.max(0, 6 - preservedPhotos.length),
+        missing_roles: [],
+        recommendations: [],
+      },
+    }
+    assetGallery = {
+      images: [],
+      urls: photos,
+      listingImages: [],
+      outcome: 'progressive_pending',
+      reviewRequiredAssetIds: [],
+    }
+  } else {
+    try {
+      photoResult = await observeAnalysisStage(
+        {
+          analysis_id: analysis.id,
+          user_id: analysis.user_id,
+          stage: 'photos',
+          metadata: { user_photos: userPhotos.length, source_photos: sourcePhotos.length },
+        },
+        () => collectAndClassifyPhotos({
+          research,
+          truth,
+          config,
+          userPhotos,
+          sourcePhotos,
+          domainId: research.domain_id,
+        })
+      )
+    } catch (error) {
+      await recordAnalysisStageEvent({
+        analysis_id: analysis.id,
+        user_id: analysis.user_id,
+        stage: 'photos',
+        event: 'fallback',
+        error_code: 'PHOTO_PIPELINE_FALLBACK',
+        error_message: error instanceof Error ? error.message : 'Falha na pipeline de fotos',
+      })
+      photoResult = {
+        photos: userPhotos.map((url, i) => ({
+          url,
+          role: (i === 0 ? 'MAIN' : 'DETAIL') as PhotoMeta['role'],
+          source: 'USER' as PhotoMeta['source'],
+          score: 100,
+          ai_enhanced: false,
+          position: i,
+        })),
+        stats: { total_found: 0, from_exact_product: 0, from_competitor: 0, classified: 0, deduplicated: 0 },
+        category_requirements: { background: 'white_pure', min_photos: 4, recommended_photos: 6, shot_types: [] },
+        photo_gap: {
+          reference_candidates: 0,
+          missing_count: Math.max(0, 6 - userPhotos.length),
+          missing_roles: [],
+          recommendations: [],
+        },
+      }
+    }
+    assetGallery = await observeAnalysisStage(
+      {
+        analysis_id: analysis.id,
+        user_id: analysis.user_id,
+        stage: renditionAssetIds.length ? 'image_enhancement' : 'image_generation',
+        metadata: {
+          input_type: analysis.input_type,
+          requested_assets: renditionAssetIds.length,
+          reference_assets: generatedReferencePhotos.length,
+        },
+      },
+      () => buildAnalysisListingGallery({
+        userId: analysis.user_id,
+        analysisId: analysis.id,
+        inputType: analysis.input_type,
+        renditionAssetIds,
+        referenceUrls: generatedReferencePhotos,
+        productName: truth.name,
+        facts: imageBrief.facts.map(fact => ({ label: fact.label, value: fact.value })),
+        identityReady,
+        config,
+        maxPictures: category?.settings?.max_pictures_per_item || 12,
+        imagePlan: generated.image_plan,
+      })
+    )
+    photos = assetGallery.urls
+    photoMetadata = assetGallery.images
+  }
 
   const scores = computeScores({
     title: generated.title,
@@ -732,7 +784,7 @@ export async function runGeneration(
   let predictedTitle = generated.title
   let catAttrs: Array<{ id: string; tags?: Record<string, boolean> }> = []
 
-  if (generated.title?.trim() && generated.price && generated.price > 0 && photos.length > 0) {
+  if (!progressiveImagesEnabled && generated.title?.trim() && generated.price && generated.price > 0 && photos.length > 0) {
     try {
       const token = await requireMLToken(analysis.user_id)
       const capabilities = await getSellerCapabilities(token).catch(() => null)
@@ -820,27 +872,15 @@ export async function runGeneration(
     }
   }
 
-  const hasRealBlockers = !generated.title?.trim() || !generated.price || generated.price <= 0 || photos.length === 0
+  const hasRealBlockers = progressiveImagesEnabled
+    || !generated.title?.trim() || !generated.price || generated.price <= 0 || photos.length === 0
     || assetGallery.reviewRequiredAssetIds.length > 0
     || (publicationRequirements && publicationRequirements.blocker_count > 0)
   const status = hasRealBlockers ? 'needs_input' : 'ready'
 
   const supabase = createAdminClient()
 
-  // regerar substitui o rascunho anterior — evita anúncios duplicados na conta do usuário
-  await supabase
-    .from('assertive_listings')
-    .delete()
-    .eq('analysis_id', analysis.id)
-    .eq('user_id', analysis.user_id)
-    .is('ml_item_id', null)
-
-  const { data: listing, error } = await supabase
-    .from('assertive_listings')
-    .insert({
-      analysis_id: analysis.id,
-      user_id: analysis.user_id,
-      variation_index: 0,
+  const listingValues = {
       title: generated.title,
       description: generated.description,
       price: generated.price,
@@ -863,8 +903,12 @@ export async function runGeneration(
         photo_gap_analysis: photoResult.photo_gap,
         image_review: {
           outcome: assetGallery.outcome,
-          required_asset_ids: assetGallery.reviewRequiredAssetIds,
-          confirmed_asset_ids: [],
+          required_asset_ids: progressiveImagesEnabled && Array.isArray(previous?.attributes?.image_review?.required_asset_ids)
+            ? previous.attributes.image_review.required_asset_ids
+            : assetGallery.reviewRequiredAssetIds,
+          confirmed_asset_ids: progressiveImagesEnabled && Array.isArray(previous?.attributes?.image_review?.confirmed_asset_ids)
+            ? previous.attributes.image_review.confirmed_asset_ids
+            : [],
           warning: assetGallery.warning || null,
         },
         // pre-publish validation
@@ -887,11 +931,49 @@ export async function runGeneration(
       shipping_mode: shippingMode,
       free_shipping: freeShipping,
       free_shipping_mandatory: freeShippingMandatory,
-    })
-    .select('id')
-    .single()
+  }
 
-  if (error || !listing) throw new Error('Não foi possível salvar o anúncio gerado.')
+  let listing: { id: string } | null = null
+  let listingError: { message?: string } | null = null
+  if (progressiveImagesEnabled && previous?.id) {
+    if (['publishing', 'published'].includes(previous.status || '')) {
+      throw new Error('O anúncio não aceita regeneração de imagens.')
+    }
+    const result = await supabase
+      .from('assertive_listings')
+      .update(listingValues)
+      .eq('id', previous.id)
+      .eq('user_id', analysis.user_id)
+      .is('ml_item_id', null)
+      .select('id')
+      .single()
+    listing = result.data
+    listingError = result.error
+  } else {
+    if (!progressiveImagesEnabled) {
+      // O caminho legado mantém a substituição integral para rollback comportamental.
+      await supabase
+        .from('assertive_listings')
+        .delete()
+        .eq('analysis_id', analysis.id)
+        .eq('user_id', analysis.user_id)
+        .is('ml_item_id', null)
+    }
+    const result = await supabase
+      .from('assertive_listings')
+      .insert({
+        analysis_id: analysis.id,
+        user_id: analysis.user_id,
+        variation_index: 0,
+        ...listingValues,
+      })
+      .select('id')
+      .single()
+    listing = result.data
+    listingError = result.error
+  }
+
+  if (listingError || !listing) throw new Error('Não foi possível salvar o anúncio gerado.')
 
   if (assetGallery.listingImages.length) {
     try {
@@ -900,6 +982,20 @@ export async function runGeneration(
       await supabase.from('assertive_listings').delete().eq('id', listing.id).eq('user_id', analysis.user_id)
       throw attachError
     }
+  }
+
+  if (progressiveImagesEnabled) {
+    const progressiveSlots = normalizeProgressiveImagePlan(
+      generated.image_plan,
+      imageBrief.facts.map(fact => ({ label: fact.label, value: fact.value }))
+    )
+    await ensureProgressiveImageJobs({
+      listingId: listing.id,
+      analysisId: analysis.id,
+      userId: analysis.user_id,
+      imagePlan: progressiveSlots.map(slot => ({ order: slot.position + 1, ...slot.shot })),
+      facts: imageBrief.facts.map(fact => ({ label: fact.label, value: fact.value })),
+    })
   }
 
   await updateAnalysis(analysis.id, analysis.user_id, { status })

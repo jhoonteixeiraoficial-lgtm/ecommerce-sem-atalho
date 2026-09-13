@@ -24,7 +24,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     .maybeSingle()
 
   if (!data) return Response.json({ error: 'Anúncio não encontrado.' }, { status: 404 })
-  return Response.json(data)
+  return Response.json({
+    ...data,
+    progressive_image_pipeline_enabled: process.env.ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED === 'true',
+  })
 }
 
 const attributeSchema = z.object({

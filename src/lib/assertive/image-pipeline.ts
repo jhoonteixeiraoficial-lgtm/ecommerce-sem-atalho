@@ -33,7 +33,7 @@ export interface ListingGallery {
   images: GalleryImage[]
   urls: string[]
   listingImages: ListingImageInput[]
-  outcome: 'enhanced' | 'normalized_fallback' | 'generated_pending_review' | 'generation_failed' | 'identity_required'
+  outcome: 'enhanced' | 'normalized_fallback' | 'generated_pending_review' | 'generation_failed' | 'identity_required' | 'progressive_pending'
   reviewRequiredAssetIds: string[]
   warning?: string
 }
@@ -644,6 +644,7 @@ export async function buildGeneratedListingGallery(input: {
           sha256: referenceHash,
           storage_key: `${input.userId}/${input.analysisId}/reference-${referenceHash.slice(0, 20)}${input.shot ? `-${input.shot.order}` : ''}-${operationKey.slice(0, 8)}`,
           source_url: fetched.final_url,
+          origin: 'ML_CATALOG',
           rights_status: 'REFERENCE_ONLY',
         })
         reference = { buffer: fetched.buffer, mime_type: fetched.mime_type }

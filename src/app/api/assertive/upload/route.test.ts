@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   createOriginalAsset: vi.fn(),
   createDerivedAsset: vi.fn(),
   normalizeProductImage: vi.fn(),
+  assessWhiteCover: vi.fn(),
 }))
 
 vi.mock('server-only', () => ({}))
@@ -15,6 +16,7 @@ vi.mock('@/lib/assertive/image-assets', () => ({
   createDerivedAsset: mocks.createDerivedAsset,
 }))
 vi.mock('@/lib/assertive/image-normalization', () => ({ normalizeProductImage: mocks.normalizeProductImage }))
+vi.mock('@/lib/assertive/image-quality', () => ({ assessWhiteCover: mocks.assessWhiteCover }))
 
 const { POST } = await import('./route')
 
@@ -30,6 +32,7 @@ describe('POST /api/assertive/upload', () => {
     })
     mocks.createOriginalAsset.mockResolvedValue({ id: 'original-1' })
     mocks.createDerivedAsset.mockResolvedValue({ id: 'rendition-1', public_url: 'https://cdn.example/rendition.jpg' })
+    mocks.assessWhiteCover.mockResolvedValue({ passed: true, square: true, white_border_ratio: 0.95, reason: null })
   })
 
   it('preserva o original privado e retorna a rendição normalizada com asset id', async () => {
@@ -45,6 +48,9 @@ describe('POST /api/assertive/upload', () => {
     }))
     expect(mocks.createDerivedAsset).toHaveBeenCalledWith(expect.objectContaining({
       parent_asset_id: 'original-1', kind: 'PUBLICATION_RENDITION', fidelity_status: 'ACCEPT',
+      metadata: expect.objectContaining({
+        white_cover: expect.objectContaining({ passed: true, white_border_ratio: 0.95 }),
+      }),
     }))
     expect(body).toEqual({
       assets: [{ original_asset_id: 'original-1', rendition_asset_id: 'rendition-1', preview_url: 'https://cdn.example/rendition.jpg' }],
@@ -61,5 +67,23 @@ describe('POST /api/assertive/upload', () => {
 
     expect(response.status).toBe(400)
     expect(mocks.createOriginalAsset).not.toHaveBeenCalled()
+  })
+
+  it('não persiste SVG ou outro formato disfarçado por MIME de imagem permitido', async () => {
+    mocks.normalizeProductImage.mockResolvedValue({
+      buffer: Buffer.from('normalized'),
+      mime_type: 'image/jpeg',
+      width: 1200,
+      height: 1200,
+      source: { width: 640, height: 480, format: 'svg' },
+    })
+    const form = new FormData()
+    form.append('files', new File([Buffer.from('<svg/>')], 'produto.jpg', { type: 'image/jpeg' }))
+
+    const response = await POST(new Request('http://localhost/api/assertive/upload', { method: 'POST', body: form }) as never)
+
+    expect(response.status).toBe(400)
+    expect(mocks.createOriginalAsset).not.toHaveBeenCalled()
+    expect(mocks.createDerivedAsset).not.toHaveBeenCalled()
   })
 })

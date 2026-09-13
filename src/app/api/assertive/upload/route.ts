@@ -3,6 +3,7 @@ import { requireCommunityUser } from '@/app/api/community/helpers'
 import { createHash, randomUUID } from 'node:crypto'
 import { createDerivedAsset, createOriginalAsset } from '@/lib/assertive/image-assets'
 import { normalizeProductImage } from '@/lib/assertive/image-normalization'
+import { assessWhiteCover, type WhiteCoverAssessment } from '@/lib/assertive/image-quality'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -15,6 +16,14 @@ const EXT: Record<string, string> = {
   'image/png': 'png',
   'image/webp': 'webp',
   'image/heic': 'heic',
+  'image/heif': 'heif',
+}
+
+const DECODED_FORMAT: Record<string, string> = {
+  'image/jpeg': 'jpeg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heif',
   'image/heif': 'heif',
 }
 
@@ -45,6 +54,7 @@ export async function POST(req: NextRequest) {
     extension: string
     originalHash: string
     normalized: Awaited<ReturnType<typeof normalizeProductImage>>
+    whiteCover: WhiteCoverAssessment
   }> = []
 
   // Decodifica tudo antes de persistir para não deixar um lote parcialmente válido.
@@ -65,12 +75,17 @@ export async function POST(req: NextRequest) {
 
     const bytes = Buffer.from(await file.arrayBuffer())
     try {
+      const normalized = await normalizeProductImage(bytes)
+      if (normalized.source.format !== DECODED_FORMAT[type]) {
+        throw new Error('O MIME informado não corresponde ao formato decodificado.')
+      }
       prepared.push({
         bytes,
         type,
         extension: EXT[type],
         originalHash: createHash('sha256').update(bytes).digest('hex'),
-        normalized: await normalizeProductImage(bytes),
+        normalized,
+        whiteCover: await assessWhiteCover(normalized.buffer),
       })
     } catch {
       return Response.json({ error: `"${file.name}" não é uma imagem válida.` }, { status: 400 })
@@ -106,7 +121,11 @@ export async function POST(req: NextRequest) {
         provider: 'local',
         model: 'sharp-v1',
         fidelity_status: 'ACCEPT',
-        metadata: { operation: 'NORMALIZE', source_sha256: item.originalHash },
+        metadata: {
+          operation: 'NORMALIZE',
+          source_sha256: item.originalHash,
+          white_cover: item.whiteCover,
+        },
       })
       if (!rendition.public_url) throw new Error('URL pública da rendição ausente')
       urls.push(rendition.public_url)

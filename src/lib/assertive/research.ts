@@ -3,6 +3,7 @@ import { discoverDomain, getCategory, getCategoryTrends, type DomainSuggestion }
 import { evaluateMatch, buildCompetitorMatrix, type MatchClass, type MatrixKey } from './matching'
 import type { ProductTruth } from './truth'
 import { buildBenchmarkSet, type BenchmarkSet } from './benchmark'
+import type { VisualReferenceCandidate, VisualReferenceSource } from './visual-references'
 
 const HOUR = 3600
 const SIX_HOURS = 21600
@@ -238,7 +239,7 @@ async function searchCatalog(token: string, query: string): Promise<CatalogSearc
   return data.results || []
 }
 
-function identitySearchQueries(query: string, truth?: ProductTruth | null): string[] {
+export function identitySearchQueries(query: string, truth?: ProductTruth | null): string[] {
   const candidates = [
     truth?.fields.gtin?.value,
     [truth?.fields.brand?.value, truth?.fields.model?.value].filter(Boolean).join(' '),
@@ -278,6 +279,67 @@ async function getHighlights(
 
 async function getProduct(token: string, productId: string): Promise<CatalogProduct> {
   return mlGet<CatalogProduct>(`/products/${productId}`, token, { ttl: HOUR, persist: true })
+}
+
+function productAttributes(product: CatalogProduct): Record<string, string> {
+  return Object.fromEntries(
+    (product.attributes || [])
+      .filter(attribute => Boolean(attribute.id && attribute.value_name))
+      .map(attribute => [attribute.id, attribute.value_name!])
+  )
+}
+
+export async function searchMarketplaceVisualReferences(
+  token: string,
+  truth: ProductTruth,
+  limit = 24
+): Promise<VisualReferenceCandidate[]> {
+  const boundedLimit = Math.max(1, Math.min(32, Math.floor(limit)))
+  const direct: VisualReferenceCandidate[] = (truth.source_pictures || []).filter(Boolean).map(imageUrl => ({
+    source: 'ML_SOURCE',
+    image_url: imageUrl,
+    source_page_url: truth.source_permalink || null,
+    source_item_id: truth.source_item_id || null,
+    source_catalog_product_id: truth.source_catalog_product_id || null,
+    title: truth.source_title || truth.name,
+    attributes: Object.fromEntries(
+      (truth.source_attributes || [])
+        .filter(attribute => Boolean(attribute.id && attribute.value_name))
+        .map(attribute => [attribute.id, attribute.value_name!])
+    ),
+  }))
+  const batches = await mapLimitSettled(
+    identitySearchQueries(truth.name, truth),
+    2,
+    query => searchCatalog(token, query)
+  )
+  const productIds = [...new Set(batches.flat().map(result => result.id).filter(Boolean))]
+    .slice(0, Math.max(12, boundedLimit * 2))
+  const products = await mapLimitSettled(productIds, 4, id => getProduct(token, id))
+  const discovered = products.flatMap(product => {
+    if (product.status && product.status !== 'active') return []
+    const itemId = product.buy_box_winner?.item_id || null
+    const isSource = product.id === truth.source_catalog_product_id || itemId === truth.source_item_id
+    const source: VisualReferenceSource = isSource
+      ? 'ML_SOURCE'
+      : itemId
+        ? 'ML_COMPETITOR'
+        : 'ML_CATALOG'
+    return (product.pictures || []).flatMap(picture => picture.url ? [{
+      source,
+      image_url: picture.url,
+      source_page_url: isSource ? truth.source_permalink || null : null,
+      source_item_id: itemId,
+      source_catalog_product_id: product.id,
+      title: product.name || product.family_name || product.id,
+      attributes: productAttributes(product),
+    }] satisfies VisualReferenceCandidate[] : [])
+  })
+  const unique = new Map<string, VisualReferenceCandidate>()
+  for (const candidate of [...direct, ...discovered]) {
+    if (!unique.has(candidate.image_url)) unique.set(candidate.image_url, candidate)
+  }
+  return [...unique.values()].slice(0, boundedLimit)
 }
 
 async function getProductItems(token: string, productId: string): Promise<CatalogProductItem[]> {

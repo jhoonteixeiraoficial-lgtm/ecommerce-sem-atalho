@@ -29,6 +29,7 @@ export interface GenerateProductImageInput {
   productName: string
   facts: Array<{ label: string; value: string }>
   reference?: { buffer: Buffer; mime_type: string }
+  references?: Array<{ buffer: Buffer; mime_type: string }>
   shot?: { order: number; title: string; description: string; required: boolean }
   apiKey?: string
   models?: string[]
@@ -44,6 +45,7 @@ export interface ProductImageGenerationResult {
   prompt_hash: string
   truth_brief_hash: string
   source_sha256: string | null
+  reference_sha256s: string[]
   output_sha256: string
 }
 
@@ -171,8 +173,17 @@ export async function generateProductImage(input: GenerateProductImageInput): Pr
 
   const brief = JSON.stringify({ productName, facts })
   const truthBriefHash = createHash('sha256').update(brief).digest('hex')
-  const referenceInstruction = input.reference
-    ? 'Use a imagem anexada somente como referência visual de identidade. Crie uma nova composição e não reproduza fundo, cenário, texto promocional, selo ou marca-d’água da referência.'
+  const requestedReferences = input.references?.length
+    ? input.references
+    : input.reference
+      ? [input.reference]
+      : []
+  if (requestedReferences.some(reference => !reference.buffer.byteLength || !reference.mime_type.startsWith('image/'))) {
+    throw new Error('Referência visual inválida para geração de imagem.')
+  }
+  const references = requestedReferences.slice(0, 3)
+  const referenceInstruction = references.length
+    ? `${references.length === 1 ? 'Use a imagem anexada somente como referência visual exata da identidade.' : `Use as ${references.length} imagens anexadas conjuntamente e somente como referências visuais exatas da identidade.`} Triangule produto, geometria, variante, cor, marca, quantidade e componentes visíveis. Crie uma composição nova; não copie fundo, cenário, enquadramento, texto promocional, selo ou marca-d’água de nenhuma referência.`
     : 'Não há referência visual. Represente somente os elementos sustentados pela identidade e pelos fatos confirmados.'
   const factLines = facts.map(fact => `- ${fact.label}: ${fact.value}`).join('\n') || '- Nenhum detalhe adicional confirmado.'
   const shotInstruction = input.shot?.order === 1
@@ -193,14 +204,18 @@ REGRAS INEGOCIÁVEIS:
 - Na foto principal, use fundo branco puro. Nas fotos secundárias, objetos de cenário devem ficar claramente separados e nunca parecer itens inclusos.
 - Preserve exatamente marca, modelo, variante, cor, formato e quantidade quando estiverem confirmados.
 - Não invente acessório, embalagem, texto, logotipo, conexão, controle, medida, certificação ou benefício.
-- Preserve o ponto de vista comprovado. Não revele lados, conexões ou peças ausentes das referências exatas.
+- Crie uma composição nova, mas mostre somente ângulos, lados, conexões e peças comprovados nas referências exatas.
+- Não reproduza a composição completa de nenhuma referência.
 - Não inclua selo, preço, borda, marca-d’água ou chamada promocional.
 
 Retorne exatamente uma imagem.`
   const promptHash = createHash('sha256').update(prompt).digest('hex')
-  const sourceHash = input.reference
-    ? createHash('sha256').update(input.reference.buffer).digest('hex')
-    : null
+  const referenceHashes = references.map(reference => createHash('sha256').update(reference.buffer).digest('hex'))
+  const sourceHash = referenceHashes.length === 0
+    ? null
+    : referenceHashes.length === 1
+      ? referenceHashes[0]
+      : createHash('sha256').update(referenceHashes.join(':')).digest('hex')
   const models = (input.models?.length ? input.models : modelNamesForProvider('gemini', 'image_generation')).slice(0, 2)
   if (!models.length) throw new Error('Nenhum modelo Gemini de imagem configurado.')
 
@@ -214,11 +229,11 @@ Retorne exatamente uma imagem.`
     const timer = setTimeout(() => controller.abort(), 120_000)
     try {
       const parts: Array<Record<string, unknown>> = [{ text: prompt }]
-      if (input.reference) {
+      for (const reference of references) {
         parts.push({
           inlineData: {
-            data: input.reference.buffer.toString('base64'),
-            mimeType: input.reference.mime_type,
+            data: reference.buffer.toString('base64'),
+            mimeType: reference.mime_type,
           },
         })
       }
@@ -264,6 +279,7 @@ Retorne exatamente uma imagem.`
         prompt_hash: promptHash,
         truth_brief_hash: truthBriefHash,
         source_sha256: sourceHash,
+        reference_sha256s: referenceHashes,
         output_sha256: createHash('sha256').update(buffer).digest('hex'),
       }
     } catch (error) {

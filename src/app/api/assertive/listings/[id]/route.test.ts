@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   listing: {} as Record<string, unknown>,
@@ -40,10 +40,11 @@ vi.mock('@/lib/supabase/admin', () => ({
   }),
 }))
 
-const { PATCH } = await import('./route')
+const { GET, PATCH } = await import('./route')
 
 describe('PATCH /api/assertive/listings/[id]', () => {
   beforeEach(() => {
+    vi.stubEnv('ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED', 'true')
     vi.clearAllMocks()
     mocks.listing = {
       id: 'listing-1',
@@ -101,6 +102,20 @@ describe('PATCH /api/assertive/listings/[id]', () => {
     expect(mocks.attachListingImages).toHaveBeenCalledWith('listing-1', 'user-1', mocks.body.listing_images)
     expect(mocks.updatePatch).toBeNull()
     expect(mocks.recomputeListing).toHaveBeenCalledWith('listing-1', 'user-1')
+  })
+
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('returns the server-side progressive flag without persisting it on the listing', async () => {
+    const response = await GET(new Request('http://localhost/listing-1') as never, {
+      params: Promise.resolve({ id: 'listing-1' }),
+    })
+
+    await expect(response.json()).resolves.toMatchObject({
+      id: 'listing-1',
+      progressive_image_pipeline_enabled: true,
+    })
+    expect(mocks.listing).not.toHaveProperty('progressive_image_pipeline_enabled')
   })
 
   it('preserva a confirmação explícita quando o usuário edita um atributo', async () => {

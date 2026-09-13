@@ -7,7 +7,12 @@ vi.mock('../ml-api', async importOriginal => {
   return { ...original, mlGet: mocks.mlGet }
 })
 
-import { exactFactSources, exactProductReferenceUrls, researchMarket } from '../research'
+import {
+  exactFactSources,
+  exactProductReferenceUrls,
+  researchMarket,
+  searchMarketplaceVisualReferences,
+} from '../research'
 import type { ResearchResult } from '../research'
 import type { ProductTruth } from '../truth'
 
@@ -66,7 +71,8 @@ describe('researchMarket', () => {
             { id: 'MODEL', value_name: 'KA250' },
             { id: 'GTIN', value_name: '7898559182505' },
           ],
-          pictures: [{ url: 'https://example.com/catalog.jpg' }],
+           pictures: [{ url: 'https://example.com/catalog.jpg' }],
+          buy_box_winner: { item_id: 'MLB100' },
         }
       }
       if (path === '/products/MLBP2') {
@@ -76,7 +82,8 @@ describe('researchMarket', () => {
           domain_id: 'MLB-TOOL_AND_CONSTRUCTION_SUPPLIES',
           name: 'Caneta teste circuito automotivo 12V',
           attributes: [{ id: 'VOLTAGE', value_name: '12V' }],
-          pictures: [{ url: 'https://example.com/competitor.jpg' }],
+           pictures: [{ url: 'https://example.com/competitor.jpg' }],
+          buy_box_winner: { item_id: 'MLB200' },
         }
       }
       if (path === '/products/MLBP1/items') return { results: [] }
@@ -181,5 +188,37 @@ describe('exactFactSources', () => {
 
     expect(urls[0]).toBe('https://cdn.example/best-seller.jpg')
     expect(urls).toContain('https://cdn.example/catalog.jpg')
+  })
+
+  it('expands exact marketplace pictures without loading offer facts', async () => {
+    mocks.mlGet.mockClear()
+    const visualTruth: ProductTruth = {
+      ...truth,
+      source_item_id: 'MLB100',
+      source_catalog_product_id: 'MLBP1',
+      source_pictures: ['https://example.com/source-own.jpg'],
+      source_permalink: 'https://produto.mercadolivre.com.br/MLB-100',
+    }
+
+    const candidates = await searchMarketplaceVisualReferences('token', visualTruth, 8)
+
+    expect(candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'ML_SOURCE',
+        image_url: 'https://example.com/source-own.jpg',
+        source_item_id: 'MLB100',
+      }),
+      expect.objectContaining({
+        source: 'ML_SOURCE',
+        image_url: 'https://example.com/catalog.jpg',
+        source_catalog_product_id: 'MLBP1',
+      }),
+      expect.objectContaining({
+        source: 'ML_COMPETITOR',
+        image_url: 'https://example.com/competitor.jpg',
+        source_item_id: 'MLB200',
+      }),
+    ]))
+    expect(mocks.mlGet.mock.calls.map(([path]) => String(path)).some(path => path.endsWith('/items'))).toBe(false)
   })
 })

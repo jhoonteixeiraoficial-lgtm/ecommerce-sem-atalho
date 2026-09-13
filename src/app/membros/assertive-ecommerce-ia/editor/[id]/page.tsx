@@ -1,10 +1,13 @@
 'use client'
 
-import { useState, useEffect, useEffectEvent, useCallback, use, useRef } from 'react'
+import { startTransition, useState, useEffect, useEffectEvent, useCallback, use, useRef } from 'react'
 import Link from 'next/link'
 import { evaluateEditorReadiness } from '@/lib/assertive/publication-readiness'
 import { resolveMarketplacePublication } from '@/lib/assertive/marketplace-publication'
 import type { MLItemPayload } from '@/lib/assertive/publisher'
+import type { ImageJobSlot, ImageJobSnapshot } from '@/lib/assertive/image-job-contract'
+import { nextImageJobRequestCount, uploadProgressivePhoto } from '@/lib/assertive/progressive-photo-client'
+import { ProgressivePhotoGallery } from '@/components/assertive/progressive-photo-gallery'
 import {
   Loader2, AlertCircle, CheckCircle2, ArrowLeft, ShieldCheck, Upload, X,
   Trophy, Package, Tag, ImageIcon, FileText, ListChecks, Camera, Search,
@@ -79,6 +82,7 @@ interface PublicationRequirementsView {
 
 interface Listing {
   id: string
+  progressive_image_pipeline_enabled?: boolean
   analysis_id: string
   title: string
   description: string
@@ -155,7 +159,7 @@ interface Listing {
     auto_appended_attributes?: string[]
     publication_requirements?: PublicationRequirementsView | null
     image_review?: {
-      outcome?: 'enhanced' | 'normalized_fallback' | 'generated_pending_review' | 'generation_failed' | 'identity_required'
+      outcome?: 'enhanced' | 'normalized_fallback' | 'generated_pending_review' | 'generation_failed' | 'identity_required' | 'progressive_pending'
       required_asset_ids?: string[]
       confirmed_asset_ids?: string[]
       warning?: string | null
@@ -313,6 +317,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [editingAttributes, setEditingAttributes] = useState(false)
   const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({})
   const uploadRef = useRef<HTMLInputElement>(null)
+  const progressiveUploadPosition = useRef<number | null>(null)
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -322,6 +327,15 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   // Gallery states
   const [lightbox, setLightbox] = useState<{ open: boolean; index: number }>({ open: false, index: 0 })
   const [dragState, setDragState] = useState<{ dragging: number | null; over: number | null }>({ dragging: null, over: null })
+  const [imageJobSnapshot, setImageJobSnapshot] = useState<ImageJobSnapshot | null>(null)
+  const [imageWorkers, setImageWorkers] = useState(0)
+  const [imagePumpTick, setImagePumpTick] = useState(0)
+  const [progressiveLightbox, setProgressiveLightbox] = useState<ImageJobSlot | null>(null)
+  const imageWorkerControllers = useRef(new Set<AbortController>())
+  const imageBackoffUntil = useRef(0)
+  const imageNetworkFailures = useRef(0)
+  const progressiveMode = listing?.progressive_image_pipeline_enabled === true
+    && listing.attributes?.image_review?.outcome === 'progressive_pending'
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/assertive/listings/${id}`)
@@ -359,6 +373,83 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   // A atualização de estado acontece somente após a resposta assíncrona do endpoint oficial.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void refreshShippingAvailability() }, [refreshShippingAvailability])
+
+  const refreshProgressiveJobs = useEffectEvent(async (signal?: AbortSignal) => {
+    const response = await fetch(`/api/assertive/listings/${id}/images/jobs`, { signal })
+    if (!response.ok) throw new Error('Não foi possível consultar o progresso das imagens.')
+    const snapshot = await response.json() as ImageJobSnapshot
+    startTransition(() => setImageJobSnapshot(snapshot))
+  })
+
+  const runProgressiveImageWorker = useEffectEvent(async () => {
+    const controller = new AbortController()
+    imageWorkerControllers.current.add(controller)
+    setImageWorkers(current => current + 1)
+    try {
+      const response = await fetch(`/api/assertive/listings/${id}/images/jobs/run`, {
+        method: 'POST',
+        signal: controller.signal,
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Não foi possível gerar a próxima imagem.')
+      imageNetworkFailures.current = 0
+      imageBackoffUntil.current = 0
+      startTransition(() => setImageJobSnapshot(data.snapshot as ImageJobSnapshot))
+    } catch (workerError) {
+      if (controller.signal.aborted) return
+      imageNetworkFailures.current += 1
+      const delay = Math.min(15_000, 2_000 * imageNetworkFailures.current)
+      imageBackoffUntil.current = Date.now() + delay
+      setError(workerError instanceof Error ? workerError.message : 'Não foi possível gerar a próxima imagem.')
+      window.setTimeout(() => setImagePumpTick(tick => tick + 1), delay)
+    } finally {
+      imageWorkerControllers.current.delete(controller)
+      setImageWorkers(current => Math.max(0, current - 1))
+    }
+  })
+
+  useEffect(() => {
+    if (!progressiveMode) return
+    const controller = new AbortController()
+    void refreshProgressiveJobs(controller.signal).catch(loadError => {
+      if (!controller.signal.aborted) {
+        setError(loadError instanceof Error ? loadError.message : 'Não foi possível consultar as imagens.')
+      }
+    })
+    function resumeWhenVisible() {
+      if (document.visibilityState === 'visible') void refreshProgressiveJobs().catch(() => undefined)
+    }
+    document.addEventListener('visibilitychange', resumeWhenVisible)
+    return () => {
+      controller.abort()
+      document.removeEventListener('visibilitychange', resumeWhenVisible)
+    }
+  }, [id, progressiveMode])
+
+  useEffect(() => {
+    if (!progressiveMode || !imageJobSnapshot || ['publishing', 'published'].includes(listing?.status || '')) return
+    const backoff = imageBackoffUntil.current - Date.now()
+    if (backoff > 0) {
+      const timer = window.setTimeout(() => setImagePumpTick(tick => tick + 1), backoff)
+      return () => window.clearTimeout(timer)
+    }
+    const requestCount = nextImageJobRequestCount(imageJobSnapshot, imageWorkers, saving)
+    for (let worker = 0; worker < requestCount; worker++) void runProgressiveImageWorker()
+    if (requestCount > 0) return
+    const delayedRetry = imageJobSnapshot.reference_status === 'RETRYABLE'
+      || imageJobSnapshot.slots.some(slot => slot.status === 'RETRYABLE')
+    if (!imageJobSnapshot.runnable && delayedRetry && imageWorkers === 0) {
+      const timer = window.setTimeout(() => {
+        void refreshProgressiveJobs().catch(() => undefined)
+      }, 5_000)
+      return () => window.clearTimeout(timer)
+    }
+  }, [progressiveMode, imageJobSnapshot, imageWorkers, imagePumpTick, listing?.status, saving])
+
+  useEffect(() => () => {
+    for (const controller of imageWorkerControllers.current) controller.abort()
+    imageWorkerControllers.current.clear()
+  }, [])
 
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -501,6 +592,30 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     })
     const data = await res.json()
     if (!res.ok) setError(data.error || 'Não foi possível confirmar a imagem.')
+    else if (data.snapshot) startTransition(() => setImageJobSnapshot(data.snapshot as ImageJobSnapshot))
+    await load()
+    setSaving(false)
+  }
+
+  async function retryProgressiveImage(slot: ImageJobSlot) {
+    setSaving(true)
+    setError(null)
+    const res = await fetch(`/api/assertive/listings/${id}/images/jobs/${slot.position}/retry`, { method: 'POST' })
+    const data = await res.json()
+    if (!res.ok) setError(data.error || 'Não foi possível gerar outra imagem.')
+    else startTransition(() => setImageJobSnapshot(data as ImageJobSnapshot))
+    await load()
+    setSaving(false)
+  }
+
+  async function removeProgressiveImage(slot: ImageJobSlot) {
+    setSaving(true)
+    setError(null)
+    const res = await fetch(`/api/assertive/listings/${id}/images/jobs/${slot.position}`, { method: 'DELETE' })
+    const data = await res.json()
+    if (!res.ok) setError(data.error || 'Não foi possível remover a posição de imagem.')
+    else startTransition(() => setImageJobSnapshot(data as ImageJobSnapshot))
+    if (progressiveLightbox?.position === slot.position) setProgressiveLightbox(null)
     await load()
     setSaving(false)
   }
@@ -518,7 +633,23 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   async function uploadPhotos(files: FileList | null) {
     if (!files?.length || !listing) return
     setSaving(true)
+    setError(null)
     const form = new FormData()
+    if (progressiveMode && progressiveUploadPosition.current !== null) {
+      const position = progressiveUploadPosition.current
+      form.append('files', files[0], files[0].name)
+      try {
+        const snapshot = await uploadProgressivePhoto(id, position, form)
+        startTransition(() => setImageJobSnapshot(snapshot))
+        await load()
+      } catch (uploadError) {
+        setError(uploadError instanceof Error ? uploadError.message : 'Falha no envio.')
+      } finally {
+        progressiveUploadPosition.current = null
+        setSaving(false)
+      }
+      return
+    }
     Array.from(files).slice(0, 8).forEach(f => form.append('files', f, f.name))
     const res = await fetch('/api/assertive/upload', { method: 'POST', body: form })
     const data = await res.json()
@@ -728,6 +859,77 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     ['Atributos', scores?.attributes, Package],
   ]
 
+  const progressiveGallery = progressiveMode ? (
+    <>
+      <input
+        ref={uploadRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={e => { void uploadPhotos(e.target.files); e.target.value = '' }}
+      />
+      {imageJobSnapshot ? (
+        <ProgressivePhotoGallery
+          snapshot={imageJobSnapshot}
+          busy={saving}
+          readOnly={isPublished || isPublishing}
+          onConfirm={slot => { if (slot.asset_id) void confirmGeneratedImage(slot.asset_id) }}
+          onRetry={slot => { void retryProgressiveImage(slot) }}
+          onRemove={slot => { void removeProgressiveImage(slot) }}
+          onOpen={setProgressiveLightbox}
+          onUpload={position => {
+            progressiveUploadPosition.current = position
+            uploadRef.current?.click()
+          }}
+        />
+      ) : (
+        <section id="listing-photos" className="rounded-xl border border-[#242424] bg-[#141414] p-5">
+          <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-gray-500">
+            <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
+            Preparando o estúdio de fotos...
+          </div>
+        </section>
+      )}
+      {progressiveLightbox?.preview_url && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={progressiveLightbox.title}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setProgressiveLightbox(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setProgressiveLightbox(null)}
+            className="absolute right-4 top-4 rounded-full bg-black/60 p-2 text-white/70 transition hover:text-white"
+            aria-label="Fechar imagem ampliada"
+          >
+            <X className="h-6 w-6" />
+          </button>
+          <div className="max-h-[88vh] max-w-[92vw]" onClick={event => event.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={progressiveLightbox.preview_url}
+              alt={progressiveLightbox.title}
+              className="max-h-[82vh] max-w-full rounded-lg object-contain"
+            />
+            <div className="mt-3 flex items-center justify-between gap-4 text-sm text-gray-300">
+              <span>{progressiveLightbox.position + 1} de 6 · {progressiveLightbox.title}</span>
+              <button
+                type="button"
+                onClick={() => { if (progressiveLightbox.preview_url) void downloadImage(progressiveLightbox.preview_url, progressiveLightbox.position) }}
+                className="inline-flex items-center gap-1.5 text-amber-300 transition hover:text-amber-200"
+              >
+                <ArrowDown className="h-4 w-4 rotate-180" /> Baixar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  ) : null
+
   // ============================================================
   // PREVIEW GATE: Se existem blockers que o Assertive não resolveu,
   // mostrar etapa simplificada "Preciso de você" em vez do editor completo.
@@ -749,7 +951,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   if (hasUnresolvedBlockers) {
     return (
       <div className="min-h-screen bg-[#0c0c0c] px-4 py-6 sm:p-6">
-        <div className="max-w-lg mx-auto">
+        <div className={`${progressiveMode ? 'max-w-6xl' : 'max-w-lg'} mx-auto`}>
           <Link
             href="/membros/assertive-ecommerce-ia"
             className="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-5 transition"
@@ -757,7 +959,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             <ArrowLeft className="w-4 h-4" /> Meus anúncios
           </Link>
 
-          <div className="bg-[#141414] border border-amber-500/20 rounded-xl p-6 mb-5">
+          {progressiveGallery && <div className="mb-5">{progressiveGallery}</div>}
+
+          <div className="mx-auto mb-5 max-w-lg rounded-xl border border-amber-500/20 bg-[#141414] p-6">
             <h1 className="text-white text-lg font-semibold mb-2 flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-amber-500" />
               Estamos quase prontos
@@ -815,7 +1019,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
           {/* Aviso de conta (se houver) */}
           {accountWarnings.length > 0 && (
-            <div className="bg-[#141414] border border-blue-500/20 rounded-xl p-5">
+            <div className="mx-auto max-w-lg rounded-xl border border-blue-500/20 bg-[#141414] p-5">
               <h2 className="text-white font-semibold flex items-center gap-2 mb-3">
                 <Info className="w-4 h-4 text-blue-400" />
                 Avisos de conta
@@ -939,6 +1143,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           {/* ============ COLUNA PRINCIPAL ============ */}
           <div className="space-y-5">
             {/* fotos */}
+            {progressiveMode ? progressiveGallery : (
             <section id="listing-photos" className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold flex items-center gap-2">
@@ -1224,6 +1429,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 </details>
               )}
             </section>
+            )}
 
             {/* título */}
             <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">

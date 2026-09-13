@@ -4,7 +4,7 @@ import type { PhotoRole } from './photos'
 import { createHash } from 'node:crypto'
 
 export type ImageAssetKind = 'ORIGINAL_EVIDENCE' | 'SOURCE_REFERENCE' | 'DERIVED' | 'GENERATED_SCENE' | 'PUBLICATION_RENDITION'
-export type ImageOrigin = 'USER_UPLOAD' | 'ML_OWN_ITEM' | 'ML_CATALOG' | 'COMPETITOR' | 'AI_GENERATED'
+export type ImageOrigin = 'USER_UPLOAD' | 'ML_OWN_ITEM' | 'ML_CATALOG' | 'COMPETITOR' | 'WEB_REFERENCE' | 'AI_GENERATED'
 export type ImageRightsStatus = 'USER_OWNED' | 'SELLER_OWNED_CONFIRMED' | 'LICENSED' | 'REFERENCE_ONLY' | 'UNKNOWN'
 export type FidelityStatus = 'ACCEPT' | 'REVIEW' | 'REJECT'
 
@@ -85,7 +85,9 @@ export interface CreateDerivedAssetInput extends Omit<CreateOriginalAssetInput, 
 
 export interface CreateReferenceAssetInput extends CreateOriginalAssetInput {
   source_url: string
+  origin: Extract<ImageOrigin, 'ML_OWN_ITEM' | 'ML_CATALOG' | 'COMPETITOR' | 'WEB_REFERENCE'>
   rights_status: Extract<ImageRightsStatus, 'REFERENCE_ONLY' | 'SELLER_OWNED_CONFIRMED' | 'LICENSED'>
+  metadata?: Record<string, unknown>
 }
 
 export interface CreateGeneratedAssetInput extends Omit<CreateOriginalAssetInput, 'storage_key'> {
@@ -156,27 +158,50 @@ export async function createOriginalAsset(input: CreateOriginalAssetInput): Prom
   })
 }
 
+async function findExistingReferenceAsset(input: CreateReferenceAssetInput): Promise<ImageAsset | null> {
+  let query = createAdminClient()
+    .from('assertive_image_assets')
+    .select('*')
+    .eq('user_id', input.user_id)
+    .eq('kind', 'SOURCE_REFERENCE')
+    .eq('sha256', input.sha256)
+  query = input.analysis_id
+    ? query.eq('analysis_id', input.analysis_id)
+    : query.is('analysis_id', null)
+  const { data, error } = await query.limit(1).maybeSingle()
+  if (error) throw new Error(`Falha ao consultar referência visual: ${error.message}`)
+  return (data as ImageAsset | null) || null
+}
+
 export async function createReferenceAsset(input: CreateReferenceAssetInput): Promise<ImageAsset> {
-  return persistAsset(input, {
-    user_id: input.user_id,
-    analysis_id: input.analysis_id || null,
-    kind: 'SOURCE_REFERENCE',
-    origin: 'ML_CATALOG',
-    rights_status: input.rights_status,
-    storage_bucket: 'assertive-originals',
-    storage_key: input.storage_key,
-    public_url: null,
-    sha256: input.sha256,
-    mime_type: input.mime_type,
-    width: input.width,
-    height: input.height,
-    byte_size: input.bytes.byteLength,
-    parent_asset_id: null,
-    provider: null,
-    model: null,
-    fidelity_status: null,
-    metadata: { source_url: input.source_url },
-  })
+  const existing = await findExistingReferenceAsset(input)
+  if (existing) return existing
+  try {
+    return await persistAsset(input, {
+      user_id: input.user_id,
+      analysis_id: input.analysis_id || null,
+      kind: 'SOURCE_REFERENCE',
+      origin: input.origin,
+      rights_status: input.rights_status,
+      storage_bucket: 'assertive-originals',
+      storage_key: input.storage_key,
+      public_url: null,
+      sha256: input.sha256,
+      mime_type: input.mime_type,
+      width: input.width,
+      height: input.height,
+      byte_size: input.bytes.byteLength,
+      parent_asset_id: null,
+      provider: null,
+      model: null,
+      fidelity_status: null,
+      metadata: { ...input.metadata, source_url: input.source_url },
+    })
+  } catch (error) {
+    const raced = await findExistingReferenceAsset(input).catch(() => null)
+    if (raced) return raced
+    throw error
+  }
 }
 
 export async function createDerivedAsset(input: CreateDerivedAssetInput): Promise<ImageAsset> {

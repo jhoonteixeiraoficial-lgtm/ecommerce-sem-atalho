@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const runTaskJsonWithMeta = vi.hoisted(() => vi.fn())
 vi.mock('../ai-router', () => ({ runTaskJsonWithMeta }))
 
-import { verifyGeneratedImage, verifyImageFidelity } from '../image-fidelity'
+import { verifyGeneratedImage, verifyImageFidelity, verifyReferenceGuidedImage } from '../image-fidelity'
 
 const accepted = {
   same_product: true,
@@ -175,5 +175,84 @@ describe('generated image quality gate', () => {
     expect(result.status).toBe('REJECT')
     expect(result.reason_codes).toContain('INVENTED_TEXT_OR_BRANDING')
     expect(result.reason_codes).toContain('FACTS_CONTRADICTED')
+  })
+})
+
+describe('multi-reference generated image gate', () => {
+  const guidedAccepted = {
+    same_product: true,
+    geometry_preserved: true,
+    variant_preserved: true,
+    color_preserved: true,
+    branding_preserved: true,
+    quantity_preserved: true,
+    components_preserved: true,
+    composition_is_new: true,
+    score: 96,
+    reason: 'Mesmo produto em composição nova.',
+  }
+
+  const input = {
+    references: [
+      { buffer: Buffer.from('reference-a'), mime_type: 'image/jpeg' },
+      { buffer: Buffer.from('reference-b'), mime_type: 'image/webp' },
+    ],
+    candidate: Buffer.from('candidate'),
+    candidate_mime_type: 'image/png',
+    productName: 'Parafusadeira Fulink FK-80PT',
+    facts: [{ label: 'Modelo', value: 'FK-80PT' }],
+    config: null,
+  }
+
+  beforeEach(() => {
+    runTaskJsonWithMeta.mockReset().mockResolvedValue({
+      data: guidedAccepted,
+      meta: { provider: 'gemini', model: 'vision', latency_ms: 12, attempts: 1 },
+    })
+  })
+
+  it('sends references before the candidate and accepts only a new clean composition', async () => {
+    const result = await verifyReferenceGuidedImage(input)
+
+    expect(runTaskJsonWithMeta.mock.calls[0][4].images).toEqual([
+      `data:image/jpeg;base64,${Buffer.from('reference-a').toString('base64')}`,
+      `data:image/webp;base64,${Buffer.from('reference-b').toString('base64')}`,
+      `data:image/png;base64,${Buffer.from('candidate').toString('base64')}`,
+    ])
+    expect(result).toMatchObject({ status: 'ACCEPT', composition_is_new: true })
+  })
+
+  it('rejects a different variant even when the scene is attractive', async () => {
+    runTaskJsonWithMeta.mockResolvedValue({
+      data: { ...guidedAccepted, variant_preserved: false, score: 99, reason: 'Variante divergente.' },
+      meta: { provider: 'gemini', model: 'vision', latency_ms: 12, attempts: 1 },
+    })
+
+    await expect(verifyReferenceGuidedImage(input)).resolves.toMatchObject({
+      status: 'REJECT',
+      reason_codes: expect.arrayContaining(['VARIANT_CHANGED']),
+    })
+  })
+
+  it('rejects a copied composition', async () => {
+    runTaskJsonWithMeta.mockResolvedValue({
+      data: { ...guidedAccepted, composition_is_new: false, score: 99, reason: 'Composição copiada.' },
+      meta: { provider: 'gemini', model: 'vision', latency_ms: 12, attempts: 1 },
+    })
+
+    await expect(verifyReferenceGuidedImage(input)).resolves.toMatchObject({
+      status: 'REJECT',
+      composition_is_new: false,
+      reason_codes: expect.arrayContaining(['COMPOSITION_NOT_NEW']),
+    })
+  })
+
+  it('returns REVIEW when structure cannot be assessed', async () => {
+    runTaskJsonWithMeta.mockRejectedValue(new Error('503'))
+
+    await expect(verifyReferenceGuidedImage(input)).resolves.toMatchObject({
+      status: 'REVIEW',
+      reason_codes: ['GATE_UNAVAILABLE'],
+    })
   })
 })

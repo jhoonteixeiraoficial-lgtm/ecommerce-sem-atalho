@@ -102,6 +102,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
   }
 
+  if (process.env.ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED === 'true') {
+    const { data: imageJobs, error: imageJobsError } = await supabase
+      .from('assertive_image_jobs')
+      .select('position,status')
+      .eq('listing_id', id)
+      .eq('user_id', authorizedUser.id)
+      .eq('kind', 'GENERATE_SLOT')
+    if (imageJobsError) {
+      return Response.json({ error: 'Não foi possível verificar as imagens progressivas.' }, { status: 500 })
+    }
+    if (imageJobs?.length) {
+      const positions = new Set(imageJobs.map(job => job.position))
+      const allPositionsReady = imageJobs.length === 6
+        && positions.size === 6
+        && imageJobs.every(job => (
+          Number.isInteger(job.position)
+          && job.position >= 0
+          && job.position <= 5
+          && ['SUCCEEDED', 'DISMISSED'].includes(job.status)
+        ))
+      if (!allPositionsReady) {
+        return Response.json(
+          { error: 'Conclua ou remova todas as posições de imagem antes de publicar.', code: 'IMAGE_JOBS_PENDING' },
+          { status: 409 }
+        )
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- LOCK: status = publishing
   if (listing.status === 'publishing') {
     const startedAt = listing.publishing_started_at ? new Date(listing.publishing_started_at).getTime() : 0

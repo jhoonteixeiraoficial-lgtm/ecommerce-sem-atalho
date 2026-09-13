@@ -1,10 +1,15 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import sharp from 'sharp'
 
 const lookup = vi.hoisted(() => vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]))
 vi.mock('node:dns/promises', () => ({ lookup }))
 import { fetchImageSafely } from '../safe-image-fetch'
 
 describe('fetchImageSafely SSRF boundary', () => {
+  beforeEach(() => {
+    lookup.mockReset().mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
+
   afterEach(() => vi.restoreAllMocks())
 
   it.each([
@@ -27,6 +32,22 @@ describe('fetchImageSafely SSRF boundary', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('fixa a conexão no endereço público já validado contra DNS rebinding', async () => {
+    const image = await sharp({
+      create: { width: 2, height: 2, channels: 3, background: 'white' },
+    }).jpeg().toBuffer()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(image, {
+      headers: { 'content-type': 'image/jpeg' },
+    }))
+
+    await fetchImageSafely('https://public.example/photo.jpg')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('https://public.example/photo.jpg'),
+      expect.objectContaining({ dispatcher: expect.anything() })
+    )
+  })
+
   it('rejeita pelo content-length antes de carregar mais de 8MB', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('x', {
       status: 200,
@@ -34,5 +55,16 @@ describe('fetchImageSafely SSRF boundary', () => {
     }))
 
     await expect(fetchImageSafely('https://public.example/photo.jpg')).rejects.toThrow('excede 8MB')
+  })
+
+  it('rejeita SVG e conteúdo cujo MIME não corresponde ao formato decodificado', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640"><rect width="640" height="640" fill="white"/></svg>'
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(svg, { headers: { 'content-type': 'image/svg+xml' } }))
+      .mockResolvedValueOnce(new Response(svg, { headers: { 'content-type': 'image/jpeg' } }))
+
+    await expect(fetchImageSafely('https://public.example/photo.svg')).rejects.toThrow('formato não permitido')
+    await expect(fetchImageSafely('https://public.example/disguised.jpg')).rejects.toThrow('não corresponde')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

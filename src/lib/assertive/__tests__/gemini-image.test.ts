@@ -110,6 +110,29 @@ describe('Gemini product image generation', () => {
     expect(result.source_sha256).toMatch(/^[a-f0-9]{64}$/)
   })
 
+  it('sends up to three exact references and requests a new composition', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(imageResponse('multi-reference'))
+    const references = ['a', 'b', 'c', 'd'].map(value => ({
+      buffer: Buffer.from(`reference-${value}`),
+      mime_type: 'image/jpeg',
+    }))
+
+    const result = await generateProductImage({
+      productName: 'Parafusadeira Fulink FK-80PT',
+      facts: [{ label: 'Modelo', value: 'FK-80PT' }],
+      references,
+      shot: { order: 1, title: 'Foto principal', description: 'Fundo branco', required: true },
+      apiKey: 'test-key',
+      models: ['image-model'],
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.contents[0].parts.filter((part: { inlineData?: unknown }) => part.inlineData)).toHaveLength(3)
+    expect(body.contents[0].parts[0].text).toMatch(/composição nova/i)
+    expect(result.reference_sha256s).toHaveLength(3)
+    expect(result.source_sha256).toMatch(/^[a-f0-9]{64}$/)
+  })
+
   it('recorre à chave de sistema quando a chave Gemini do usuário é inválida', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'system-key')
     const fetchMock = vi.spyOn(globalThis, 'fetch')

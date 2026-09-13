@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { payloadHash } from '@/lib/assertive/publication-readiness'
 
 const payload = {
@@ -48,13 +48,23 @@ const marketplaceItem = {
   last_updated: '2026-09-09T12:01:07.755Z',
 }
 
+interface TestListing extends Record<string, unknown> {
+  id?: string
+  validated_payload?: unknown
+  validated_payload_hash?: string
+  attributes: Record<string, unknown> & {
+    image_review?: { required_asset_ids: string[]; confirmed_asset_ids: string[] }
+  }
+}
+
 const mocks = vi.hoisted(() => ({
-  listing: {} as Record<string, any>,
-  updates: [] as Array<{ table: string; patch: Record<string, any> }>,
+  listing: { attributes: {} } as TestListing,
+  updates: [] as Array<{ table: string; patch: Record<string, unknown> }>,
   mlGet: vi.fn(),
   buildItemPayload: vi.fn(),
   validateListing: vi.fn(),
   publishListing: vi.fn(),
+  imageJobs: [] as Array<Record<string, unknown>>,
 }))
 
 vi.mock('server-only', () => ({}))
@@ -84,14 +94,16 @@ vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
     from: (table: string) => ({
       select: () => {
-        const chain: Record<string, any> = {}
+        const chain: Record<string, unknown> = {}
         chain.eq = () => chain
         chain.maybeSingle = async () => ({ data: mocks.listing })
+        chain.then = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) =>
+          Promise.resolve({ data: table === 'assertive_image_jobs' ? mocks.imageJobs : null, error: null }).then(resolve, reject)
         return chain
       },
-      update: (patch: Record<string, any>) => {
+      update: (patch: Record<string, unknown>) => {
         mocks.updates.push({ table, patch })
-        const chain: Record<string, any> = {}
+        const chain: Record<string, unknown> = {}
         chain.eq = () => chain
         chain.neq = () => chain
         chain.is = () => chain
@@ -109,8 +121,10 @@ const { POST } = await import('./route')
 
 describe('POST /api/assertive/listings/[id]/publish', () => {
   beforeEach(() => {
+    vi.stubEnv('ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED', 'true')
     vi.clearAllMocks()
     mocks.updates = []
+    mocks.imageJobs = []
     mocks.buildItemPayload.mockReturnValue(payload)
     mocks.listing = {
       id: 'listing-1',
@@ -145,6 +159,8 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
     })
     mocks.mlGet.mockResolvedValue(marketplaceItem)
   })
+
+  afterEach(() => vi.unstubAllEnvs())
 
   it('publica exatamente o snapshot validado sem reconstruir o payload', async () => {
     const validatedPayload = {
@@ -197,6 +213,54 @@ describe('POST /api/assertive/listings/[id]/publish', () => {
     expect(body.code).toBe('IMAGE_REVIEW_REQUIRED')
     expect(mocks.validateListing).not.toHaveBeenCalled()
     expect(mocks.publishListing).not.toHaveBeenCalled()
+  })
+
+  it('recusa publicação enquanto qualquer uma das seis posições progressivas estiver pendente', async () => {
+    mocks.imageJobs = Array.from({ length: 6 }, (_, position) => ({
+      kind: 'GENERATE_SLOT',
+      position,
+      status: position === 4 ? 'REVIEW' : 'SUCCEEDED',
+    }))
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+    const body = await response.json()
+
+    expect(response.status).toBe(409)
+    expect(body.code).toBe('IMAGE_JOBS_PENDING')
+    expect(mocks.validateListing).not.toHaveBeenCalled()
+    expect(mocks.publishListing).not.toHaveBeenCalled()
+  })
+
+  it('accepts six explicitly succeeded or dismissed progressive positions', async () => {
+    mocks.imageJobs = Array.from({ length: 6 }, (_, position) => ({
+      kind: 'GENERATE_SLOT',
+      position,
+      status: position === 5 ? 'DISMISSED' : 'SUCCEEDED',
+    }))
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+
+    expect(response.status).toBe(200)
+    expect(mocks.publishListing).toHaveBeenCalledOnce()
+  })
+
+  it('ignores progressive jobs when the rollback flag is disabled', async () => {
+    vi.stubEnv('ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED', 'false')
+    mocks.imageJobs = [{ kind: 'GENERATE_SLOT', position: 0, status: 'QUEUED' }]
+
+    const response = await POST(new Request('http://localhost/publish', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }) as never, { params: Promise.resolve({ id: 'listing-1' }) })
+
+    expect(response.status).toBe(200)
+    expect(mocks.publishListing).toHaveBeenCalledOnce()
   })
 
   it('exige nova confirmação quando o ML passa a impor frete grátis', async () => {
