@@ -24,6 +24,7 @@ import {
   dismissImageJob,
   ensureProgressiveImageJobs,
   findImageReviewJob,
+  getImageJobSnapshot,
   retryImageJob,
   transitionImageJob,
   type SnapshotImageAsset,
@@ -364,6 +365,31 @@ describe('progressive image job store', () => {
   beforeEach(() => {
     adminClient.rpc.mockReset()
     adminClient.from.mockReset()
+  })
+
+  it('retries a transient gateway timeout while reading the snapshot', async () => {
+    let listingReads = 0
+    adminClient.from.mockImplementation((table: string) => {
+      const result = table === 'assertive_listings'
+        ? (++listingReads === 1
+            ? { data: null, error: { message: 'Gateway Timeout' } }
+            : { data: { id: 'listing-1', status: 'needs_input' }, error: null })
+        : { data: [], error: null }
+      const query: Record<string, unknown> = {}
+      query.select = vi.fn(() => query)
+      query.eq = vi.fn(() => query)
+      query.in = vi.fn(() => Promise.resolve(result))
+      query.maybeSingle = vi.fn(() => Promise.resolve(result))
+      query.then = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => (
+        Promise.resolve(result).then(resolve, reject)
+      )
+      return query
+    })
+
+    const snapshot = await getImageJobSnapshot('listing-1', 'user-1')
+
+    expect(snapshot).toMatchObject({ listing_id: 'listing-1', target_count: 6 })
+    expect(listingReads).toBe(2)
   })
 
   it('bootstraps the normalized six-slot contract through the atomic RPC', async () => {

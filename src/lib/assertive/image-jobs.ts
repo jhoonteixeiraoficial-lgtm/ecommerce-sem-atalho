@@ -404,9 +404,14 @@ export async function attachManualImageSlot(
   if (error) throw new Error(`Falha ao vincular foto própria: ${error.message}`)
 }
 
-export async function getImageJobSnapshot(listingId: string, userId: string): Promise<ImageJobSnapshot> {
-  assertRequired(listingId, 'Anúncio')
-  assertRequired(userId, 'Usuário')
+function isTransientSnapshotError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return /gateway timeout|bad gateway|service unavailable|timed? ?out|fetch failed|econnreset|socket hang up/i.test(
+    error.message
+  )
+}
+
+async function readImageJobSnapshot(listingId: string, userId: string): Promise<ImageJobSnapshot> {
   const supabase = createAdminClient()
   const { data: listing, error: listingError } = await supabase
     .from('assertive_listings')
@@ -455,4 +460,16 @@ export async function getImageJobSnapshot(listingId: string, userId: string): Pr
     linkedImages,
     assets,
   })
+}
+
+export async function getImageJobSnapshot(listingId: string, userId: string): Promise<ImageJobSnapshot> {
+  assertRequired(listingId, 'Anúncio')
+  assertRequired(userId, 'Usuário')
+  try {
+    return await readImageJobSnapshot(listingId, userId)
+  } catch (error) {
+    if (!isTransientSnapshotError(error)) throw error
+    await new Promise(resolve => setTimeout(resolve, 150))
+    return readImageJobSnapshot(listingId, userId)
+  }
 }

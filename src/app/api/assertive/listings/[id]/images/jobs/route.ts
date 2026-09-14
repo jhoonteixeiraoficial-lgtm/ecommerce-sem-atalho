@@ -16,6 +16,13 @@ export async function GET(_request: Request, context: RouteContext) {
     return Response.json(await getImageJobSnapshot(id, auth.authorizedUser.id))
   } catch (error) {
     const notFound = error instanceof Error && error.message.startsWith('Anúncio não encontrado')
+    if (!notFound) {
+      console.error('[assertive/images/jobs] snapshot failed', {
+        listingId: id,
+        userId: auth.authorizedUser.id,
+        error,
+      })
+    }
     return Response.json(
       { error: notFound ? 'Anúncio não encontrado.' : 'Não foi possível consultar as imagens.' },
       { status: notFound ? 404 : 500 }

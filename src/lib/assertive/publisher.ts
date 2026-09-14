@@ -318,8 +318,13 @@ export function buildItemPayload(
   shippingPrefs?: SellerShippingPreferences | null
 ): MLItemPayload {
   const publishable = publishableAttributes(input.attributes)
-  const attributes = sanitizeAttributes(publishable.filter(attribute => !attribute.isVariationOnly))
-  const variationAttributes = sanitizeAttributes(publishable.filter(attribute => attribute.isVariationOnly))
+  const userProductModel = capabilities?.user_product_model === true
+  const attributes = sanitizeAttributes(
+    publishable.filter(attribute => userProductModel || !attribute.isVariationOnly)
+  )
+  const variationAttributes = userProductModel
+    ? []
+    : sanitizeAttributes(publishable.filter(attribute => attribute.isVariationOnly))
 
   const sale_terms: Array<{ id: string; value_name: string }> = []
   if (input.warranty_type) sale_terms.push({ id: 'WARRANTY_TYPE', value_name: input.warranty_type })
@@ -354,7 +359,7 @@ export function buildItemPayload(
     }]
   }
 
-  if (capabilities?.user_product_model) {
+  if (userProductModel) {
     // Modelo novo: family_name é obrigatório e title é rejeitado pela API.
     payload.family_name = (input.family_name || input.title).trim().slice(0, 60)
   } else {
