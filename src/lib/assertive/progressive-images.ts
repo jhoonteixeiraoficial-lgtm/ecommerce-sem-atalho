@@ -2,7 +2,9 @@ import 'server-only'
 
 import { createHash } from 'node:crypto'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { isPublishableAttribute } from './attribute-evidence'
 import { generateProductImage, type GenerateProductImageInput, type ProductImageGenerationResult } from './gemini-image'
+import type { ListingAttribute } from './generator'
 import {
   createGeneratedAsset,
   downloadOwnedImageAsset,
@@ -11,7 +13,7 @@ import {
   type ImageAsset,
 } from './image-assets'
 import { verifyReferenceGuidedImage, type ImageFidelityResult } from './image-fidelity'
-import type { ImageJob, ImageJobRunResult, ImageJobSnapshot } from './image-job-contract'
+import { buildProgressiveImageSlots, type ImageJob, type ImageJobRunResult, type ImageJobSnapshot } from './image-job-contract'
 import {
   attachGeneratedImageSlot,
   claimNextImageJob,
@@ -34,6 +36,7 @@ interface ProgressiveListingContext {
   analysis_id: string
   status: string
   title: string
+  attributes?: { list?: ListingAttribute[] } | null
 }
 
 interface ProgressiveAnalysisContext {
@@ -116,11 +119,67 @@ function confirmedFacts(truth: ProductTruth): Array<{ label: string; value: stri
     .slice(0, 20)
 }
 
+const VISUAL_ATTRIBUTE_KEYS: Record<string, string> = {
+  BRAND: 'brand',
+  MODEL: 'model',
+  GTIN: 'gtin',
+  EAN: 'gtin',
+  UPC: 'gtin',
+  MPN: 'part_number',
+  PART_NUMBER: 'part_number',
+  COLOR: 'color',
+  MAIN_COLOR: 'color',
+  MATERIAL: 'material',
+  BODY_MATERIAL: 'material',
+  VOLTAGE: 'voltage',
+  POWER: 'power',
+  CAPACITY: 'capacity',
+  UNITS_PER_PACK: 'units_per_pack',
+  LINE: 'line',
+  VARIANT: 'variant',
+}
+
+function visualReferenceTruth(context: ProgressiveJobExecutionContext): ProductTruth {
+  const fields = { ...context.truth.fields }
+  for (const attribute of context.listing.attributes?.list || []) {
+    const key = VISUAL_ATTRIBUTE_KEYS[attribute.id.toUpperCase()]
+    const value = attribute.value_name?.trim()
+    if (!key || !value || !isPublishableAttribute(attribute)) continue
+    const current = fields[key]
+    if (current && (
+      current.confidence === 'confirmed'
+      || ['CONFIRMED', 'AUTO_FILLED', 'USER_OVERRIDE'].includes(current.status || '')
+    )) continue
+    fields[key] = {
+      value,
+      confidence: 'confirmed',
+      source: attribute.source === 'user'
+        ? 'user'
+        : attribute.source === 'catalog'
+          ? 'ml_catalog'
+          : 'derived',
+      evidence: attribute.evidence?.trim() || `Atributo ${attribute.name} confirmado no anúncio`,
+      status: attribute.status,
+      source_url: attribute.source_url,
+    }
+  }
+  return { ...context.truth, fields }
+}
+
+function previousFailure(job: ImageJob): GenerateProductImageInput['previousFailure'] {
+  const value = job.metadata.previous_failure
+  if (!value || typeof value !== 'object') return undefined
+  const failure = value as { code?: unknown; message?: unknown }
+  return typeof failure.code === 'string' && typeof failure.message === 'string'
+    ? { code: failure.code, message: failure.message }
+    : undefined
+}
+
 async function loadDefaultContext(input: RunNextProgressiveImageJobInput): Promise<ProgressiveJobExecutionContext> {
   const supabase = createAdminClient()
   const { data: listing, error: listingError } = await supabase
     .from('assertive_listings')
-    .select('id,user_id,analysis_id,status,title')
+    .select('id,user_id,analysis_id,status,title,attributes')
     .eq('id', input.listingId)
     .eq('user_id', input.userId)
     .maybeSingle()
@@ -289,6 +348,14 @@ async function settleFailure(
       : null,
     error_code: failure.code,
     error_message: failure.message,
+    metadata: {
+      ...job.metadata,
+      previous_failure: {
+        code: failure.code,
+        message: failure.message,
+        attempt: job.attempt_count,
+      },
+    },
   })
   return status
 }
@@ -324,7 +391,7 @@ export async function runReferenceSearchJob(
       userId: job.user_id,
       analysisId: job.analysis_id,
       token: context.token || '',
-      truth: context.truth,
+      truth: visualReferenceTruth(context),
       ownAssetIds: context.ownAssetIds,
       maxAssets: 8,
     })
@@ -376,16 +443,25 @@ export async function runGenerationSlotJob(
     if (!references.length) {
       throw new ProgressiveImageError('REFERENCE_UNAVAILABLE', 'As referências visuais não puderam ser carregadas.', 30_000)
     }
+    const generationTruth = visualReferenceTruth(context)
+    const productName = context.listing.title.trim() || generationTruth.name
+    const facts = confirmedFacts(generationTruth)
+    const normalizedShot = buildProgressiveImageSlots([{
+      order: job.position + 1,
+      title: typeof job.shot.title === 'string' ? job.shot.title : `Imagem ${job.position + 1}`,
+      description: typeof job.shot.description === 'string' ? job.shot.description : 'Composição segura do produto',
+      required: job.shot.required === true,
+    }], facts)[job.position].shot
     const generated = await dependencies.generateImage({
-      productName: context.truth.name || context.listing.title,
-      facts: context.facts,
+      productName,
+      facts,
       references: references.map(reference => ({ buffer: reference.buffer, mime_type: reference.mime_type })),
       shot: {
         order: job.position + 1,
-        title: typeof job.shot.title === 'string' ? job.shot.title : `Imagem ${job.position + 1}`,
-        description: typeof job.shot.description === 'string' ? job.shot.description : 'Composição segura do produto',
-        required: job.shot.required === true,
+        ...normalizedShot,
       },
+      role: job.role,
+      previousFailure: previousFailure(job),
       apiKey: context.config?.provider === 'gemini' ? context.config.api_key : undefined,
     })
     const normalized = await dependencies.normalizeImage(generated.buffer)
@@ -425,8 +501,8 @@ export async function runGenerationSlotJob(
       references: references.map(reference => ({ buffer: reference.buffer, mime_type: reference.mime_type })),
       candidate: normalized.buffer,
       candidate_mime_type: normalized.mime_type,
-      productName: context.truth.name || context.listing.title,
-      facts: context.facts,
+      productName,
+      facts,
       config: context.config,
     })
     if (fidelity.status === 'REJECT') {
@@ -456,7 +532,7 @@ export async function runGenerationSlotJob(
         review_status: 'PENDING',
         auto_verdict: fidelity.status,
         role: job.role,
-        image_plan_step: job.shot,
+        image_plan_step: normalizedShot,
         image_job_id: job.id,
         generation_nonce: job.generation_nonce,
         fidelity,

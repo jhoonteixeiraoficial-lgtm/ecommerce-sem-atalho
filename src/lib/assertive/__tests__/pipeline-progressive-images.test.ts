@@ -344,4 +344,25 @@ describe('progressive image bootstrap in runGeneration', () => {
     ])
     expect(slots[5].shot.title).toBe('Vista técnica segura')
   })
+
+  it('keeps two contextual slots when the generated plan contains only technical angles', () => {
+    const slots = normalizeProgressiveImagePlan([
+      { order: 1, title: 'Frontal', description: 'TV centralizada em fundo branco', required: true },
+      { order: 2, title: 'Vista três quartos', description: 'TV em ângulo de três quartos', required: true },
+      { order: 3, title: 'Perfil lateral', description: 'Perfil fino visto de lado', required: true },
+      { order: 4, title: 'Vista traseira', description: 'Painel traseiro e conexões', required: false },
+      { order: 5, title: 'Close do bezel', description: 'Detalhe aproximado da moldura', required: false },
+    ], [{ label: 'Tipo de produto', value: 'Smart TV' }])
+
+    expect(slots[3]).toMatchObject({
+      role: 'LIFESTYLE',
+      shot: { title: 'Produto em uso' },
+    })
+    expect(slots[4]).toMatchObject({
+      role: 'LIFESTYLE',
+      shot: { title: 'Contexto complementar' },
+    })
+    expect(`${slots[3].shot.title} ${slots[3].shot.description} ${slots[4].shot.title} ${slots[4].shot.description}`)
+      .not.toMatch(/traseira|bezel|moldura|conexões/i)
+  })
 })

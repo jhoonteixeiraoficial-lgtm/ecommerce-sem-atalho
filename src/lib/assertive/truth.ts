@@ -925,8 +925,10 @@ export async function identifyFromUrl(
     uncertain: [],
     evidence: [`Identificado pelo título do anúncio na URL: "${fromSlug}"`],
     confidence: 0.7,
+    source_item_id: itemId || undefined,
     source_title: fromSlug,
     source_permalink: url,
+    source_user_product_id: userProductId || undefined,
   })
 }
 

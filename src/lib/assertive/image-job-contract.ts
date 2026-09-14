@@ -166,7 +166,9 @@ export function buildProgressiveImageSlots(
     const requestsPackaging = /embalagem|conteudo|caixa|acessorio|inclus/.test(requestedText)
     const requestsUnsupportedMeasurement = /medida|dimens(?:ao|oes)|altura|largura|comprimento|peso/.test(requestedText)
       && !/medida|dimens(?:ao|oes)|altura|largura|comprimento|peso|\b(mm|cm|m|g|kg)\b/.test(evidence)
-    const unsafe = requestsUnsupportedMeasurement || (requestsPackaging && !packagingSupported)
+    const requestsContext = /\bem uso\b|\busando\b|\buso real\b|ambient|context|cenari|situac|pessoa|interag|instalad|vestid|aplicad|rotina|movimento|acao/.test(requestedText)
+    const roleMismatch = defaultSlot.role === 'LIFESTYLE' && !requestsContext
+    const unsafe = roleMismatch || requestsUnsupportedMeasurement || (requestsPackaging && !packagingSupported)
     const useRequested = Boolean(title && description && !unsafe)
     const role = defaultSlot.position === 5 && useRequested && requestsPackaging
       ? 'PACKAGING'

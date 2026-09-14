@@ -9,6 +9,7 @@ import {
   type ProgressiveImageDependencies,
   type ProgressiveJobExecutionContext,
 } from '../progressive-images'
+import { evaluateVisualReference } from '../visual-references'
 
 const NOW = new Date('2026-09-12T18:00:00.000Z')
 
@@ -161,6 +162,7 @@ function createState(options: {
       options.next.error_code = patch.error_code || null
       options.next.error_message = patch.error_message || null
       options.next.next_attempt_at = patch.next_attempt_at || null
+      if (patch.metadata) options.next.metadata = patch.metadata
       options.next.lock_token = null
     },
     loadReferences: async () => acquiredReferences.slice(0, 3).map(asset => ({
@@ -252,6 +254,61 @@ describe('progressive image orchestrator', () => {
     expect(state.listingImages).toEqual([])
   })
 
+  it('uses evidence-backed listing identifiers when persisted analysis truth is stale', async () => {
+    const referenceJob = job({
+      id: 'reference-job',
+      kind: 'REFERENCE_SEARCH',
+      position: null,
+      role: null,
+      shot: {},
+      reference_asset_ids: [],
+    })
+    const enrichedContext = context() as ProgressiveJobExecutionContext & {
+      listing: ProgressiveJobExecutionContext['listing'] & {
+        attributes: { list: Array<Record<string, unknown>> }
+      }
+    }
+    enrichedContext.truth = {
+      ...enrichedContext.truth,
+      name: 'Microfone sem fio',
+      fields: {},
+    }
+    enrichedContext.listing.title = 'Microfone sem fio Hollyland Lark M2 Combo'
+    enrichedContext.listing.attributes = {
+      list: [{
+        id: 'GTIN',
+        name: 'Código universal de produto',
+        value_name: '6976068112747',
+        tier: 'required',
+        source: 'catalog',
+        status: 'AUTO_FILLED',
+        evidence: 'Catálogo oficial do produto exato.',
+      }],
+    }
+    const state = createState({ next: referenceJob, acquiredReferences: [] })
+    state.dependencies.loadContext = async () => enrichedContext
+    state.dependencies.acquireReferences = async input => {
+      const accepted = evaluateVisualReference(input.truth, {
+        source: 'ML_CATALOG',
+        image_url: 'https://ml.example/lark-m2.jpg',
+        source_page_url: null,
+        source_item_id: null,
+        source_catalog_product_id: null,
+        title: 'Microfone sem fio Hollyland Lark M2 Combo',
+        attributes: { GTIN: '6976068112747' },
+      }).accepted
+      return accepted ? [imageAsset()] : []
+    }
+
+    const result = await runNextProgressiveImageJob(
+      { listingId: 'listing-1', userId: 'user-1' },
+      state.dependencies
+    )
+
+    expect(result.snapshot.reference_status).toBe('SUCCEEDED')
+    expect(result.snapshot.reference_count).toBe(1)
+  })
+
   it('generates and projects only the claimed slot', async () => {
     const state = createState({ next: job({ position: 3, role: 'LIFESTYLE' }) })
 
@@ -262,6 +319,128 @@ describe('progressive image orchestrator', () => {
     expect(state.jobs[0].status).toBe('REVIEW')
   })
 
+  it('passes the slot role to the image generator', async () => {
+    const state = createState({ next: job({ position: 3, role: 'LIFESTYLE' }) })
+    const generateImage = state.dependencies.generateImage
+    state.dependencies.generateImage = async input => {
+      if (input.role !== 'LIFESTYLE') throw new Error('O papel visual do slot não foi informado.')
+      return generateImage(input)
+    }
+
+    const result = await runNextProgressiveImageJob(
+      { listingId: 'listing-1', userId: 'user-1' },
+      state.dependencies
+    )
+
+    expect(result.snapshot.slots[3].status).toBe('REVIEW')
+  })
+
+  it('repairs a persisted technical shot before generating a lifestyle slot', async () => {
+    const state = createState({
+      next: job({
+        position: 3,
+        role: 'LIFESTYLE',
+        shot: {
+          title: 'Vista traseira',
+          description: 'Painel traseiro e conexões',
+          required: false,
+        },
+      }),
+    })
+    const generateImage = state.dependencies.generateImage
+    state.dependencies.generateImage = async input => {
+      if (input.shot?.title !== 'Produto em uso') {
+        throw new Error('O slot contextual manteve uma direção técnica antiga.')
+      }
+      return generateImage(input)
+    }
+
+    const result = await runNextProgressiveImageJob(
+      { listingId: 'listing-1', userId: 'user-1' },
+      state.dependencies
+    )
+
+    expect(result.snapshot.slots[3].status).toBe('REVIEW')
+  })
+
+  it('generates with the current listing title and evidence-backed identifiers', async () => {
+    const generationContext = context() as ProgressiveJobExecutionContext & {
+      listing: ProgressiveJobExecutionContext['listing'] & {
+        attributes: { list: Array<Record<string, unknown>> }
+      }
+    }
+    generationContext.truth = {
+      ...generationContext.truth,
+      name: 'Microfone sem fio',
+      fields: {},
+    }
+    generationContext.facts = []
+    generationContext.listing.title = 'Microfone sem fio Hollyland Lark M2 Combo'
+    generationContext.listing.attributes = {
+      list: [{
+        id: 'GTIN',
+        name: 'Código universal de produto',
+        value_name: '6976068112747',
+        tier: 'required',
+        source: 'catalog',
+        status: 'AUTO_FILLED',
+        evidence: 'Catálogo oficial do produto exato.',
+      }],
+    }
+    const state = createState({ next: job({ position: 1, role: 'DETAIL' }) })
+    state.dependencies.loadContext = async () => generationContext
+    const generateImage = state.dependencies.generateImage
+    state.dependencies.generateImage = async input => {
+      const hasGtin = input.facts.some(fact => fact.value === '6976068112747')
+      if (input.productName !== generationContext.listing.title || !hasGtin) {
+        throw new Error('A geração recebeu identidade desatualizada.')
+      }
+      return generateImage(input)
+    }
+
+    const result = await runNextProgressiveImageJob(
+      { listingId: 'listing-1', userId: 'user-1' },
+      state.dependencies
+    )
+
+    expect(result.snapshot.slots[1].status).toBe('REVIEW')
+  })
+
+  it('reuses the previous quality rejection on the automatic retry', async () => {
+    const state = createState({
+      next: job({
+        position: 0,
+        role: 'MAIN',
+        attempt_count: 2,
+        metadata: {
+          previous_failure: {
+            code: 'IMAGE_BACKGROUND_REJECTED',
+            message: 'O fundo não ficou branco puro.',
+            attempt: 1,
+          },
+        },
+      }),
+    })
+    const generateImage = state.dependencies.generateImage
+    state.dependencies.generateImage = async input => {
+      if (
+        input.previousFailure?.code !== 'IMAGE_BACKGROUND_REJECTED'
+        || input.previousFailure.message !== 'O fundo não ficou branco puro.'
+      ) {
+        throw new Error('A geração não recebeu o diagnóstico da tentativa anterior.')
+      }
+      return generateImage(input)
+    }
+
+    const result = await runNextProgressiveImageJob(
+      { listingId: 'listing-1', userId: 'user-1' },
+      state.dependencies
+    )
+
+    expect(result.snapshot.slots[0].status).toBe('REVIEW')
+    expect(state.listingImages).toEqual([{ position: 0, asset_id: 'generated-0' }])
+  })
+
   it('does not attach a cover that fails the white-background gate', async () => {
     const state = createState({ next: job({ position: 0, role: 'MAIN' }), coverPassed: false })
 
@@ -270,6 +449,13 @@ describe('progressive image orchestrator', () => {
     expect(result.snapshot.slots[0]).toMatchObject({
       status: 'RETRYABLE',
       error_code: 'IMAGE_BACKGROUND_REJECTED',
+    })
+    expect(state.jobs[0].metadata).toMatchObject({
+      previous_failure: {
+        code: 'IMAGE_BACKGROUND_REJECTED',
+        message: 'Fundo colorido.',
+        attempt: 1,
+      },
     })
     expect(state.listingImages).toEqual([])
   })

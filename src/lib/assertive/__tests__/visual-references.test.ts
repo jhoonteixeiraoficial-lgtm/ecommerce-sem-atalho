@@ -228,6 +228,38 @@ describe('visual reference identity boundary', () => {
 })
 
 describe('visual reference acquisition', () => {
+  it('discovers reference images directly from an API-restricted source page', async () => {
+    const sourcePage = 'https://produto.mercadolivre.com.br/MLB-5997713980-tenis-adidas-grand-court-_JM'
+    mocks.discoverWebImageCandidates.mockImplementation(async (url: string) => (
+      url === sourcePage ? ['https://http2.mlstatic.com/source-page-image.jpg'] : []
+    ))
+
+    const assets = await acquireVisualReferences({
+      userId: 'user-1',
+      analysisId: 'analysis-1',
+      token: 'ml-token',
+      truth: truth({
+        source_item_id: 'MLB5997713980',
+        source_catalog_product_id: undefined,
+        source_permalink: sourcePage,
+        source_title: 'Tênis Adidas Grand Court Base 3.0',
+        source_pictures: [],
+      }),
+      maxAssets: 8,
+    })
+
+    expect(assets).toHaveLength(1)
+    expect(assets[0]).toMatchObject({
+      origin: 'WEB_REFERENCE',
+      rights_status: 'REFERENCE_ONLY',
+      metadata: {
+        source_page_url: sourcePage,
+        source_item_id: 'MLB5997713980',
+        identity_confidence: 1,
+      },
+    })
+  })
+
   it('prioritizes an exact competitor while keeping the seller photo among the first references', async () => {
     mocks.searchMarketplaceVisualReferences.mockResolvedValue([
       candidate({ source: 'ML_CATALOG', image_url: 'https://ml.example/catalog.jpg' }),

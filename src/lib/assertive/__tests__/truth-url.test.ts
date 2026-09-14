@@ -122,7 +122,7 @@ describe('identifyFromUrl - URL de user product do Mercado Livre', () => {
     expect(truth.name).toBe('Tnis grand court base 30 adidas')
     expect(truth.source_title).toBe(truth.name)
     expect(truth.source_permalink).toContain('MLB-5997713980')
-    expect(truth.source_item_id).toBeUndefined()
+    expect(truth.source_item_id).toBe('MLB5997713980')
     expect(mocks.generateJson).not.toHaveBeenCalled()
   })
 
@@ -137,6 +137,8 @@ describe('identifyFromUrl - URL de user product do Mercado Livre', () => {
 
     expect(truth.name).toBe('Bota galocha pvc forrada impermeavel leve antiderrapante')
     expect(truth.confidence).toBe(0.7)
+    expect(truth.source_item_id).toBe('MLB6689098476')
+    expect(truth.source_user_product_id).toBe('MLBU3925291781')
     expect(truth.evidence).toEqual(expect.arrayContaining([expect.stringContaining('título do anúncio na URL')]))
     expect(mocks.generateJson).not.toHaveBeenCalled()
   })

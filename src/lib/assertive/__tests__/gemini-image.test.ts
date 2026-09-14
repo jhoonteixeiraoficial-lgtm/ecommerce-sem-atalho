@@ -133,6 +133,53 @@ describe('Gemini product image generation', () => {
     expect(result.source_sha256).toMatch(/^[a-f0-9]{64}$/)
   })
 
+  it('turns the previous quality rejection into corrective guidance', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(imageResponse('corrected'))
+
+    await generateProductImage({
+      productName: 'Smart TV 50 polegadas',
+      facts: [{ label: 'Cor', value: 'Preto' }],
+      role: 'MAIN',
+      previousFailure: {
+        code: 'IMAGE_FIDELITY_REJECTED',
+        message: 'O suporte central e a posição do logotipo divergiram das referências.',
+      },
+      apiKey: 'test-key',
+      models: ['image-model'],
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    const prompt = body.contents[0].parts[0].text
+    expect(prompt).toContain('IMAGE_FIDELITY_REJECTED')
+    expect(prompt).toContain('O suporte central e a posição do logotipo divergiram das referências.')
+    expect(prompt).toMatch(/corrija.*sem alterar/i)
+  })
+
+  it('requests a dynamic commercial context for lifestyle slots without inventing capabilities', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(imageResponse('lifestyle'))
+
+    await generateProductImage({
+      productName: 'Tênis Adidas Grand Court Base 3.0',
+      facts: [{ label: 'Tipo de produto', value: 'Tênis casual' }],
+      role: 'LIFESTYLE',
+      shot: {
+        order: 4,
+        title: 'Produto em uso',
+        description: 'Aplicação real em ambiente coerente',
+        required: false,
+      },
+      apiKey: 'test-key',
+      models: ['image-model'],
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    const prompt = body.contents[0].parts[0].text
+    expect(prompt).toMatch(/cena publicitária contextual.*alto impacto/i)
+    expect(prompt).toMatch(/pessoa.*interagindo/i)
+    expect(prompt).toMatch(/movimento|efeito visual/i)
+    expect(prompt).toMatch(/não.*capacidade.*produto/i)
+  })
+
   it('recorre à chave de sistema quando a chave Gemini do usuário é inválida', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'system-key')
     const fetchMock = vi.spyOn(globalThis, 'fetch')

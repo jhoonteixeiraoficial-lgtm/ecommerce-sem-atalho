@@ -229,21 +229,41 @@ async function discoverWebReferences(truth: ProductTruth): Promise<VisualReferen
   return discovered.flat()
 }
 
+async function discoverSourcePageReferences(truth: ProductTruth): Promise<VisualReferenceCandidate[]> {
+  if (!truth.source_permalink || truth.source_pictures?.length) return []
+  const images = await discoverWebImageCandidates(truth.source_permalink)
+  const attributes = Object.fromEntries(
+    (truth.source_attributes || [])
+      .filter(attribute => Boolean(attribute.id && attribute.value_name))
+      .map(attribute => [attribute.id, attribute.value_name!])
+  )
+  return images.map(imageUrl => ({
+    source: 'WEB',
+    image_url: imageUrl,
+    source_page_url: truth.source_permalink || null,
+    source_item_id: truth.source_item_id || null,
+    source_catalog_product_id: truth.source_catalog_product_id || null,
+    title: truth.source_title || truth.name,
+    attributes,
+  }))
+}
+
 export async function acquireVisualReferences(input: AcquireVisualReferencesInput): Promise<ImageAsset[]> {
   const maxAssets = Math.max(1, Math.min(8, Math.floor(input.maxAssets || 8)))
-  const [marketplaceCandidates, ownedAssets] = await Promise.all([
+  const [marketplaceCandidates, sourcePageCandidates, ownedAssets] = await Promise.all([
     searchMarketplaceVisualReferences(input.token, input.truth, 24).catch(() => []),
+    discoverSourcePageReferences(input.truth).catch(() => []),
     input.ownAssetIds?.length
       ? getOwnedAssets(input.userId, [...new Set(input.ownAssetIds)]).catch(() => [])
       : Promise.resolve([]),
   ])
-  const acceptedMarketplace = marketplaceCandidates.filter(candidate => (
+  const acceptedKnownSources = [...marketplaceCandidates, ...sourcePageCandidates].filter(candidate => (
     evaluateVisualReference(input.truth, candidate).accepted
   ))
-  const webCandidates = acceptedMarketplace.length < 3
+  const webCandidates = acceptedKnownSources.length < 3
     ? await discoverWebReferences(input.truth).catch(() => [])
     : []
-  const acceptedExternal = [...acceptedMarketplace, ...webCandidates].filter(candidate => (
+  const acceptedExternal = [...acceptedKnownSources, ...webCandidates].filter(candidate => (
     evaluateVisualReference(input.truth, candidate).accepted
   ))
   const selected = selectDiverseCandidates(acceptedExternal, maxAssets * 2)
