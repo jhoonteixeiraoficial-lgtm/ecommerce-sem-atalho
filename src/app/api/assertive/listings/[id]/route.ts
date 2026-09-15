@@ -138,30 +138,36 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
 
   const { attributes, photo_metadata } = parsed.data
-  const rest = { ...parsed.data }
-  delete rest.attributes
-  delete rest.photo_metadata
-  delete rest.listing_images
-  const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
-  if (shippingPolicyInputsChanged) patch.free_shipping_mandatory = false
+    const rest = { ...parsed.data }
+    delete rest.attributes
+    delete rest.photo_metadata
+    delete rest.listing_images
+    const patch: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() }
+    if (shippingPolicyInputsChanged) patch.free_shipping_mandatory = false
 
-  if (attributes) {
-    patch.attributes = { ...(current.attributes || {}), list: attributes }
-  }
-  if (photo_metadata) {
-    patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }
-  }
+    // Se é User Product e o título mudou, sincronizar family_name
+    const isUserProduct = current.attributes?.title_control_mode === 'user_product'
+    if (isUserProduct && parsed.data.title && parsed.data.title !== current.title) {
+      patch.family_name = parsed.data.title.trim().slice(0, 60)
+    }
 
-  // QUALQUER edição invalida o preflight e o payload previamente validado.
-  patch.attributes = {
-    ...(current.attributes || {}),
-    ...((patch.attributes as Record<string, unknown>) || {}),
-    publication_requirements: null,
-  }
-  patch.validation = {}
-  patch.validated_payload = null
-  patch.validated_payload_hash = null
-  patch.status = 'ready'
+    if (attributes) {
+      patch.attributes = { ...(current.attributes || {}), list: attributes }
+    }
+    if (photo_metadata) {
+      patch.attributes = { ...(patch.attributes as Record<string, unknown> || current.attributes || {}), photo_metadata }
+    }
+
+    // QUALQUER edição invalida o preflight e o payload previamente validado.
+    patch.attributes = {
+      ...(current.attributes || {}),
+      ...((patch.attributes as Record<string, unknown>) || {}),
+      publication_requirements: null,
+    }
+    patch.validation = {}
+    patch.validated_payload = null
+    patch.validated_payload_hash = null
+    patch.status = 'ready'
 
   const { error } = await supabase.from('assertive_listings').update(patch).eq('id', id).eq('user_id', authorizedUser.id)
   if (error) return Response.json({ error: 'Falha ao salvar o anúncio.' }, { status: 500 })

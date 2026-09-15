@@ -360,11 +360,12 @@ export function buildItemPayload(
   }
 
   if (userProductModel) {
-    // Modelo novo: family_name é obrigatório e title é rejeitado pela API.
-    payload.family_name = (input.family_name || input.title).trim().slice(0, 60)
-  } else {
-    payload.title = input.title.trim()
-  }
+      // Modelo novo: family_name é obrigatório e title é rejeitado pela API.
+      payload.family_name = (input.family_name || input.title).trim().slice(0, 60)
+    } else {
+      // Modelo clássico: título hard-limited a 60 chars (regra de negócio, não da API)
+      payload.title = input.title.trim().slice(0, 60)
+    }
 
   return payload
 }

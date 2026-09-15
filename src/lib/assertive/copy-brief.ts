@@ -80,10 +80,10 @@ export function buildCopyBrief(input: BuildCopyBriefInput): CopyBrief {
     allowed_measurements: [...new Set(measurementSources.flatMap(value => value.match(MEASUREMENT) || []))],
     keywords: [...new Set((input.keywords || []).map(keyword => keyword.trim()).filter(Boolean))].slice(0, 20),
     category: {
-      id: input.category?.id || '',
-      name: input.category?.name || '',
-      title_limit: maxTitleLength(input.category),
-    },
+          id: input.category?.id || '',
+          name: input.category?.name || '',
+          title_limit: Math.min(maxTitleLength(input.category), 60),
+        },
     benchmark_patterns: {
       title_shapes: (input.titleShapes || []).slice(0, 8),
       description_shapes: (input.descriptionShapes || []).slice(0, 10),

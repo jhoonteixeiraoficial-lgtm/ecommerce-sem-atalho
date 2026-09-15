@@ -6,6 +6,7 @@ import { getUserAIConfig } from '@/lib/assertive/pipeline'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { observeAnalysisStage } from '@/lib/assertive/observability'
 import { getOwnedAssets, isPublicationAssetAllowed } from '@/lib/assertive/image-assets'
+import { checkRateLimit } from '@/lib/security'
 import { z } from 'zod'
 
 export const runtime = 'nodejs'
@@ -26,6 +27,12 @@ export async function POST(req: NextRequest) {
   const auth = await requireCommunityUser()
   if (auth.response) return auth.response
   const { authorizedUser } = auth
+
+  // Rate limit: 10 análises por minuto por usuário
+  const rateLimit = checkRateLimit(`assertive-analyze-${authorizedUser.id}`, 10, 60000)
+  if (!rateLimit.allowed) {
+    return Response.json({ error: 'Muitas solicitações. Aguarde um momento.' }, { status: 429, headers: { 'X-RateLimit-Remaining': '0' } })
+  }
 
   const body = await readJson(req)
   if (body.response) return body.response

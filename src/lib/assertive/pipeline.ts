@@ -201,10 +201,10 @@ export async function resolveCategoryContext(
     capabilities,
     eligibility: { listingAllowed: true, status: categoryStatus },
     limits: {
-      title: maxTitleLength(category),
-      pictures: category.settings?.max_pictures_per_item || 12,
-      variationPictures: category.settings?.max_pictures_per_item_var || 10,
-    },
+          title: Math.min(maxTitleLength(category), 60),
+          pictures: category.settings?.max_pictures_per_item || 12,
+          variationPictures: category.settings?.max_pictures_per_item_var || 10,
+        },
   }
 }
 
@@ -774,7 +774,7 @@ export async function runGeneration(
     schema: attributes,
     completeness,
     dna,
-    titleLimit: maxTitleLength(category),
+    titleLimit: Math.min(maxTitleLength(category), 60),
   })
 
   // PRE-PUBLISH VALIDATION: montar payload e validar no ML automaticamente
@@ -1050,7 +1050,7 @@ export async function recomputeListing(listingId: string, userId: string) {
     schema: attributes,
     completeness,
     dna: safeDna,
-    titleLimit: maxTitleLength(category),
+    titleLimit: Math.min(maxTitleLength(category), 60),
   })
 
   // Status: não rebaixa status de 'ready_to_publish' por schema interno.

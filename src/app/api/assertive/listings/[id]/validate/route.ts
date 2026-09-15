@@ -9,11 +9,14 @@ import {
   resolveShippingMode,
   hasMandatoryFreeShippingIssue,
   MLNotConnectedError,
+  predictMLTitle,
+  getAutoAppendedAttributeIds,
   type ShippingMode,
 } from '@/lib/assertive/publisher'
 import { resolveCategoryContext, recomputeListing } from '@/lib/assertive/pipeline'
 import { computeEffectiveRequirements } from '@/lib/assertive/publication-requirements'
 import { payloadHash } from '@/lib/assertive/publication-readiness'
+import { getCategoryAttributes } from '@/lib/assertive/taxonomy'
 import type { ListingAttribute } from '@/lib/assertive/generator'
 import type { EnrichedAttribute } from '@/lib/assertive/enrichment'
 import { publishableAttributes } from '@/lib/assertive/attribute-evidence'
@@ -181,45 +184,65 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     }
 
     const effectiveAttributes = attributes as EnrichedAttribute[]
-    const publicationRequirements = computeEffectiveRequirements(schema, result.issues, effectiveAttributes)
-    const blockingQuestions = buildBlockingQuestions(publicationRequirements, schema, attributes)
-    const validatedPayload = build()
-    const readyToPublish = result.valid && publicationRequirements.all_clear
-    const validation = {
-      valid: readyToPublish,
-      ml_valid: result.valid,
-      status_code: result.status_code,
-      checked_at: new Date().toISOString(),
-      issues: result.issues,
-      auto_applied: autoApplied,
-      account_model: capabilities?.user_product_model ? 'user_product' : 'classic',
-      blocking_questions: blockingQuestions,
-    }
+        const publicationRequirements = computeEffectiveRequirements(schema, result.issues, effectiveAttributes)
+        const blockingQuestions = buildBlockingQuestions(publicationRequirements, schema, attributes)
+        const validatedPayload = build()
+        const readyToPublish = result.valid && publicationRequirements.all_clear
 
-    await recomputeListing(id, authorizedUser.id).catch(() => null)
+        // Persistir metadata do modo User Product
+        let titleControlMode: 'seller' | 'user_product' = 'seller'
+        let predictedTitle = listing.title
+        let autoAppendedAttributes: string[] = []
 
-    await supabase
-      .from('assertive_listings')
-      .update({
-        validation,
-        attributes: {
-          ...(listing.attributes || {}),
-          list: attributes,
-          publication_requirements: publicationRequirements,
+        if (capabilities?.user_product_model) {
+          titleControlMode = 'user_product'
+          // Buscar atributos da categoria para saber quais o ML auto-appende ao título
+          const catAttrs = await getCategoryAttributes(token, listing.category_id || '').catch(() => [])
+          predictedTitle = predictMLTitle(listing.family_name || listing.title, attributes, catAttrs)
+          autoAppendedAttributes = getAutoAppendedAttributeIds(catAttrs)
+        }
+
+        const validation = {
+          valid: readyToPublish,
+          ml_valid: result.valid,
+          status_code: result.status_code,
+          checked_at: new Date().toISOString(),
+          issues: result.issues,
+          auto_applied: autoApplied,
+          account_model: capabilities?.user_product_model ? 'user_product' : 'classic',
           blocking_questions: blockingQuestions,
-        },
-        validated_payload: readyToPublish ? validatedPayload : null,
-        validated_payload_hash: readyToPublish ? payloadHash(validatedPayload) : null,
-        shipping_mode: effectiveShippingMode,
-        free_shipping: Boolean(listing.free_shipping),
-        free_shipping_mandatory: Boolean(listing.free_shipping_mandatory),
-        status: readyToPublish ? 'ready_to_publish' : 'needs_input',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .eq('user_id', authorizedUser.id)
+          title_control_mode: titleControlMode,
+          predicted_title: predictedTitle,
+          auto_appended_attributes: autoAppendedAttributes,
+        }
 
-    return Response.json(validation)
+        await recomputeListing(id, authorizedUser.id).catch(() => null)
+
+        await supabase
+          .from('assertive_listings')
+          .update({
+            validation,
+            attributes: {
+              ...(listing.attributes || {}),
+              list: attributes,
+              publication_requirements: publicationRequirements,
+              blocking_questions: blockingQuestions,
+              title_control_mode: titleControlMode,
+              predicted_title: predictedTitle,
+              auto_appended_attributes: autoAppendedAttributes,
+            },
+            validated_payload: readyToPublish ? validatedPayload : null,
+            validated_payload_hash: readyToPublish ? payloadHash(validatedPayload) : null,
+            shipping_mode: effectiveShippingMode,
+            free_shipping: Boolean(listing.free_shipping),
+            free_shipping_mandatory: Boolean(listing.free_shipping_mandatory),
+            status: readyToPublish ? 'ready_to_publish' : 'needs_input',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id)
+          .eq('user_id', authorizedUser.id)
+
+        return Response.json(validation)
   } catch (e) {
     if (e instanceof MLNotConnectedError) {
       return Response.json({ error: e.message, code: 'ML_NOT_CONNECTED' }, { status: 409 })

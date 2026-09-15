@@ -1,5 +1,6 @@
 import { generate, parseJson, type GenerateOptions } from './ai'
 import type { AIConfig } from './types'
+import { withAICache } from './ai-cache'
 
 /**
  * AI Router — o usuário vê apenas "Assertive IA".
@@ -127,7 +128,7 @@ export function reasoningEngineStatus(): {
 }
 
 /**
- * Executa uma tarefa no provedor adequado.
+ * Executa uma tarefa no provedor adequado (com cache para tarefas idempotentes).
  * Tarefas de raciocínio tentam Claude primeiro; sem credencial, caem para o
  * fallback disponível para que o produto continue funcionando.
  */
@@ -139,6 +140,20 @@ export async function runTask(
   options: GenerateOptions = {}
 ): Promise<RouterResult> {
   const tier: Tier = options.images?.length ? 'vision' : TASK_TIER[task]
+
+  // Tarefas idempotentes que podem ser cacheadas
+  const cacheableTasks: AITask[] = [
+    'identify_product',
+    'product_truth',
+    'exact_product_matching',
+    'competitor_analysis',
+    'winning_listing_dna',
+    'seo_strategy',
+    'title_draft',
+    'description_draft',
+    'text_rewrite',
+  ]
+  const isCacheable = cacheableTasks.includes(task)
 
   if (tier === 'reasoning') {
     const claudeKey = process.env.ANTHROPIC_API_KEY
@@ -158,6 +173,26 @@ export async function runTask(
 
   // Tier draft prioriza o provedor mais barato disponível.
   const preferCheap = tier === 'draft'
+  
+  // Se é cacheável, usar cache
+    if (isCacheable) {
+      const cached = await withAICache(
+        task,
+        systemPrompt + '|||' + userPrompt,
+        { ...options, workload: tier, temperature: options.temperature ?? (tier === 'reasoning' ? 0.2 : 0.5) },
+        async () => {
+          const res = await generate(preferCheap ? null : userConfig, systemPrompt, userPrompt, {
+            ...options,
+            workload: tier,
+            temperature: options.temperature ?? (tier === 'reasoning' ? 0.2 : 0.5),
+          })
+          return res
+        },
+        { ttl: tier === 'vision' ? 86400 : 3600, persist: tier !== 'vision' }
+      )
+      return { ...cached, tier }
+    }
+
   const res = await generate(preferCheap ? null : userConfig, systemPrompt, userPrompt, {
     ...options,
     workload: tier,

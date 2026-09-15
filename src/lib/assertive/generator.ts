@@ -538,7 +538,7 @@ export interface GenerateInput {
 export async function generateListing(input: GenerateInput): Promise<GeneratedListing> {
   const { config, truth, research, dna, category, attributes } = input
 
-  const titleLimit = maxTitleLength(category)
+  const titleLimit = Math.min(maxTitleLength(category), 60)
   const photoRequirements = getPhotoRequirements(research.domain_id)
   // limita o schema enviado à IA para controlar custo, mantendo os mais relevantes
   const schema = prioritizeAttributes(attributes).slice(0, 45)
