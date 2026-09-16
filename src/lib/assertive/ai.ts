@@ -180,6 +180,11 @@ function envConfig(provider: ProviderId, key: string): AIConfig {
  * mas garantindo que uma tarefa multimodal só vá para provedores com visão.
  */
 function buildChain(userConfig: AIConfig | null, needsVision: boolean): AIConfig[] {
+  // Explicit cost ceiling: no silent fallback to paid text providers.
+  if (!needsVision && process.env.ASSERTIVE_TEXT_PROVIDER === 'groq') {
+    const key = process.env.GROQ_API_KEY
+    return key ? [envConfig('groq', key)] : []
+  }
   const chain: AIConfig[] = []
 
   if (userConfig?.api_key) {

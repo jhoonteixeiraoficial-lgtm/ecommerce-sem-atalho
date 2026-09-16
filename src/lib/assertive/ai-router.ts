@@ -113,11 +113,18 @@ async function callClaude(
 }
 
 export function reasoningEngineStatus(): {
-  engine: 'claude' | 'gemini_fallback'
+  engine: 'claude' | 'gemini_fallback' | 'groq'
   claude_available: boolean
   note: string
 } {
   const hasClaude = Boolean(process.env.ANTHROPIC_API_KEY)
+  if (process.env.ASSERTIVE_TEXT_PROVIDER === 'groq') {
+    return {
+      engine: 'groq',
+      claude_available: hasClaude,
+      note: 'Textos e raciocínio via Groq, sem fallback automático para provedores pagos.',
+    }
+  }
   return {
     engine: hasClaude ? 'claude' : 'gemini_fallback',
     claude_available: hasClaude,
@@ -155,7 +162,7 @@ export async function runTask(
   ]
   const isCacheable = cacheableTasks.includes(task)
 
-  if (tier === 'reasoning') {
+  if (tier === 'reasoning' && process.env.ASSERTIVE_TEXT_PROVIDER !== 'groq') {
     const claudeKey = process.env.ANTHROPIC_API_KEY
     if (claudeKey) {
       const startedAt = Date.now()
@@ -178,8 +185,18 @@ export async function runTask(
     if (isCacheable) {
       const cached = await withAICache(
         task,
-        systemPrompt + '|||' + userPrompt,
-        { ...options, workload: tier, temperature: options.temperature ?? (tier === 'reasoning' ? 0.2 : 0.5) },
+        JSON.stringify([systemPrompt, userPrompt]),
+        { ...options, workload: tier, temperature: options.temperature ?? (tier === 'reasoning' ? 0.2 : 0.5),
+          scope: {
+            text_policy: process.env.ASSERTIVE_TEXT_PROVIDER || 'legacy',
+            user_id: userConfig?.user_id,
+            config_id: userConfig?.id,
+            provider: preferCheap ? 'platform' : userConfig?.provider,
+            model: preferCheap ? undefined : userConfig?.model,
+            base_url: preferCheap ? undefined : userConfig?.base_url,
+            updated_at: userConfig?.updated_at,
+          },
+        },
         async () => {
           const res = await generate(preferCheap ? null : userConfig, systemPrompt, userPrompt, {
             ...options,

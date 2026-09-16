@@ -39,6 +39,12 @@ const LABELS: Record<string, string> = {
 const PROTECTED_IDS = new Set(['product_type', 'brand', 'model'])
 const MEASUREMENT = /\b\d+(?:[.,]\d+)?\s*(?:hz|kg|cm|mm|ml|v|w|a|g|m|l|%|anos?|meses?)\b/gi
 
+/** Preserve quantity while recognizing written volume units from seller input. */
+export function extractCopyMeasurements(value: string): string[] {
+  const normalized = value.replace(/\b(mili)?litros?\b/gi, (_match, milli) => milli ? 'ml' : 'L')
+  return normalized.match(MEASUREMENT) || []
+}
+
 function isQualified(field: TruthField): boolean {
   const status = field.status ?? (field.confidence === 'confirmed' ? 'CONFIRMED' : 'NEEDS_CONFIRMATION')
   if (status === 'USER_OVERRIDE' || status === 'CONFIRMED') return true
@@ -77,7 +83,7 @@ export function buildCopyBrief(input: BuildCopyBriefInput): CopyBrief {
     product_name: productType.trim(),
     facts,
     protected_phrases: [...new Set(protectedPhrases)],
-    allowed_measurements: [...new Set(measurementSources.flatMap(value => value.match(MEASUREMENT) || []))],
+    allowed_measurements: [...new Set(measurementSources.flatMap(extractCopyMeasurements))],
     keywords: [...new Set((input.keywords || []).map(keyword => keyword.trim()).filter(Boolean))].slice(0, 20),
     category: {
           id: input.category?.id || '',

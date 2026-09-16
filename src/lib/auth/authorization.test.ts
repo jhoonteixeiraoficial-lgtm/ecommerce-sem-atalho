@@ -28,6 +28,39 @@ function clientWith(results: Partial<Record<string, QueryResult>> = {}) {
 }
 
 describe('loadAuthorization', () => {
+  it.each(['user_roles', 'account_status', 'subscriptions'])(
+    'retries a transient future-issued JWT only for the failed %s lookup',
+    async (table) => {
+      const attempts: Record<string, number> = {}
+      const client = {
+        from(name: string) {
+          attempts[name] = (attempts[name] ?? 0) + 1
+          const error = Object.assign(new Error('JWT issued at future'), { code: 'PGRST303' })
+          return clientWith(name === table && attempts[name] === 1
+            ? { [name]: { data: null, error } }
+            : {}).from(name)
+        },
+      }
+      await expect(loadAuthorization(client, 'member-1')).resolves.toMatchObject({ role: 'member', status: 'active' })
+      expect(attempts[table]).toBe(2)
+      for (const name of ['user_roles', 'account_status', 'subscriptions']) {
+        if (name !== table) expect(attempts[name]).toBe(1)
+      }
+    },
+  )
+
+  it('still denies access when the future-issued JWT error persists', async () => {
+    let attempts = 0
+    const client = {
+      from(name: string) {
+        if (name === 'user_roles') attempts++
+        return clientWith({ user_roles: { data: null, error: Object.assign(new Error('JWT issued at future'), { code: 'PGRST303' }) } }).from(name)
+      },
+    }
+    await expect(loadAuthorization(client, 'member-1')).rejects.toThrow('Authorization service unavailable')
+    expect(attempts).toBe(3)
+  })
+
   it('returns canonical authorization with the active subscription paid-through date', async () => {
     await expect(loadAuthorization(clientWith(), 'member-1')).resolves.toEqual({
       role: 'member',

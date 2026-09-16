@@ -40,6 +40,12 @@ interface GroundingSupport {
  * responder 429 RESOURCE_EXHAUSTED assim que `tools` é enviado).
  */
 export async function searchWeb(query: string, maxSources = 6): Promise<WebSearchResult> {
+  if (process.env.ASSERTIVE_WEB_SEARCH_ENABLED === 'false') {
+    return {
+      available: false, content: '', sources: [], queries: [],
+      unavailable_reason: 'Busca web complementar desativada para economia; pesquisa no Mercado Livre permanece disponível.',
+    }
+  }
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) {
     return {

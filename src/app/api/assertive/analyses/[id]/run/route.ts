@@ -10,7 +10,7 @@ import {
 import { MLNotConnectedError } from '@/lib/assertive/publisher'
 import { getValidMLToken } from '@/lib/assertive/publisher'
 import { applyUserAnswers, identifyFromUrl, isProtectedField, type ProductTruth } from '@/lib/assertive/truth'
-import { tryAcquireAnalysisLock, resetAnalysisProcessing } from '@/lib/assertive/concurrency'
+import { tryAcquireAnalysisLock, releaseAnalysisLock } from '@/lib/assertive/concurrency'
 import { z } from 'zod'
 
 export const runtime = 'nodejs'
@@ -40,35 +40,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const parsed = schema.safeParse(body.body ?? {})
   if (!parsed.success) return Response.json({ error: 'Parâmetros inválidos.' }, { status: 400 })
 
-  // ----------------------------------------------------------------
-  // Concorrência: evita múltiplas execuções simultâneas da mesma análise
-  // ----------------------------------------------------------------
-  const lockAcquired = await tryAcquireAnalysisLock(id, authorizedUser.id)
-  if (!lockAcquired) {
+  let analysis = await loadAnalysis(id, authorizedUser.id)
+  if (!analysis) return Response.json({ error: 'Análise não encontrada.' }, { status: 404 })
+
+  let leaseToken: string | null
+  try {
+    leaseToken = await tryAcquireAnalysisLock(id, authorizedUser.id)
+  } catch {
+    return Response.json({ error: 'Controle de execução indisponível. Tente novamente em instantes.' }, { status: 503 })
+  }
+  if (!leaseToken) {
     return Response.json(
       { error: 'Esta análise já está sendo processada. Aguarde a conclusão.', code: 'ANALYSIS_IN_PROGRESS' },
       { status: 409 }
     )
   }
 
-  let analysis = await loadAnalysis(id, authorizedUser.id)
-  if (!analysis) {
-    await resetAnalysisProcessing(id, authorizedUser.id, 'failed', 'Análise não encontrada após lock')
-    return Response.json({ error: 'Análise não encontrada.' }, { status: 404 })
-  }
-
-  // Verificar se já está em estágio de processamento (dupla checagem)
-  if (['processing', 'researching', 'generating'].includes(analysis.status)) {
-    await resetAnalysisProcessing(id, authorizedUser.id, 'failed', 'Análise já em andamento')
-    return Response.json(
-      { error: 'Análise já está em andamento.', code: 'ANALYSIS_IN_PROGRESS' },
-      { status: 409 }
-    )
-  }
-
-  // Marcar como processing
-  await updateAnalysis(id, authorizedUser.id, { status: 'processing', error_message: null })
-
+  // `researching` also means identified and awaiting the user's confirmation.
+  // Only the database lease determines whether another execution is active.
   try {
     const config = await getUserAIConfig(authorizedUser.id)
 
@@ -148,13 +137,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return Response.json({ ok: true, listing_id: listingId })
   } catch (e) {
-    if (e instanceof MLNotConnectedError) {
-      await resetAnalysisProcessing(id, authorizedUser.id, 'failed', e.message)
-      return Response.json({ error: e.message, code: 'ML_NOT_CONNECTED' }, { status: 409 })
-    }
-
     const message = e instanceof Error ? e.message : 'Falha ao processar a análise.'
-    await resetAnalysisProcessing(id, authorizedUser.id, 'failed', message)
+    await updateAnalysis(id, authorizedUser.id, { status: 'failed', error_message: message })
+    if (e instanceof MLNotConnectedError) {
+      return Response.json({ error: message, code: 'ML_NOT_CONNECTED' }, { status: 409 })
+    }
     return Response.json({ error: message }, { status: 500 })
+  } finally {
+    await releaseAnalysisLock(id, authorizedUser.id, leaseToken)
   }
 }

@@ -168,6 +168,21 @@ describe('listing generator semantic guards', () => {
     expect(result.title).toBe(goldenTitle)
   })
 
+  it('replaces invented leak/scratch/thermal promises with factual copy in the final listing', async () => {
+    generateJson.mockResolvedValue({
+      title: 'Caneta de Polaridade Kitest KA250 12V 24V',
+      title_alternatives: [], family_name: 'Caneta Kitest KA250',
+      description: 'Tampa segura que evita vazamentos. Corpo que protege contra riscos. Mantém bebidas quentes por horas.',
+      attributes: [], missing: [], image_plan: [], improvements: [],
+    })
+    const result = await generateListing({
+      config: null, truth, research, dna: dna('EXACT_PRODUCT'), category: null, attributes: [],
+    })
+    expect(result.description).not.toMatch(/evita vazamentos|protege contra riscos|quentes por horas/)
+    expect(result.description).toContain('Especificações confirmadas')
+    expect(result.improvements).toEqual(expect.arrayContaining([expect.stringContaining('UNSUPPORTED_CLAIM')]))
+  })
+
   it('remove descrição com especificações comerciais não confirmadas', async () => {
     generateJson.mockResolvedValue({
       title: 'Caneta de Polaridade Kitest KA250 12V 24V',

@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/admin'
+import { createHash } from 'node:crypto'
 
 // ---------------------------------------------------------------- in-memory cache
 const memCache = new Map<string, { payload: unknown; expires: number }>()
@@ -62,25 +62,22 @@ async function dbCacheSet(key: string, payload: unknown, ttlSec: number) {
 
 // ---------------------------------------------------------------- chave determinística
 function hashString(s: string): string {
-  let h = 0
-  for (let i = 0; i < s.length; i++) {
-    h = Math.imul(31, h) + s.charCodeAt(i)
-    h |= 0
-  }
-  return Math.abs(h).toString(36)
+  return createHash('sha256').update(s).digest('hex')
 }
 
 function buildCacheKey(task: string, prompt: string, options: Record<string, unknown> = {}): string {
   const relevant = {
     task,
-    prompt: prompt.slice(0, 2000),
+    prompt,
     temperature: options.temperature,
     maxTokens: options.maxTokens,
     json: options.json,
     model: options.model,
     workload: options.workload,
+    images: options.images,
+    scope: options.scope,
   }
-  return `AI:${task}:${hashString(JSON.stringify(relevant))}`
+  return `AI:v2:${task}:${hashString(JSON.stringify(relevant))}`
 }
 
 // ---------------------------------------------------------------- API pública

@@ -8,6 +8,15 @@ const mocks = vi.hoisted(() => ({
   getUserAIConfig: vi.fn(),
   identifyFromUrl: vi.fn(),
   getValidMLToken: vi.fn(),
+  tryAcquireAnalysisLock: vi.fn(),
+  releaseAnalysisLock: vi.fn(),
+  resetAnalysisProcessing: vi.fn(),
+}))
+
+vi.mock('@/lib/assertive/concurrency', () => ({
+  tryAcquireAnalysisLock: mocks.tryAcquireAnalysisLock,
+  releaseAnalysisLock: mocks.releaseAnalysisLock,
+  resetAnalysisProcessing: mocks.resetAnalysisProcessing,
 }))
 
 vi.mock('server-only', () => ({}))
@@ -98,6 +107,8 @@ const completedResearch = {
 describe('POST /api/assertive/analyses/[id]/run', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.tryAcquireAnalysisLock.mockResolvedValue('lease-token')
+    mocks.releaseAnalysisLock.mockResolvedValue(undefined)
     mocks.loadAnalysis.mockResolvedValue({ ...staleAnalysis })
     mocks.getUserAIConfig.mockResolvedValue(null)
     mocks.getValidMLToken.mockResolvedValue('ml-token')
@@ -118,6 +129,40 @@ describe('POST /api/assertive/analyses/[id]/run', () => {
       }
       return { listingId: 'listing-1', generated: { title: 'Kitest KA-250' } }
     })
+  })
+
+  it('runs a newly identified analysis awaiting research instead of rejecting its stage as busy', async () => {
+    mocks.loadAnalysis.mockResolvedValue({ ...staleAnalysis, status: 'researching' })
+    const response = await POST(new Request('http://localhost/test', { method: 'POST' }) as never, {
+      params: Promise.resolve({ id: staleAnalysis.id }),
+    })
+    expect(response.status).toBe(200)
+    expect(mocks.runResearch).toHaveBeenCalledOnce()
+    expect(mocks.updateAnalysis.mock.calls.some(call => call[2]?.status === 'processing')).toBe(false)
+    expect(mocks.releaseAnalysisLock).toHaveBeenCalledWith(staleAnalysis.id, 'user-1', 'lease-token')
+  })
+
+  it('does not alter the running analysis when another request owns its lease', async () => {
+    mocks.tryAcquireAnalysisLock.mockResolvedValue(null)
+    const response = await POST(new Request('http://localhost/test', { method: 'POST' }) as never, {
+      params: Promise.resolve({ id: staleAnalysis.id }),
+    })
+    expect(response.status).toBe(409)
+    expect(mocks.runResearch).not.toHaveBeenCalled()
+    expect(mocks.updateAnalysis).not.toHaveBeenCalled()
+    expect(mocks.releaseAnalysisLock).not.toHaveBeenCalled()
+  })
+
+  it('records failure and releases the lease when the pipeline throws', async () => {
+    mocks.runResearch.mockRejectedValueOnce(new Error('research failed'))
+    const response = await POST(new Request('http://localhost/test', { method: 'POST' }) as never, {
+      params: Promise.resolve({ id: staleAnalysis.id }),
+    })
+    expect(response.status).toBe(500)
+    expect(mocks.updateAnalysis).toHaveBeenCalledWith(staleAnalysis.id, 'user-1', {
+      status: 'failed', error_message: 'research failed',
+    })
+    expect(mocks.releaseAnalysisLock).toHaveBeenCalledWith(staleAnalysis.id, 'user-1', 'lease-token')
   })
 
   it('recupera snapshot URL legado, inicia research e entrega o draft ao editor no mesmo request', async () => {

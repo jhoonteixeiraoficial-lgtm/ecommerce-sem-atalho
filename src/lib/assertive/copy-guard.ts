@@ -1,4 +1,4 @@
-import type { CopyBrief } from './copy-brief'
+import { extractCopyMeasurements, type CopyBrief } from './copy-brief'
 
 export type CopyGuardReason =
   | 'IDENTITY_TOKEN_MUTATED'
@@ -13,7 +13,7 @@ export interface CopyGuardResult {
 }
 
 const STOPWORDS = new Set(['a', 'as', 'com', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'o', 'os', 'para'])
-const MEASUREMENT = /\b\d+(?:[.,]\d+)?\s*(?:hz|kg|cm|mm|ml|v|w|a|g|m|l|%|anos?|meses?)\b/gi
+
 
 function normalize(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
@@ -42,8 +42,8 @@ function editDistance(a: string, b: string): number {
 }
 
 function unsupportedMeasurements(value: string, brief: CopyBrief): string[] {
-  const allowed = new Set(brief.allowed_measurements.map(compactMeasurement))
-  return (value.match(MEASUREMENT) || []).filter(claim => !allowed.has(compactMeasurement(claim)))
+  const allowed = new Set(brief.allowed_measurements.flatMap(extractCopyMeasurements).map(compactMeasurement))
+  return extractCopyMeasurements(value).filter(claim => !allowed.has(compactMeasurement(claim)))
 }
 
 export function verifyProtectedIdentityText(value: string, brief: CopyBrief): CopyGuardResult {
@@ -109,6 +109,21 @@ export function verifyDescriptionClaims(value: string, brief: CopyBrief): CopyGu
   const factText = normalize(brief.facts.map(fact => `${fact.id} ${fact.label} ${fact.value}`).join(' '))
   const reasons: CopyGuardReason[] = []
   if (unsupportedMeasurements(value, brief).length) reasons.push('UNSUPPORTED_MEASUREMENT')
+
+  // Performance benefits require affirmative product evidence, not the mere
+  // presence of an attribute label (e.g. 'Leak proof: No').
+  const affirmativeFacts = normalize(brief.facts
+    .filter(fact => !/^(?:nao|no|false|sem\b|desconhecid|nao informado)/.test(normalize(fact.value).trim()))
+    .map(fact => `${fact.id} ${fact.label} ${fact.value}`).join(' '))
+  const performanceClaims: Array<[RegExp, RegExp]> = [
+    [/(?:protege|resisten\w*|protecao)[^.\n]{0,40}(?:riscos|arranho)|anti[- ]?(?:risco|arranho)/, /scratch|risco|arranho/],
+    [/(?:evita|impede|sem|prova de)[^.\n]{0,30}vazamento|anti[- ]?vazamento|leak[- ]?proof/, /leak|vazamento/],
+    [/(?:mantem|conserva|preserva)[^.\n]{0,100}(?:horas|dia inteiro)/, /(?:conservacao|retencao|mantem|conserva|preserva|retention)[^\n]*(?:\d|hora)/],
+  ]
+  const normalizedValue = normalize(value)
+  for (const [claim, support] of performanceClaims) {
+    if (claim.test(normalizedValue) && !support.test(affirmativeFacts)) reasons.push('UNSUPPORTED_CLAIM')
+  }
 
   const guardedClaims: Array<[RegExp, RegExp]> = [
     [/\bgarantia\b/i, /garantia|warranty/],
