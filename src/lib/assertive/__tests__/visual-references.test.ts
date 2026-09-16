@@ -117,6 +117,22 @@ beforeEach(() => {
 })
 
 describe('visual reference identity boundary', () => {
+  it.each([
+    ['preta', 'Preto', '1 litro', '1000 mL', true],
+    ['preta', 'Preto', '1,5 L', '1500 ml', true],
+    ['preta', 'Branco', '1 litro', '1000 mL', false],
+    ['preta', 'Preto', '1 litro', '500 mL', false],
+    ['preta', 'Preto fosco', '1 litro', '1000 mL', false],
+  ])('compares equivalent variants without accepting a different product: %s/%s %s/%s', (color, otherColor, capacity, otherCapacity, accepted) => {
+    const product = truth({ fields: {
+      ...truth().fields,
+      color: { value: color, confidence: 'confirmed', source: 'user', evidence: 'seller' },
+      capacity: { value: capacity, confidence: 'confirmed', source: 'user', evidence: 'seller' },
+    } })
+    const reference = candidate({ attributes: { ...candidate().attributes, COLOR: otherColor, CAPACITY: otherCapacity } })
+    expect(evaluateVisualReference(product, reference).accepted).toBe(accepted)
+  })
+
   it('accepts official source pictures without requiring copy-qualified facts', () => {
     const result = evaluateVisualReference(truth(), candidate({
       source: 'ML_SOURCE',

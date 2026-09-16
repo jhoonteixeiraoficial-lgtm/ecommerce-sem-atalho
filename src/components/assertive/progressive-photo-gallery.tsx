@@ -111,7 +111,9 @@ export function ProgressivePhotoGallery({
               : <Sparkles className="h-3 w-3 text-violet-300" />}
             {snapshot.reference_count > 0
               ? `${snapshot.reference_count} referências privadas verificadas`
-              : 'Preparando referências privadas'}
+              : ['FAILED', 'DISMISSED'].includes(snapshot.reference_status)
+                ? 'Envie uma foto própria ou tente buscar referências novamente'
+                : 'Preparando referências privadas'}
           </div>
         </div>
       </div>

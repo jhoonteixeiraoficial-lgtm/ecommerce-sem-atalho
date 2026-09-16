@@ -81,6 +81,7 @@ describe('ProgressivePhotoGallery', () => {
   it('exposes reference recovery when acquisition reaches a terminal failure', () => {
     const failed = snapshot()
     failed.reference_status = 'FAILED'
+    failed.reference_count = 0
     failed.runnable = false
     failed.slots[0] = {
       ...failed.slots[0],
@@ -105,5 +106,7 @@ describe('ProgressivePhotoGallery', () => {
     expect(html).toContain('Referências indisponíveis')
     expect(html).toContain('Nenhuma referência exata foi encontrada.')
     expect(html).toContain('Tentar referências')
+    expect(html).not.toContain('Preparando referências privadas')
+    expect(html).toContain('Envie uma foto própria ou tente buscar referências novamente')
   })
 })

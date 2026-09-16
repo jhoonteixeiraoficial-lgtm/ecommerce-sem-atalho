@@ -441,13 +441,13 @@ describe('progressive image orchestrator', () => {
     expect(state.listingImages).toEqual([{ position: 0, asset_id: 'generated-0' }])
   })
 
-  it('does not attach a cover that fails the white-background gate', async () => {
+  it('does not attach or automatically regenerate a cover that fails the white-background gate', async () => {
     const state = createState({ next: job({ position: 0, role: 'MAIN' }), coverPassed: false })
 
     const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
 
     expect(result.snapshot.slots[0]).toMatchObject({
-      status: 'RETRYABLE',
+      status: 'FAILED',
       error_code: 'IMAGE_BACKGROUND_REJECTED',
     })
     expect(state.jobs[0].metadata).toMatchObject({
@@ -460,15 +460,27 @@ describe('progressive image orchestrator', () => {
     expect(state.listingImages).toEqual([])
   })
 
-  it('retries a composition that duplicates an exact reference', async () => {
+  it('requires explicit retry for a composition that duplicates an exact reference', async () => {
     const state = createState({ next: job({ position: 2, role: 'DETAIL' }), duplicateId: 'reference-1' })
 
     const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
 
     expect(result.snapshot.slots[2]).toMatchObject({
-      status: 'RETRYABLE',
+      status: 'FAILED',
       error_code: 'IMAGE_DUPLICATE_REJECTED',
     })
+    expect(state.listingImages).toEqual([])
+  })
+
+  it('stops billable regeneration when fidelity rejects a changed product', async () => {
+    const state = createState({ next: job({ position: 1, role: 'DETAIL' }) })
+    state.dependencies.verifyFidelity = vi.fn().mockResolvedValue({
+      status: 'REJECT', score: 20, reason: 'Modelo e quantidade foram alterados.',
+      reason_codes: ['PRODUCT_CHANGED', 'QUANTITY_CHANGED'], composition_is_new: true,
+    })
+    const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
+    expect(result.snapshot.slots[1]).toMatchObject({ status: 'FAILED', error_code: 'IMAGE_FIDELITY_REJECTED' })
+    expect(state.jobs[0].next_attempt_at).toBeNull()
     expect(state.listingImages).toEqual([])
   })
 

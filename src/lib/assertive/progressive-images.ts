@@ -340,7 +340,8 @@ async function settleFailure(
 ): Promise<'RETRYABLE' | 'FAILED'> {
   if (!job.lock_token) throw new Error('Job de imagem sem lock válido.')
   const failure = executionError(error)
-  const status = failure.retryAfterMs > 0 && job.attempt_count < job.max_attempts ? 'RETRYABLE' : 'FAILED'
+  const requiresExplicitRetry = ['IMAGE_FIDELITY_REJECTED', 'IMAGE_BACKGROUND_REJECTED', 'IMAGE_DUPLICATE_REJECTED'].includes(failure.code)
+  const status = !requiresExplicitRetry && failure.retryAfterMs > 0 && job.attempt_count < job.max_attempts ? 'RETRYABLE' : 'FAILED'
   await dependencies.transitionJob(job.id, job.user_id, job.lock_token, {
     status,
     next_attempt_at: status === 'RETRYABLE'
