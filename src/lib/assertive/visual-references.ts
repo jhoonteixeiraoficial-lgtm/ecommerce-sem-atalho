@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { createHash } from 'node:crypto'
-import { createReferenceAsset, getOwnedAssets, type ImageAsset, type ImageOrigin } from './image-assets'
+import { createReferenceAsset, type ImageAsset, type ImageOrigin } from './image-assets'
 import { mapLimitSettled } from './ml-api'
 import { searchMarketplaceVisualReferences } from './research'
 import { fetchImageSafely } from './safe-image-fetch'
@@ -221,11 +221,6 @@ function selectDiverseCandidates(candidates: VisualReferenceCandidate[], limit: 
   return selected
 }
 
-function validOwnedReference(asset: ImageAsset, userId: string): boolean {
-  return asset.user_id === userId
-    && ['ORIGINAL_EVIDENCE', 'DERIVED', 'PUBLICATION_RENDITION'].includes(asset.kind)
-    && ['USER_OWNED', 'SELLER_OWNED_CONFIRMED', 'LICENSED'].includes(asset.rights_status)
-}
 
 function webReferenceQuery(truth: ProductTruth): string {
   const identity = [truth.fields.brand?.value, truth.fields.model?.value].filter(Boolean).join(' ')
@@ -271,12 +266,9 @@ async function discoverSourcePageReferences(truth: ProductTruth): Promise<Visual
 
 export async function acquireVisualReferences(input: AcquireVisualReferencesInput): Promise<ImageAsset[]> {
   const maxAssets = Math.max(1, Math.min(8, Math.floor(input.maxAssets || 8)))
-  const [marketplaceCandidates, sourcePageCandidates, ownedAssets] = await Promise.all([
+  const [marketplaceCandidates, sourcePageCandidates] = await Promise.all([
     searchMarketplaceVisualReferences(input.token, input.truth, 24).catch(() => []),
     discoverSourcePageReferences(input.truth).catch(() => []),
-    input.ownAssetIds?.length
-      ? getOwnedAssets(input.userId, [...new Set(input.ownAssetIds)]).catch(() => [])
-      : Promise.resolve([]),
   ])
   const acceptedKnownSources = [...marketplaceCandidates, ...sourcePageCandidates].filter(candidate => (
     evaluateVisualReference(input.truth, candidate).accepted
@@ -333,16 +325,11 @@ export async function acquireVisualReferences(input: AcquireVisualReferencesInpu
       },
     })
   ))
-  const owned = ownedAssets.filter(asset => validOwnedReference(asset, input.userId))
-  const leadExternalCount = externalAssets.length ? 1 : 0
-  const prioritizedAssets = [
-    ...externalAssets.slice(0, leadExternalCount),
-    ...owned,
-    ...externalAssets.slice(leadExternalCount),
-  ]
+  // Seller uploads identify the product; they are not substitutes for external
+  // composition references. Explicit "use own photo" remains a separate path.
   const output: ImageAsset[] = []
   const outputHashes = new Set<string>()
-  for (const asset of prioritizedAssets) {
+  for (const asset of externalAssets) {
     if (outputHashes.has(asset.sha256)) continue
     outputHashes.add(asset.sha256)
     output.push(asset)

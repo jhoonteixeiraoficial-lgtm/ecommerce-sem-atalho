@@ -276,7 +276,7 @@ describe('visual reference acquisition', () => {
     })
   })
 
-  it('prioritizes an exact competitor while keeping the seller photo among the first references', async () => {
+  it('uses external composition references without substituting the seller identification photo', async () => {
     mocks.searchMarketplaceVisualReferences.mockResolvedValue([
       candidate({ source: 'ML_CATALOG', image_url: 'https://ml.example/catalog.jpg' }),
       candidate({ source: 'ML_SOURCE', image_url: 'https://ml.example/source.jpg', source_item_id: 'MLB54005757' }),
@@ -301,7 +301,6 @@ describe('visual reference acquisition', () => {
 
     expect(assets.map(asset => asset.origin)).toEqual([
       'COMPETITOR',
-      'USER_UPLOAD',
       'ML_OWN_ITEM',
       'ML_CATALOG',
     ])
@@ -313,7 +312,7 @@ describe('visual reference acquisition', () => {
     ])
   })
 
-  it('reserves room for a distinct seller-owned reference when external results fill the cap', async () => {
+  it('keeps the reference budget for external images rather than the seller input', async () => {
     mocks.searchMarketplaceVisualReferences.mockResolvedValue(
       Array.from({ length: 8 }, (_, index) => candidate({
         image_url: `https://ml.example/competitor-${index}.jpg`,
@@ -343,7 +342,15 @@ describe('visual reference acquisition', () => {
 
     expect(assets).toHaveLength(8)
     expect(assets[0].origin).toBe('COMPETITOR')
-    expect(assets.map(asset => asset.id)).toContain('own-reference')
+    expect(assets.map(asset => asset.id)).not.toContain('own-reference')
+    expect(mocks.getOwnedAssets).not.toHaveBeenCalled()
+  })
+
+  it('does not silently use seller uploads when no external reference exists', async () => {
+    mocks.getOwnedAssets.mockResolvedValue([imageAsset({ id: 'own-reference', origin: 'USER_UPLOAD', kind: 'ORIGINAL_EVIDENCE', rights_status: 'USER_OWNED' })])
+    const assets = await acquireVisualReferences({ userId: 'user-1', analysisId: 'analysis-1', token: 'ml-token', truth: truth(), ownAssetIds: ['own-reference'] })
+    expect(assets).toEqual([])
+    expect(mocks.getOwnedAssets).not.toHaveBeenCalled()
   })
 
   it('falls back to exact web pages, rejects tiny images and deduplicates bytes', async () => {
