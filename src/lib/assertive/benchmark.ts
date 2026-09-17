@@ -1,5 +1,6 @@
 import type { CompetitorDossier } from './research'
 import type { MatchClass } from './matching'
+import type { PublicSearchSnapshot } from './public-search'
 
 export type BenchmarkKind = 'OFFICIAL_BEST_SELLER' | 'STRONGEST_REFERENCE'
 
@@ -18,7 +19,7 @@ export interface BenchmarkSet {
   official_best_seller_available: boolean
 }
 
-export function buildBenchmarkSet(competitors: CompetitorDossier[]): BenchmarkSet {
+export function buildBenchmarkSet(competitors: CompetitorDossier[], publicSearch?: PublicSearchSnapshot): BenchmarkSet {
   const ranked = [...competitors].sort((a, b) => {
     if (a.highlight_position !== null && b.highlight_position !== null) {
       return a.highlight_position - b.highlight_position
@@ -42,6 +43,17 @@ export function buildBenchmarkSet(competitors: CompetitorDossier[]): BenchmarkSe
           `Mais vendidos da categoria: posição #${competitor.highlight_position}`,
         ].filter((value, index, values) => values.indexOf(value) === index),
   }))
+
+  // A catalog can contain multiple sellers: only join the exact listing ID.
+  if (publicSearch?.available) {
+    for (const reference of references) {
+      const observed = reference.item_id
+        ? publicSearch.entries.find(entry => entry.item_id === reference.item_id && !entry.sponsored)
+        : undefined
+      if (!observed) continue
+      reference.evidence.push(`Busca pública: posição observada #${observed.position}; posição sem publicidade identificada #${observed.organic_position} (${publicSearch.observed_at})`)
+    }
+  }
 
   return {
     primary: references[0] || null,

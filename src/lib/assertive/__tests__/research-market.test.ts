@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ mlGet: vi.fn() }))
+const mocks = vi.hoisted(() => ({ mlGet: vi.fn(), loadPublicSearch: vi.fn() }))
+vi.mock('../public-search-cache', () => ({ loadPublicSearch: mocks.loadPublicSearch }))
 
 vi.mock('../ml-api', async importOriginal => {
   const original = await importOriginal<typeof import('../ml-api')>()
@@ -34,6 +35,7 @@ const truth: ProductTruth = {
 describe('researchMarket', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.loadPublicSearch.mockResolvedValue({ available: false, query: truth.name, observed_at: '2026-09-17T12:00:00Z', search_url: '', entries: [], unavailable_reason: 'Ranking público não verificado' })
     mocks.mlGet.mockImplementation(async (path: string) => {
       if (path.startsWith('/sites/MLB/domain_discovery/search')) {
         return [{
@@ -104,6 +106,15 @@ describe('researchMarket', () => {
       if (path === '/trends/MLB/MLB60658') return []
       throw new Error(`Unexpected ML path: ${path}`)
     })
+  })
+
+  it('propaga a coleta pública ao benchmark da oferta exata', async () => {
+    const snapshot = { available: true, query: truth.name, observed_at: '2026-09-17T12:00:00Z', search_url: 'https://lista.mercadolivre.com.br/caneta', entries: [{ position: 2, organic_position: 1, sponsored: false, item_id: 'MLB200', catalog_product_id: null, title: 'Caneta', url: 'https://produto.mercadolivre.com.br/MLB-200-caneta_JM', bestseller_badge: false, sold_quantity: null }] }
+    mocks.loadPublicSearch.mockResolvedValue(snapshot)
+    const result = await researchMarket('token', truth.name, { sourceCategoryId: truth.source_category_id, sourceDomainId: truth.source_domain_id, truth })
+    expect(mocks.loadPublicSearch).toHaveBeenCalledWith(truth.name)
+    expect(result.public_search).toEqual(snapshot)
+    expect(result.benchmark?.primary?.evidence.some(e => e.includes('Busca pública: posição observada #2'))).toBe(true)
   })
 
   it('preserva categoria/domínio da URL e não chama catálogo sem oferta de concorrente', async () => {

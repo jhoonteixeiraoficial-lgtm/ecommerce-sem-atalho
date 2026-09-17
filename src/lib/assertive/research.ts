@@ -3,6 +3,8 @@ import { discoverDomain, getCategory, getCategoryTrends, type DomainSuggestion }
 import { evaluateMatch, buildCompetitorMatrix, type MatchClass, type MatrixKey } from './matching'
 import type { ProductTruth } from './truth'
 import { buildBenchmarkSet, type BenchmarkSet } from './benchmark'
+import { loadPublicSearch } from './public-search-cache'
+import type { PublicSearchSnapshot } from './public-search'
 import type { VisualReferenceCandidate, VisualReferenceSource } from './visual-references'
 
 const HOUR = 3600
@@ -162,6 +164,8 @@ export interface CatalogMatch {
 }
 
 export interface ResearchResult {
+  /** Evidence of public search, distinct from catalog relevance. */
+  public_search?: PublicSearchSnapshot
   query: string
   domain_id: string | null
   domain_name: string | null
@@ -576,6 +580,8 @@ export async function researchMarket(
 ): Promise<ResearchResult> {
   const deepLimit = opts.deepLimit ?? 8
   const warnings: string[] = []
+  const publicSearch = await loadPublicSearch(query)
+  if (!publicSearch.available && publicSearch.unavailable_reason) warnings.push(publicSearch.unavailable_reason)
 
   // --- categoria/domínio oficiais
   // P0.2: LOCK — se sourceCategoryId existe, é a categoria canônica da URL.
@@ -680,7 +686,8 @@ export async function researchMarket(
       category_resolution: categoryResolution,
       keywords: [],
       competitors: [],
-      benchmark: buildBenchmarkSet([]),
+      benchmark: buildBenchmarkSet([], publicSearch),
+      public_search: publicSearch,
       catalog_matches: [],
       candidates_found: 0,
       price_stats: null,
@@ -789,7 +796,8 @@ export async function researchMarket(
     category_source: categorySource,
     keywords,
     competitors,
-    benchmark: buildBenchmarkSet(competitors),
+    benchmark: buildBenchmarkSet(competitors, publicSearch),
+    public_search: publicSearch,
     catalog_matches: catalogMatches,
     candidates_found: candidateIds.size,
     price_stats: prices.length

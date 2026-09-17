@@ -15,6 +15,21 @@ function dossier(overrides: Partial<CompetitorDossier>): CompetitorDossier {
 }
 
 describe('buildBenchmarkSet', () => {
+  it('anexa posição pública somente ao anúncio observado, sem transformar ranking em vendas', () => {
+    const snapshot = {
+      available: true, query: 'garrafa', observed_at: '2026-09-17T12:00:00Z',
+      search_url: 'https://lista.mercadolivre.com.br/garrafa',
+      entries: [{ position: 5, organic_position: 1, sponsored: false,
+        item_id: 'MLB1', catalog_product_id: 'MLBP1', url: 'https://www.mercadolivre.com.br/p/MLBP1',
+        title: 'Garrafa', bestseller_badge: true, sold_quantity: null }],
+    }
+    const set = buildBenchmarkSet([dossier({}), dossier({item_id: 'MLB2'})], snapshot)
+    expect(set.references[0].evidence).toContain('Busca pública: posição observada #5; posição sem publicidade identificada #1 (2026-09-17T12:00:00Z)')
+    expect(set.references[1].evidence.some(e => e.includes('Busca pública:'))).toBe(false)
+    expect(set.primary?.kind).toBe('STRONGEST_REFERENCE')
+    expect(set.official_best_seller_available).toBe(false)
+  })
+
   it('usa OFFICIAL_BEST_SELLER somente quando existe evidência oficial de ranking', () => {
     const set = buildBenchmarkSet([dossier({ highlight_position: 2 })])
 
