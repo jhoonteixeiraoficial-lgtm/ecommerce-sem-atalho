@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { collectPublicSearch } from './public-search-collector'
 import { publicSearchUrl, type PublicSearchSnapshot } from './public-search'
 
 const MAX_AGE_MS = 6 * 60 * 60 * 1000
@@ -41,7 +42,7 @@ function valid(value: unknown, query: string, now: number): value is PublicSearc
   })
 }
 
-/** Read-only: cache miss must never silently trigger a paid scrape. */
+/** Cache first; collection requires explicit server budget and durable reservation. */
 export async function loadPublicSearch(
   query: string,
   read: (key: string) => Promise<unknown> = readStoredSnapshot,
@@ -50,6 +51,8 @@ export async function loadPublicSearch(
   try {
     const snapshot = await read(publicSearchCacheKey(query))
     if (valid(snapshot, query, now)) return snapshot
+    const collected = await collectPublicSearch(query, publicSearchCacheKey(query))
+    if (valid(collected, query, Date.now())) return collected
   } catch { /* Ranking is unavailable; preserve the rest of the research. */ }
   return { available: false, query, observed_at: new Date(now).toISOString(),
     search_url: publicSearchUrl(query), entries: [],
