@@ -32,6 +32,16 @@ export interface GenerateProductImageInput {
   reference?: { buffer: Buffer; mime_type: string }
   references?: Array<{ buffer: Buffer; mime_type: string }>
   shot?: { order: number; title: string; description: string; required: boolean }
+  /** Tiro da Receita Visual do anúncio escalado (replica estratégia, não pixels). */
+  recipeShot?: {
+    type?: string
+    angle?: string
+    background?: string
+    lighting?: string
+    composition?: string
+    buyer_doubt?: string
+    overlay_theme?: string | null
+  }
   role?: PhotoRole
   previousFailure?: { code: string; message: string }
   apiKey?: string
@@ -189,7 +199,19 @@ export async function generateProductImage(input: GenerateProductImageInput): Pr
     ? `${references.length === 1 ? 'Use a imagem anexada somente como referência visual exata da identidade.' : `Use as ${references.length} imagens anexadas conjuntamente e somente como referências visuais exatas da identidade.`} Triangule produto, geometria, variante, cor, marca, quantidade e componentes visíveis. Crie uma composição nova; não copie fundo, cenário, enquadramento, texto promocional, selo ou marca-d’água de nenhuma referência.`
     : 'Não há referência visual. Represente somente os elementos sustentados pela identidade e pelos fatos confirmados.'
   const factLines = facts.map(fact => `- ${fact.label}: ${fact.value}`).join('\n') || '- Nenhum detalhe adicional confirmado.'
-  const shotInstruction = input.shot?.order === 1
+  const shotInstruction = input.recipeShot
+    ? [
+        `Imagem ${input.shot?.order ?? 1} — REPLICA A ESTRATÉGIA VISUAL do anúncio vencedor (estrutura, nunca os pixels):`,
+        `- Tipo de foto: ${input.recipeShot.type || input.shot?.title || 'produto'}.`,
+        input.recipeShot.angle && `- Ângulo de câmera: ${input.recipeShot.angle}.`,
+        input.recipeShot.background && `- Fundo: ${input.recipeShot.background}.`,
+        input.recipeShot.lighting && `- Iluminação: ${input.recipeShot.lighting}.`,
+        input.recipeShot.composition && `- Composição: ${input.recipeShot.composition}.`,
+        input.recipeShot.buyer_doubt && `- A foto precisa responder com clareza esta dúvida de quem compra: ${input.recipeShot.buyer_doubt}.`,
+        input.recipeShot.overlay_theme && `- Inclua infográfico minimalista com este tema: ${input.recipeShot.overlay_theme}.`,
+        '- Crie uma foto NOVA e superior — não reproduza a foto original.',
+      ].filter(Boolean).join('\n')
+    : input.shot?.order === 1
     ? 'Foto principal: produto inteiro, centralizado e com fundo branco puro (#FFFFFF).'
     : input.shot
       ? `Imagem ${input.shot.order}: ${input.shot.title}. Objetivo: ${input.shot.description}. Use somente partes e ângulos comprovados pela referência visual.`

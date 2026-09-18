@@ -39,6 +39,8 @@ import { collectAndClassifyPhotos, type PhotoMeta } from './photos'
 import { computeEffectiveRequirements, type PublicationRequirements } from './publication-requirements'
 import { targetedAttributeResearch } from './targeted-research'
 import { observeAnalysisStage, recordAnalysisStageEvent } from './observability'
+import { analyzePhotoRecipe, type PhotoRecipe } from './visual-recipe'
+import { estimateSellerPackage } from './package-estimate'
 import { buildBlockingQuestions } from './blocking-questions'
 import { buildAnalysisListingGallery, type ListingGallery } from './image-pipeline'
 import { attachListingImages } from './image-assets'
@@ -403,8 +405,16 @@ async function autoResolveAndResearch(
       const spec = categoryAttributes.find(a => a.id === attrId)
       if (!spec) continue
 
-      // Pular seller_package — não inventar dimensões
-      if (attrId.startsWith('SELLER_PACKAGE_')) continue
+      // Embalagem: estimar pela caixa (produto + folga) quando o produto tem
+      // medidas confirmadas; sem medidas, segue como pergunta ao vendedor.
+      if (attrId.startsWith('SELLER_PACKAGE_')) {
+        const pack = estimateSellerPackage(resolvedAttributes, truth)
+        if (pack.estimated.length) {
+          resolvedAttributes.length = 0
+          resolvedAttributes.push(...pack.attributes)
+        }
+        continue
+      }
 
       const result = await targetedAttributeResearch(config, truth, spec, exactProducts)
       if (result?.value) {
@@ -881,6 +891,25 @@ export async function runGeneration(
 
   const supabase = createAdminClient()
 
+  // RECEITA VISUAL: analisa as fotos do concorrente mais forte que tenha
+  // galeria e guarda a receita para os jobs de imagem replicarem a
+  // estratégia (ângulo, luz, composição, dúvida do comprador) — nunca os pixels.
+  let photoRecipe: PhotoRecipe | null = null
+  const recipeDonor = (research.competitors || [])
+    .filter(d => Array.isArray(d.pictures) && d.pictures.length > 0)
+    .sort((a, b) => (b.competitive_reference_strength || 0) - (a.competitive_reference_strength || 0))[0]
+  if (recipeDonor) {
+    photoRecipe = await observeAnalysisStage(
+      {
+        analysis_id: analysis.id,
+        user_id: analysis.user_id,
+        stage: 'photos',
+        metadata: { donor_item_id: recipeDonor.item_id ?? null, photos: recipeDonor.pictures.length },
+      },
+      () => analyzePhotoRecipe(config, { productName: truth.name, images: recipeDonor.pictures.slice(0, 6).map(url => ({ url })) })
+    ).catch(() => null)
+  }
+
   const listingValues = {
       title: generated.title,
       description: generated.description,
@@ -892,6 +921,8 @@ export async function runGeneration(
         alternatives: generated.title_alternatives,
         improvements: generated.improvements,
         price_rationale: generated.price_rationale,
+        // receita visual do anúncio escalado (fonte das fotos geradas)
+        photo_recipe: photoRecipe,
         // apenas o que o autofill não conseguiu resolver
         missing: enrichment.remaining,
         autofill: enrichment.stats,

@@ -12,6 +12,7 @@ import {
 import { mlGet } from '@/lib/assertive/ml-api'
 import { payloadHash } from '@/lib/assertive/publication-readiness'
 import { z } from 'zod'
+import { auditPublishedItem, type PublicationAudit } from '@/lib/assertive/publication-audit'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -339,12 +340,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .eq('id', listing.analysis_id)
       .eq('user_id', authorizedUser.id)
 
+    // AUDITORIA PÓS-PUBLICAÇÃO (padrão): confirma na conta do vendedor e
+    // completa a qualidade (atributos recomendados que o rascunho já tinha).
+    let audit: PublicationAudit | null = null
+    try {
+      audit = await auditPublishedItem({
+        token,
+        userId: authorizedUser.id,
+        listingId: id,
+        mlItemId: authoritativeItemId || result.item_id!,
+      })
+    } catch {
+      audit = null // auditoria nunca bloqueia o resultado da publicação
+    }
+
     return Response.json({
       ok: true,
       item_id: authoritativeItemId,
       permalink: authoritativePermalink,
       status: authoritativeStatus,
       reconciliation: reconciliation.status,
+      audit,
     })
   } catch (e) {
     if (e instanceof MLNotConnectedError) {

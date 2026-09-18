@@ -5,6 +5,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { isPublishableAttribute } from './attribute-evidence'
 import { generateProductImage, type GenerateProductImageInput, type ProductImageGenerationResult } from './gemini-image'
 import type { ListingAttribute } from './generator'
+import type { PhotoRecipe } from './visual-recipe'
 import {
   createGeneratedAsset,
   downloadOwnedImageAsset,
@@ -36,7 +37,7 @@ interface ProgressiveListingContext {
   analysis_id: string
   status: string
   title: string
-  attributes?: { list?: ListingAttribute[] } | null
+  attributes?: { list?: ListingAttribute[]; photo_recipe?: PhotoRecipe } | null
 }
 
 interface ProgressiveAnalysisContext {
@@ -430,6 +431,21 @@ export async function runReferenceSearchJob(
   }
 }
 
+interface RecipeShot {
+  type?: string
+  angle?: string
+  background?: string
+  lighting?: string
+  composition?: string
+  buyer_doubt?: string
+  overlay_theme?: string | null
+}
+
+/** Tiro da Receita Visual (salvo nos atributos do anúncio), pela posição do job. */
+function readRecipeShot(context: ProgressiveJobExecutionContext, position: number): RecipeShot | undefined {
+  return context.listing.attributes?.photo_recipe?.shots?.[position]
+}
+
 export async function runGenerationSlotJob(
   job: ImageJob,
   context: ProgressiveJobExecutionContext,
@@ -461,6 +477,9 @@ export async function runGenerationSlotJob(
         order: job.position + 1,
         ...normalizedShot,
       },
+      // Receita Visual do anúncio escalado: replica a estratégia da foto
+      // vencedora (ângulo, luz, composição, dúvida do comprador), nunca os pixels.
+      recipeShot: readRecipeShot(context, job.position),
       role: job.role,
       previousFailure: previousFailure(job),
       apiKey: context.config?.provider === 'gemini' ? context.config.api_key : undefined,
