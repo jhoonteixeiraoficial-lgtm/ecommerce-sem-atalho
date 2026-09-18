@@ -39,7 +39,7 @@ interface GroundingSupport {
  * Requer quota de grounding habilitada na chave (planos gratuitos costumam
  * responder 429 RESOURCE_EXHAUSTED assim que `tools` é enviado).
  */
-export async function searchWeb(query: string, maxSources = 6): Promise<WebSearchResult> {
+async function searchWebGrounding(query: string, maxSources = 6): Promise<WebSearchResult> {
   if (process.env.ASSERTIVE_WEB_SEARCH_ENABLED === 'false') {
     return {
       available: false, content: '', sources: [], queries: [],
@@ -145,6 +145,83 @@ export async function searchWeb(query: string, maxSources = 6): Promise<WebSearc
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * Fallback GRATUITO de retrieval: DuckDuckGo HTML, sem chave e sem custo.
+ * Serve ao mesmo contrato do Grounding (trechos + URLs); quem raciocina
+ * sobre as fontes continua sendo o motor de reasoning.
+ */
+async function duckduckgoSearch(query: string, maxSources: number): Promise<WebSearchResult> {
+  const { load } = await import('cheerio')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+      },
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      return {
+        available: false, content: '', sources: [], queries: [],
+        unavailable_reason: `Fallback gratuito de busca indisponível (HTTP ${res.status}).`,
+      }
+    }
+    const html = await res.text()
+    const $ = load(html)
+    const sources: WebSource[] = []
+    $('.result').each((_, node) => {
+      if (sources.length >= maxSources) return
+      const anchor = $(node).find('a.result__a').first()
+      if (!anchor.length) return
+      let url = anchor.attr('href') || ''
+      if (url.includes('duckduckgo.com/l/')) {
+        try { url = new URLSearchParams(new URL(`https:${url.startsWith('//') ? url : `//${url}`}`).search).get('uddg') || '' } catch { url = '' }
+      }
+      const title = anchor.text().replace(/\s+/g, ' ').trim()
+      const snippet = $(node).find('.result__snippet').first().text().replace(/\s+/g, ' ').trim()
+      if (!url.startsWith('https://') || !title) return
+      sources.push({ title, url, snippet })
+    })
+    if (!sources.length) {
+      return {
+        available: false, content: '', sources: [], queries: [],
+        unavailable_reason: 'A busca gratuita não retornou fontes utilizáveis.',
+      }
+    }
+    return {
+      available: true,
+      content: sources.map(s => `${s.title} — ${s.snippet} (${s.url})`).join('\n'),
+      sources,
+      queries: [query],
+    }
+  } catch {
+    return {
+      available: false, content: '', sources: [], queries: [],
+      unavailable_reason: 'Fallback gratuito de busca falhou.',
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Retrieval web: Grounding quando há quota; fallback gratuito (DuckDuckGo) sempre que ele falha. */
+export async function searchWeb(query: string, maxSources = 6): Promise<WebSearchResult> {
+  if (process.env.ASSERTIVE_WEB_SEARCH_ENABLED === 'false') {
+    return {
+      available: false, content: '', sources: [], queries: [],
+      unavailable_reason: 'Busca web complementar desativada para economia; pesquisa no Mercado Livre permanece disponível.',
+    }
+  }
+  const primary = await searchWebGrounding(query, maxSources)
+  if (primary.available) return primary
+  const fallback = await duckduckgoSearch(query, maxSources)
+  if (fallback.available) return fallback
+  return primary
 }
 
 /** Consulta focada em documentação oficial do fabricante. */

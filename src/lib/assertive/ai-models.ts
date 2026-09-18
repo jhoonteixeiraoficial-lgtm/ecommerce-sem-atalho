@@ -17,12 +17,14 @@ export interface AIModelSpec {
 type Env = Record<string, string | undefined>
 
 const GEMINI_MODELS: Record<AIWorkload, string[]> = {
-  reasoning: ['gemini-3.1-pro-preview', 'gemini-pro-latest'],
-  draft: ['gemini-3.8-flash', 'gemini-flash-latest'],
-  vision: ['gemini-3.1-pro-preview', 'gemini-3.8-flash'],
-  visual_fidelity: ['gemini-3.1-pro-preview', 'gemini-3.8-flash'],
-  image_generation: ['gemini-3-pro-image', 'gemini-3.1-flash-image'],
-  search: ['gemini-3.1-pro-preview', 'gemini-pro-latest'],
+  // O mais gratuito possível: Flash/Flash-Lite entram primeiro (tier gratuito
+  // generoso); Pro fica só como fallback de última instância.
+  reasoning: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview', 'gemini-pro-latest'],
+  draft: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest'],
+  vision: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview'],
+  visual_fidelity: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview'],
+  image_generation: ['gemini-3.1-flash-image', 'gemini-3-pro-image'],
+  search: ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
 }
 
 function unique(values: Array<string | undefined>): string[] {
