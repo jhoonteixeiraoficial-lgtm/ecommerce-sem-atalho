@@ -21,6 +21,11 @@ export interface BenchmarkSet {
 
 export function buildBenchmarkSet(competitors: CompetitorDossier[], publicSearch?: PublicSearchSnapshot): BenchmarkSet {
   const ranked = [...competitors].sort((a, b) => {
+    const verifiedExact = (d: CompetitorDossier) => Number(d.match_class === 'EXACT_PRODUCT' && Boolean(d.public_seller_evidence?.verified || d.public_offer_verified))
+    const publicPriority = verifiedExact(b) - verifiedExact(a)
+    if (publicPriority) return publicPriority
+    const exactPriority = Number(b.match_class === 'EXACT_PRODUCT') - Number(a.match_class === 'EXACT_PRODUCT')
+    if (exactPriority) return exactPriority
     if (a.highlight_position !== null && b.highlight_position !== null) {
       return a.highlight_position - b.highlight_position
     }

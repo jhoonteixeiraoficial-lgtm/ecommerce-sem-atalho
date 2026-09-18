@@ -217,6 +217,7 @@ interface Research {
   price_basis?: 'EXACT_PRODUCT' | 'COMPARABLE_PRODUCT' | 'NONE'
   price_stats?: { min: number; max: number; median: number; sample_size: number } | null
   regional?: { status: string; note: string; states: Array<{ state: string; count: number }>; fulfillment_pct: number; free_shipping_pct: number }
+  public_search?: { available: boolean; search_url?: string }
   warnings?: string[]
 }
 
@@ -875,6 +876,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           busy={saving}
           readOnly={isPublished || isPublishing}
           onConfirm={slot => { if (slot.asset_id) void confirmGeneratedImage(slot.asset_id) }}
+          onConfirmAllReviewing={() => {
+            const slots = imageJobSnapshot?.slots ?? []
+            slots.filter(s => s.status === 'REVIEW' && s.asset_id && !s.error_code)
+              .forEach(s => { if (s.asset_id) void confirmGeneratedImage(s.asset_id) })
+          }}
           onRetry={slot => { void retryProgressiveImage(slot) }}
           onRemove={slot => { void removeProgressiveImage(slot) }}
           onOpen={setProgressiveLightbox}
@@ -2098,6 +2104,43 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   Ranking oficial de mais vendidos da categoria. A API do Mercado Livre não informa
                   se a exposição é paga, por isso não classificamos orgânico ou patrocinado.
                 </p>
+
+                {research?.public_search?.available === false && (
+                  <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-4">
+                    <p className="text-amber-400 text-xs font-medium mb-1">
+                      Espionagem automática indisponível para esta busca
+                    </p>
+                    <p className="text-gray-400 text-[10px] mb-2">
+                      Posição real na busca, vendas e vendedor verificado requerem coleta ao vivo.
+                    </p>
+                    <div className="flex gap-2">
+                      {research?.public_search?.search_url && (
+                        <a
+                          href={research.public_search.search_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[11px] px-3 py-1.5 rounded-md transition-colors"
+                        >
+                          Espiar agora
+                        </a>
+                      )}
+                      <button
+                        onClick={async () => {
+                          if (!listing) return
+                          await fetch(`/api/assertive/analyses/${listing.analysis_id}/run`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ from: 'researching' }),
+                          })
+                          window.location.reload()
+                        }}
+                        className="inline-flex items-center gap-1 bg-[#242424] hover:bg-[#2a2a2a] text-gray-300 text-[11px] px-3 py-1.5 rounded-md transition-colors"
+                      >
+                        Atualizar espionagem
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-3">
                   {competitors.slice(0, 5).map((c, i) => (

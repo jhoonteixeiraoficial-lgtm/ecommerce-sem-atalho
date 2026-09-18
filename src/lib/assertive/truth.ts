@@ -1,4 +1,6 @@
 import type { AIConfig } from './types'
+import { comparableVariant } from './variant-identity'
+import { evaluateMatch } from './matching'
 import { generateJson, toDataUri } from './ai'
 import { runVisionBatches } from './ai-router'
 import { mlGet } from './ml-api'
@@ -487,6 +489,7 @@ const ATTR_TO_CANONICAL: Record<string, string> = {
   VOLTAGE: 'voltage',
   POWER: 'power',
   CAPACITY: 'capacity',
+  THERMO_CAPACITY: 'capacity',
   LENGTH: 'length',
   WIDTH: 'width',
   HEIGHT: 'height',
@@ -982,6 +985,7 @@ export function enrichFromCatalog(
     )
 
   if (!matches) return truth
+  const canEnrich = evaluateMatch(truth, {title: productName, attributes: catalogAttributes}).usable_as_fact_source
 
   const fields = { ...truth.fields }
   for (const [attrId, value] of Object.entries(catalogAttributes)) {
@@ -989,9 +993,7 @@ export function enrichFromCatalog(
     if (!key || !value) continue
     const existing = fields[key]
     if (existing) {
-      const sameValue = existing.value
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase()
-        === value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase()
+      const sameValue = comparableVariant(key, existing.value) === comparableVariant(key, value)
       if (sameValue) continue
       const alreadyRecorded = existing.conflict?.some(conflict => conflict.value === value)
       fields[key] = {
@@ -1003,6 +1005,7 @@ export function enrichFromCatalog(
       }
       continue
     }
+    if (!canEnrich) continue
     fields[key] = {
       value,
       confidence: 'high',
@@ -1015,7 +1018,7 @@ export function enrichFromCatalog(
   return finalizeTruth({
     ...truth,
     fields,
-    evidence: [...truth.evidence, `Ficha enriquecida pelo catálogo oficial: ${productName}`],
+    evidence: canEnrich ? [...truth.evidence, `Ficha enriquecida pelo catálogo oficial: ${productName}`] : truth.evidence,
   })
 }
 

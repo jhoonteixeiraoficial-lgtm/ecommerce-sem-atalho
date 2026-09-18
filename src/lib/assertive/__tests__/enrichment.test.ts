@@ -38,6 +38,14 @@ const schema: ClassifiedAttribute[] = [{
 describe('attribute enrichment evidence contract', () => {
   beforeEach(() => runTaskJson.mockReset().mockResolvedValue({ unknown: ['COLOR'] }))
 
+  it('replaces an unconfirmed AI guess with the exact catalog fact', async () => {
+    const result=await enrichAttributes({config:null,truth,schema,skipWeb:true,
+      exactProductAttributes:[{title:'Produto exato',attributes:{COLOR:'Preto'}}],
+      current:[{id:'COLOR',name:'Cor',value_name:'Preto',tier:'required',source:'ai',status:'NEEDS_CONFIRMATION'}]})
+    expect(result.attributes).toEqual([expect.objectContaining({id:'COLOR',status:'AUTO_FILLED',source:'catalog'})])
+    expect(result.stats.from_exact_product).toBe(1)
+  })
+
   it('mantém atributo gerado por IA como NEEDS_CONFIRMATION', async () => {
     const result = await enrichAttributes({
       config: null,
@@ -95,5 +103,44 @@ describe('attribute enrichment evidence contract', () => {
     expect(result.attributes).toEqual([
       expect.objectContaining({ id: 'GTIN', status: 'NEEDS_CONFIRMATION' }),
     ])
+  })
+
+  it('preserva user override mesmo quando catálogo exato tenta sobrescrever', async () => {
+    const result = await enrichAttributes({
+      config: null,
+      truth,
+      schema,
+      exactProductAttributes: [{ title: 'Produto exato', attributes: { COLOR: 'Preto' } }],
+      current: [{ id: 'COLOR', name: 'Cor', value_name: 'Azul', tier: 'required', source: 'user' }],
+      skipWeb: true,
+    })
+
+    expect(result.attributes).toEqual([
+      expect.objectContaining({ id: 'COLOR', value_name: 'Azul', status: 'USER_OVERRIDE', source: 'user' }),
+    ])
+    expect(result.stats.from_exact_product).toBe(0)
+  })
+
+  it('prioriza ProductTruth sobre catálogo exato', async () => {
+    const truthWithColor: ProductTruth = {
+      name: 'Produto com truth',
+      fields: { color: { value: 'Vermelho', source: 'user', confidence: 'confirmed', status: 'CONFIRMED', evidence: 'Cor confirmada pelo vendedor' } },
+      uncertain: [],
+      evidence: [],
+      confidence: 1,
+    }
+
+    const result = await enrichAttributes({
+      config: null,
+      truth: truthWithColor,
+      schema,
+      exactProductAttributes: [{ title: 'Produto exato', attributes: { COLOR: 'Preto' } }],
+      skipWeb: true,
+    })
+
+    expect(result.attributes).toEqual([
+      expect.objectContaining({ id: 'COLOR', value_name: 'Vermelho', status: 'CONFIRMED', source: 'truth' }),
+    ])
+    expect(result.stats.from_exact_product).toBe(0)
   })
 })

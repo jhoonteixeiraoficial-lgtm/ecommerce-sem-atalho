@@ -107,7 +107,18 @@ function put(
   evidence?: string,
   source_url?: string
 ): boolean {
-  if (out.has(spec.id)) return false
+  const isUserOverride = source === 'user' || status === 'USER_OVERRIDE' || status === 'CONFIRMED' || source === 'truth'
+  if (out.has(spec.id)) {
+    const existing = out.get(spec.id)!
+    const existingIsStrong =
+      existing.source === 'user'
+      || existing.status === 'USER_OVERRIDE'
+      || existing.source === 'truth'
+      || existing.status === 'CONFIRMED'
+    const incomingIsStrong = isUserOverride
+    if (existingIsStrong && !incomingIsStrong) return false
+    if (existingIsStrong && incomingIsStrong && existing.source === 'user') return false
+  }
   const value = rawValue?.trim()
   if (!value) return false
 
@@ -119,7 +130,7 @@ function put(
     if (match) {
       value_id = match.id
       value_name = match.name
-    } else if (spec.fixedValues) {
+    } else if (spec.fixedValues && !isUserOverride) {
       return false
     }
   }

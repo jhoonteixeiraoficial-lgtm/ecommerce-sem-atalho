@@ -4,6 +4,7 @@ import { evaluateMatch, buildCompetitorMatrix, type MatchClass, type MatrixKey }
 import type { ProductTruth } from './truth'
 import { buildBenchmarkSet, type BenchmarkSet } from './benchmark'
 import { loadPublicSearch } from './public-search-cache'
+import { loadPublicCompetitors } from './public-competitors'
 import type { PublicSearchSnapshot } from './public-search'
 import type { VisualReferenceCandidate, VisualReferenceSource } from './visual-references'
 
@@ -131,6 +132,12 @@ export interface CompetitorDossier {
    * Sem essa informação, não afirmamos orgânico nem patrocinado.
    */
   exposure: 'ORGANIC' | 'SPONSORED' | 'UNKNOWN'
+  /** Evidência pública do vendedor (somente quando vinculada a página verificada). */
+  public_seller_evidence?: import('./seller-evidence').SellerEvidence
+  /** Verdadeiro quando o item_id observado na página pública casa exatamente com este dossiê. */
+  public_offer_verified?: boolean
+  /** URL da página pública de onde este dossiê foi originado. */
+  source_url?: string
 }
 
 export interface RegionalRadar {
@@ -736,6 +743,41 @@ export async function researchMarket(
   })
 
   const valid = dossiers.filter((d): d is CompetitorDossier => d !== null)
+
+  // Enriquecimento público: páginas de anúncio verificadas (coletor do
+  // navegador ou ScrapingBee) somam fotos, descrição real, vendas observadas
+  // e exposição orgânica aos dossiês de catálogo com o mesmo item_id.
+  if (publicSearch.available) {
+    try {
+      const publicDossiers = await loadPublicCompetitors(publicSearch, opts.truth)
+      for (const pd of publicDossiers) {
+        const existing = valid.find(d => d.item_id && d.item_id === pd.item_id)
+        if (existing) {
+          existing.public_seller_evidence = pd.public_seller_evidence
+          existing.public_offer_verified = true
+          existing.source_url = pd.source_url
+          existing.exposure = 'ORGANIC'
+          existing.competitive_reference_strength += pd.competitive_reference_strength
+          existing.strength_evidence.push(...pd.strength_evidence)
+          if (pd.short_description && !existing.short_description) existing.short_description = pd.short_description
+          for (const [key, value] of Object.entries(pd.attributes)) {
+            if (!existing.attributes[key]) existing.attributes[key] = value
+          }
+          existing.attribute_count = Object.keys(existing.attributes).length
+          const conhecidas = new Set(existing.pictures)
+          for (const foto of pd.pictures) {
+            if (!conhecidas.has(foto)) {
+              existing.pictures.push(foto)
+              conhecidas.add(foto)
+            }
+          }
+          existing.picture_count = existing.pictures.length
+        } else {
+          valid.push(pd)
+        }
+      }
+    } catch { /* evidência pública indisponível não derruba a pesquisa */ }
+  }
 
   // Classifica identidade: separa quem pode virar FATO de quem é só referência.
   if (opts.truth) {

@@ -1,4 +1,5 @@
 import 'server-only'
+import { comparableVariant } from './variant-identity'
 
 import { createHash } from 'node:crypto'
 import { createReferenceAsset, type ImageAsset, type ImageOrigin } from './image-assets'
@@ -72,26 +73,6 @@ function firstAttribute(attributes: Record<string, string>, keys: string[]): str
   return keys.map(key => attributes[key]).find(Boolean)
 }
 
-function comparableVariant(key: string, value: string): string {
-  if (key === 'color') {
-    // Only grammatical equivalents; do not collapse finishes or colour combinations.
-    const color = normalized(value)
-    const equivalents: Record<string, string> = {
-      preta: 'preto', branca: 'branco', vermelha: 'vermelho',
-      amarela: 'amarelo', dourada: 'dourado', prateada: 'prateado', roxa: 'roxo',
-    }
-    return equivalents[color] || color
-  }
-  if (key === 'capacity') {
-    const volume = value.trim().match(/^(\d+(?:[.,]\d+)?)\s*(ml|mililitros?|l|litros?)$/i)
-    if (volume) {
-      const amount = Number(volume[1].replace(',', '.'))
-      const millilitres = amount * (/^m/i.test(volume[2]) ? 1 : 1000)
-      if (Number.isFinite(millilitres) && millilitres > 0) return `volume-ml:${millilitres}`
-    }
-  }
-  return normalized(value)
-}
 
 function confirmedVariantConflicts(truth: ProductTruth, attributes: Record<string, string>): string[] {
   const checks: Array<[string, string[], string]> = [
@@ -99,7 +80,7 @@ function confirmedVariantConflicts(truth: ProductTruth, attributes: Record<strin
     ['material', ['MATERIAL', 'BODY_MATERIAL'], 'Material'],
     ['voltage', ['VOLTAGE'], 'Voltagem'],
     ['power', ['POWER'], 'Potência'],
-    ['capacity', ['CAPACITY'], 'Capacidade'],
+    ['capacity', ['CAPACITY', 'THERMO_CAPACITY'], 'Capacidade'],
     ['units_per_pack', ['UNITS_PER_PACK'], 'Quantidade'],
     ['line', ['LINE'], 'Linha'],
     ['variant', ['VARIANT'], 'Variante'],
@@ -108,8 +89,8 @@ function confirmedVariantConflicts(truth: ProductTruth, attributes: Record<strin
     const truthField = truth.fields[truthKey]
     const confirmed = truthField?.confidence === 'confirmed'
       || ['CONFIRMED', 'AUTO_FILLED', 'USER_OVERRIDE'].includes(truthField?.status || '')
-    const candidateValue = firstAttribute(attributes, candidateKeys)
-    return confirmed && candidateValue && comparableVariant(truthKey, truthField.value) !== comparableVariant(truthKey, candidateValue)
+    const candidateValues = candidateKeys.map(key => attributes[key]).filter(Boolean)
+    return confirmed && candidateValues.some(value => comparableVariant(truthKey, truthField.value) !== comparableVariant(truthKey, value))
       ? [label]
       : []
   })
@@ -162,7 +143,9 @@ export function evaluateVisualReference(
   const normalizedModel = normalized(truthModel)
   const titleHasModel = normalizedModel.length >= 4 && titleContainsExactIdentifier(candidate.title, truthModel)
   const titleHasBrand = !truthBrand || titleContainsExactIdentifier(candidate.title, truthBrand)
-  if (titleHasModel && titleHasBrand) {
+  // Catalogs expose structured identity; a loose title must not override it.
+  if (candidate.source === 'WEB' && titleHasModel && titleHasBrand
+    && (!candidateBrand || brandMatches) && (!candidateModel || modelMatches)) {
     reasons.push('MODEL_IN_TITLE')
     confidence = Math.max(confidence, 0.82)
   }

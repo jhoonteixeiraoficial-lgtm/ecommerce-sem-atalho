@@ -1,0 +1,69 @@
+{
+  "handoff_version": 1,
+  "gerado_em": "2026-09-17T22:30:00-03:00",
+  "projeto": {
+    "nome": "ecommerce-sem-atalho (recurso Assertive)",
+    "caminho_local": "C:\\Users\\jonat\\Desktop\\projetos\\ecommerce-sem-atalho",
+    "deploy_qa": "https://ecommerce-sem-atalho-qa-jhoonteixeiraoficial-7398.vercel.app",
+    "stack": "Next.js 16 App Router + Supabase + Vitest + Cheerio",
+    "env": ".env.local (SUPABASE service key, SCRAPINGBEE_API_KEY, GEMINI/GROQ, ML_CLIENT_ID/SECRET)"
+  },
+  "objetivo": "Espionagem REAL dos melhores anúncios do Mercado Livre: usuário manda foto/descrição/link → app identifica produto → espia mais vendidos (busca real + catálogo oficial) → analisa concorrentes (fotos, título, descrição, atributos) → gera anúncio melhor pronto para publicar via API oficial.",
+  "diagnostico_confirmado": [
+    "Mercado Livre bloqueia coleta servidor: curl/Node recebem redirect account-verification",
+    "ScrapingBee PREMIUM+JS também bloqueado: devolve página suspicious-traffic-frontend (teste ao vivo 17/09 queimou 25 créditos)",
+    "CRÍTICO: loadPublicCompetitors() era exportado mas NUNCA chamado — páginas públicas nunca alimentavam os concorrentes mesmo quando coletadas",
+    "Análise real da Soprano: public_search.available=false, competitors só do catálogo, price_stats sample_size=1",
+    "API oficial ML: /sites/MLB/search e /items/{id} de terceiros = 403 (documentado em ml-api.ts); catálogo + highlights FUNCIONAM com token OAuth do vendedor"
+  ],
+  "solucao_em_construcao": {
+    "nome": "Espionagem ao Vivo — coletor passivo no navegador",
+    "principio": "O ML não bloqueia navegador humano. Userscript lê as páginas públicas que o próprio usuário abre e envia ao app. GRATUITO, impossível de bloquear, seguro para a conta (passivo: sem cookies ML, sem cliques, sem publicação)",
+    "camadas": [
+      "1. Automática (sempre): API oficial ML — catálogo, mais vendidos por categoria (highlights), preços, fotos, atributos",
+      "2. Ao vivo (coletor): posição real na busca + selo MAIS VENDIDO + '+N vendidos' + vendedor verificado — cache coletivo 6h para toda a comunidade",
+      "3. Assist opcional: botão 'Espiar agora' abre busca ML ~10s, coletor captura, usuário re-executa pesquisa"
+    ]
+  },
+  "arquivos_criados_17_09": [
+    "supabase/migrations/20260917210000_assertive_collect_tokens.sql — tabela assertive_collect_tokens (APLICAR NO SUPABASE AINDA!)",
+    "src/lib/assertive/collect-token.ts — token esc_<48hex> por usuário: getUserCollectToken/rotateUserCollectToken/resolveCollectToken",
+    "src/lib/assertive/public-html-sanitize.ts — sanitizaHtmlPdp (fragmentos PDP), ehPaginaAntiBot, extrairItemIdDaUrl",
+    "src/app/api/assertive/collect/route.ts — ingestão POST {kind:search|listing,url,html} com CORS p/ userscript, auth Bearer esc_, rate limit 60/min, salva em assertive_ml_cache nas chaves PUBLIC_SEARCH:v1:... e PUBLIC_LISTING:v1/PUBLIC_LISTING_ID:v1",
+    "src/app/api/assertive/collect/token/route.ts — GET cria/retorna token, POST {action:rotate} renova",
+    "src/app/api/assertive/collect/script.user.js/route.ts — serve userscript personalizado com token embutido (instalação 1 clique Tampermonkey)",
+    "scripts/diag-assertive.mjs — diagnóstico read-only do estado (análise, listing, orçamento, cache)",
+    "scripts/diag-scrapingbee.mjs — checa cache público + saldo ScrapingBee",
+    "scripts/test-public-collector.mjs — teste ao vivo da coleta (CUSTA créditos se passar)"
+  ],
+  "arquivos_modificados_17_09": [
+    "src/lib/assertive/public-search-cache.ts — normalize() agora remove acentos (NFD): consulta 'térmica' da IA casa com slug 'termica' da URL navegada (chaves de cache compatíveis)",
+    "src/lib/assertive/public-competitors.ts — loadPublicCompetitors lê fallback PUBLIC_LISTING_ID:v1:<item_id> quando URL difere; binding 'Anúncio #NNN' na página é a garantia de identidade",
+    "src/lib/assertive/research.ts — AGORA CHAMA loadPublicCompetitors (furo corrigido!): enriquece dossiês de catálogo com fotos/descrição/vendas/evidência pública por item_id; push se item novo",
+    "src/app/membros/assertive-ecommerce-ia/config/page.tsx — painel 'Espionagem ao Vivo': instalação, token, rotate, aviso de segurança",
+    "src/app/membros/assertive-ecommerce-ia/analise/[id]/page.tsx — card opcional 'Abrir busca no Mercado Livre' pré-geração"
+  ],
+  "pendencias_em_ordem": [
+    "1. EDITOR: adicionar banner 'Espiar agora + Atualizar espionagem' em src/app/membros/assertive-ecommerce-ia/editor/[id]/page.tsx — interface Research (linha ~213) adicionar public_search?:{available:boolean;search_url?:string}; inserir banner na seção 'Referências analisadas' (linha ~2093) quando research.public_search.available===false; botão atualizar chama POST /api/assertive/analyses/{listing.analysis_id}/run {from:'researching'} e recarrega (pipeline preserva edições do usuário)",
+    "2. TESTES: escrever vitest para collect route (mock requireCommunityUser NÃO — usa resolveCollectToken, mockar @/lib/assertive/collect-token + @/lib/supabase/admin + @/lib/security), collect-token (regex/mask), normalização de acentos, fallback por item_id",
+    "3. VERIFICAR: npx tsc --noEmit e npm test (suite era 814/814 verde antes)",
+    "4. MIGRATION: aplicar 20260917210000_assertive_collect_tokens.sql no Supabase (SQL Editor) — tabela + RLS service-role-only",
+    "5. E2E: mintar token via REST (insert em assertive_collect_tokens p/ user d8c3528e-471e-4835-85a6-c9effb38fdf2), npm run dev, abrir ML real num browser (o in-app browser Chromium do ZCode passa anti-bot), extrair outerHTML e POSTar em /api/assertive/collect; conferir assertive_ml_cache via scripts/diag-assertive.mjs; depois re-executar a análise da Soprano pela UI e validar research.public_search.available=true e concorrentes enriquecidos (source_url/strength_evidence públicos)",
+    "6. COMMIT + deploy Vercel (projeto usa push → deploy automático QA)"
+  ],
+  "ids_de_teste": {
+    "listing_garrafa_soprano": "872613d8-5ec1-40e0-ae5e-5ad3e5e2cfbb",
+    "analysis_garrafa_soprano": "2b3b8401-5a9e-4b9f-ae05-2dbe398341e9",
+    "user_id": "d8c3528e-471e-4835-85a6-c9effb38fdf2",
+    "produto": "Garrafa térmica Soprano Cristal 1L preta",
+    "categoria": "MLB33388 Garrafas de Café"
+  },
+  "regras_de_seguranca_inviolaveis": [
+    "NUNCA usar cookies/sessão ML do usuário em código servidor",
+    "NUNCA automatizar cliques/publicações no site ML (publicação só via API oficial OAuth)",
+    "Coletor só lê páginas públicas que o usuário abre; envia apenas para o app",
+    "parseSellerEvidence exige 'Anúncio #NNN' casando com item_id — página não confirmada nunca vira evidência",
+    "Rate limit ingestão 60/min por usuário; CORS liberado é seguro (auth por bearer token próprio, sem cookies)"
+  ],
+  "como_continuar_prompt_sugerido": "Leia HANDOFF_ESPIAO.md e handoff-espiao.json na raiz de C:\\Users\\jonat\\Desktop\\projetos\\ecommerce-sem-atalho e continue as pendências em ordem. Comece pelo banner do editor, rode typecheck+testes, aplique a migration e faça o E2E da Soprano."
+}

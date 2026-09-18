@@ -37,6 +37,18 @@ describe('buildBenchmarkSet', () => {
     expect(set.primary?.evidence).toContain('Mais vendidos da categoria: posição #2')
   })
 
+  it('prioriza o anúncio exato verificado na busca pública sobre referência só de categoria', () => {
+    const verified = dossier({item_id:'MLB999',match_class:'EXACT_PRODUCT',competitive_reference_strength:80,public_seller_evidence:{verified:true} as CompetitorDossier['public_seller_evidence']})
+    const set=buildBenchmarkSet([dossier({highlight_position:1}),verified])
+    expect(set.primary?.item_id).toBe('MLB999')
+  })
+  it('keeps exact official offers ahead of unrelated bestsellers without inventing public rank', () => {
+    const set=buildBenchmarkSet([dossier({highlight_position:1,match_class:'CATEGORY_REFERENCE'}),dossier({item_id:'MLB999',match_class:'EXACT_PRODUCT',competitive_reference_strength:10})])
+    expect(set.primary?.item_id).toBe('MLB999')
+    expect(set.primary?.kind).toBe('STRONGEST_REFERENCE')
+    expect(set.primary?.evidence.some(e=>e.includes('Busca pública:'))).toBe(false)
+  })
+
   it('rotula vencedor heurístico apenas como referência mais forte', () => {
     const set = buildBenchmarkSet([dossier({ highlight_position: null })])
     expect(set.primary?.kind).toBe('STRONGEST_REFERENCE')

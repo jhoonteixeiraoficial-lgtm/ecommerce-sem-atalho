@@ -364,6 +364,27 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
               )}
             </button>
 
+            {productName.trim() && (
+              <details className="mt-3 bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3">
+                <summary className="text-gray-400 text-xs cursor-pointer select-none">
+                  🕵️ Opcional: deixar a espionagem ainda mais precisa (30 segundos)
+                </summary>
+                <p className="text-gray-500 text-xs mt-2 leading-relaxed">
+                  Com o coletor instalado (Configurações → Espionagem ao Vivo),
+                  abra a busca do Mercado Livre abaixo, espere ~10 segundos e feche.
+                  O anúncio sai com posição real da busca e vendas dos concorrentes.
+                </p>
+                <a
+                  href={`https://lista.mercadolivre.com.br/${encodeURIComponent(productName.trim().replace(/\s+/g, '-').toLowerCase())}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 mt-2 text-amber-400 hover:text-amber-300 text-xs font-medium"
+                >
+                  🎯 Abrir busca no Mercado Livre ↗
+                </a>
+              </details>
+            )}
+
             {analysis?.status === 'failed' && (
               <button
                 onClick={() => router.push('/membros/assertive-ecommerce-ia/novo')}

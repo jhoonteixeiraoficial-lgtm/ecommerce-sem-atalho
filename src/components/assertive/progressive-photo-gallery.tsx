@@ -23,6 +23,8 @@ interface ProgressivePhotoGalleryProps {
   onRemove(slot: ImageJobSlot): void
   onOpen(slot: ImageJobSlot): void
   onUpload(position: number): void
+  /** Quando houver slots prontos para revisão e o usuário quiser aprovar todos de uma vez. */
+  onConfirmAllReviewing?(): void
 }
 
 const ROLE_LABELS: Record<ImageJobSlot['role'], string> = {
@@ -70,7 +72,10 @@ export function ProgressivePhotoGallery({
   onRemove,
   onOpen,
   onUpload,
+  onConfirmAllReviewing,
 }: ProgressivePhotoGalleryProps) {
+  const reviewSlots = snapshot.slots.filter(s => s.status === 'REVIEW' && Boolean(s.asset_id))
+  const canBulkConfirm = !readOnly && reviewSlots.length >= 2 && Boolean(onConfirmAllReviewing)
   const completion = Math.round((snapshot.ready_count / snapshot.target_count) * 100)
 
   return (
@@ -90,6 +95,17 @@ export function ProgressivePhotoGallery({
               Seis composições independentes, baseadas apenas nas referências confirmadas do produto.
             </p>
           </div>
+          {canBulkConfirm && (
+            <button
+              type="button"
+              onClick={onConfirmAllReviewing}
+              className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300"
+              aria-label={`Aprovar todas as ${reviewSlots.length} fotos em revisão`}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Aprovar {reviewSlots.length} em revisão
+            </button>
+          )}
         </div>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">

@@ -3,7 +3,15 @@ import { collectPublicSearch } from './public-search-collector'
 import { publicSearchUrl, type PublicSearchSnapshot } from './public-search'
 
 const MAX_AGE_MS = 6 * 60 * 60 * 1000
-const normalize = (query: string) => query.trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR')
+// Normalização compartilhada entre a consulta da pesquisa (com acentos,
+// vinda da IA) e a consulta derivada da URL navegada (sem acentos, slug do
+// Mercado Livre). Sem isso, "térmica" e "termica" gerariam chaves distintas.
+const normalize = (query: string) => query
+  .trim()
+  .replace(/\s+/g, ' ')
+  .toLocaleLowerCase('pt-BR')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
 export function publicSearchCacheKey(query: string): string {
   return `PUBLIC_SEARCH:v1:MLB:br:${createHash('sha256').update(normalize(query)).digest('hex')}`
 }

@@ -47,11 +47,14 @@ export default function ConfigPage() {
   const [saved, setSaved] = useState(false)
 
   const [ml, setMl] = useState<{ connected: boolean; nickname?: string; account_model?: string } | null>(null)
+  const [collector, setCollector] = useState<{ token: string } | null>(null)
+  const [rotating, setRotating] = useState(false)
 
   const load = useCallback(async () => {
-    const [cfg, mlStatus] = await Promise.all([
+    const [cfg, mlStatus, collectToken] = await Promise.all([
       fetch('/api/assertive/ai/config').then(r => r.json()),
       fetch('/api/assertive/ml/status').then(r => r.json()).catch(() => ({ connected: false })),
+      fetch('/api/assertive/collect/token').then(r => (r.ok ? r.json() : null)).catch(() => null),
     ])
     setConfig(cfg)
     setProvider(cfg.provider || 'gemini')
@@ -59,6 +62,7 @@ export default function ConfigPage() {
     setModel(cfg.model || '')
     setTone(cfg.default_tone || 'profissional')
     setMl(mlStatus)
+    setCollector(collectToken)
     setLoading(false)
   }, [])
 
@@ -127,6 +131,17 @@ export default function ConfigPage() {
     load()
   }
 
+  async function rotateCollector() {
+    setRotating(true)
+    const res = await fetch('/api/assertive/collect/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'rotate' }),
+    })
+    if (res.ok) setCollector(await res.json())
+    setRotating(false)
+  }
+
   if (loading || !config) {
     return (
       <div className="min-h-screen bg-[#0c0c0c] flex items-center justify-center">
@@ -188,6 +203,70 @@ export default function ConfigPage() {
               </button>
             </div>
           )}
+        </section>
+
+        {/* Coletor do navegador — Espionagem ao Vivo */}
+        <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 mb-5">
+          <h2 className="text-white font-semibold flex items-center gap-2 mb-1">
+            🕵️ Espionagem ao Vivo (coletor do navegador)
+          </h2>
+          <p className="text-gray-500 text-xs mb-4 leading-relaxed">
+            Envia ao Assertive as páginas públicas do Mercado Livre que você
+            já visita — busca e anúncios de concorrentes — para a espionagem
+            usar posição real, selo MAIS VENDIDO e vendas observadas.
+            Cada página coletada vale por 6 horas para toda a comunidade.
+          </p>
+
+          <ol className="text-gray-400 text-xs space-y-1.5 mb-4 list-decimal list-inside">
+            <li>
+              Instale a extensão gratuita{' '}
+              <a
+                href="https://www.tampermonkey.net/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber-400 hover:underline"
+              >
+                Tampermonkey
+              </a>{' '}
+              (ou Violentmonkey)
+            </li>
+            <li>Clique em <strong className="text-gray-300">Instalar coletor</strong> — o token já vai embutido, nada para configurar</li>
+            <li>Navegue no Mercado Livre normalmente. Aparece o selo 🕵️ no canto da página quando ela conta para o dossiê</li>
+          </ol>
+
+          <div className="flex flex-wrap gap-2">
+            <a
+              href="/api/assertive/collect/script.user.js"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bg-amber-500 text-black text-sm font-semibold px-4 py-2 rounded-lg hover:bg-amber-400 transition"
+            >
+              Instalar coletor
+            </a>
+            <button
+              onClick={rotateCollector}
+              disabled={rotating || !collector}
+              className="inline-flex items-center gap-1.5 bg-[#1c1c1c] text-gray-300 text-sm px-4 py-2 rounded-lg hover:bg-[#242424] transition disabled:opacity-40"
+            >
+              {rotating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              Trocar token
+            </button>
+          </div>
+
+          {collector && (
+            <p className="text-gray-600 text-[11px] mt-3 break-all">
+              Token atual: {collector.token.slice(0, 12)}••••••••
+            </p>
+          )}
+
+          <div className="flex gap-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mt-4">
+            <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            <p className="text-emerald-200/70 text-xs leading-relaxed">
+              Seguro para a sua conta: o coletor é passivo — só lê páginas
+              públicas que você mesmo abre. Não usa seu login, não clica e não
+              publica nada no Mercado Livre.
+            </p>
+          </div>
         </section>
 
         {/* IA */}

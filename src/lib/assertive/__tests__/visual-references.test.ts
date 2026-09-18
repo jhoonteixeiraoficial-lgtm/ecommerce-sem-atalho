@@ -64,6 +64,14 @@ function candidate(overrides: Partial<VisualReferenceCandidate> = {}): VisualRef
   }
 }
 
+describe('category-specific visual capacity', () => {
+  it('rejects an official 500ml reference for a confirmed 1L product', () => {
+    const product = truth({fields:{brand:{value:'Soprano',confidence:'confirmed',source:'user',evidence:'vendedor'},model:{value:'Cristal',confidence:'confirmed',source:'user',evidence:'vendedor'},capacity:{value:'1 litro',confidence:'confirmed',source:'user',evidence:'vendedor'}}})
+    const reference = candidate({attributes:{BRAND:'Soprano',MODEL:'Cristal',THERMO_CAPACITY:'500 mL'}})
+    expect(evaluateVisualReference(product,reference).accepted).toBe(false)
+  })
+})
+
 function imageAsset(overrides: Partial<ImageAsset> = {}): ImageAsset {
   return {
     id: 'asset-1',
@@ -117,6 +125,11 @@ beforeEach(() => {
 })
 
 describe('visual reference identity boundary', () => {
+  it('rejects title-only catalog references when the official identity is incomplete', () => {
+    const product=truth({name:'Garrafa Soprano Cristal 1L preta',source_item_id:undefined,source_catalog_product_id:undefined,fields:{brand:{value:'Soprano',confidence:'confirmed',source:'user',evidence:'Vendedor'},model:{value:'Cristal',confidence:'confirmed',source:'user',evidence:'Vendedor'},color:{value:'preta',confidence:'confirmed',source:'user',evidence:'Vendedor'}}})
+    expect(evaluateVisualReference(product,candidate({source:'ML_CATALOG',title:'Garrafa Termica Soprano Cristal 1l Branca 09003.0160.02',attributes:{BRAND:'Soprano',MODEL:'09003.0160.02'},source_item_id:null,source_catalog_product_id:'MLB38088419'})).accepted).toBe(false)
+  })
+
   it.each([
     ['preta', 'Preto', '1 litro', '1000 mL', true],
     ['preta', 'Preto', '1,5 L', '1500 ml', true],

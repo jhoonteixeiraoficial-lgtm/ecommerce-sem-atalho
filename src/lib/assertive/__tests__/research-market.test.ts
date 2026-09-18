@@ -108,6 +108,7 @@ describe('researchMarket', () => {
     })
   })
 
+
   it('propaga a coleta pública ao benchmark da oferta exata', async () => {
     const snapshot = { available: true, query: truth.name, observed_at: '2026-09-17T12:00:00Z', search_url: 'https://lista.mercadolivre.com.br/caneta', entries: [{ position: 2, organic_position: 1, sponsored: false, item_id: 'MLB200', catalog_product_id: null, title: 'Caneta', url: 'https://produto.mercadolivre.com.br/MLB-200-caneta_JM', bestseller_badge: false, sold_quantity: null }] }
     mocks.loadPublicSearch.mockResolvedValue(snapshot)
@@ -198,38 +199,6 @@ describe('exactFactSources', () => {
     } as ResearchResult)
 
     expect(urls[0]).toBe('https://cdn.example/best-seller.jpg')
-    expect(urls).toContain('https://cdn.example/catalog.jpg')
-  })
-
-  it('expands exact marketplace pictures without loading offer facts', async () => {
-    mocks.mlGet.mockClear()
-    const visualTruth: ProductTruth = {
-      ...truth,
-      source_item_id: 'MLB100',
-      source_catalog_product_id: 'MLBP1',
-      source_pictures: ['https://example.com/source-own.jpg'],
-      source_permalink: 'https://produto.mercadolivre.com.br/MLB-100',
-    }
-
-    const candidates = await searchMarketplaceVisualReferences('token', visualTruth, 8)
-
-    expect(candidates).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        source: 'ML_SOURCE',
-        image_url: 'https://example.com/source-own.jpg',
-        source_item_id: 'MLB100',
-      }),
-      expect.objectContaining({
-        source: 'ML_SOURCE',
-        image_url: 'https://example.com/catalog.jpg',
-        source_catalog_product_id: 'MLBP1',
-      }),
-      expect.objectContaining({
-        source: 'ML_COMPETITOR',
-        image_url: 'https://example.com/competitor.jpg',
-        source_item_id: 'MLB200',
-      }),
-    ]))
-    expect(mocks.mlGet.mock.calls.map(([path]) => String(path)).some(path => path.endsWith('/items'))).toBe(false)
-  })
-})
+        expect(urls).toContain('https://cdn.example/catalog.jpg')
+      })
+    })

@@ -1,4 +1,5 @@
 import type { ProductTruth } from './truth'
+import { comparableVariant } from './variant-identity'
 
 /**
  * Separação fundamental do Assertive:
@@ -38,10 +39,12 @@ function modelEquivalent(a: string, b: string): boolean {
   // NÃO aceita sufixo puramente numérico: "ka250" != "ka2503" (modelo diferente)
   if (nb.startsWith(na)) {
     const suffix = nb.slice(na.length)
+    if (!/\d/.test(na)) return false
     return suffix.length > 0 && /^[a-z]/.test(suffix)
   }
   if (na.startsWith(nb)) {
     const suffix = na.slice(nb.length)
+    if (!/\d/.test(nb)) return false
     return suffix.length > 0 && /^[a-z]/.test(suffix)
   }
   return false
@@ -116,7 +119,7 @@ export function evaluateMatch(truth: ProductTruth, candidate: CandidateIdentity)
     ['material', ['MATERIAL', 'BODY_MATERIAL'], 'Material'],
     ['voltage', ['VOLTAGE'], 'Voltagem'],
     ['power', ['POWER'], 'Potência'],
-    ['capacity', ['CAPACITY'], 'Capacidade'],
+    ['capacity', ['CAPACITY', 'THERMO_CAPACITY'], 'Capacidade'],
     ['units_per_pack', ['UNITS_PER_PACK'], 'Quantidade'],
     ['line', ['LINE'], 'Linha'],
     ['variant', ['VARIANT'], 'Variante'],
@@ -125,8 +128,8 @@ export function evaluateMatch(truth: ProductTruth, candidate: CandidateIdentity)
     const truthField = truth.fields[truthKey]
     const isConfirmed = truthField?.confidence === 'confirmed'
       || ['CONFIRMED', 'AUTO_FILLED', 'USER_OVERRIDE'].includes(truthField?.status || '')
-    const candidateValue = attributeIds.map(id => attrs[id]).find(Boolean)
-    return isConfirmed && candidateValue && norm(truthField.value) !== norm(candidateValue) ? [label] : []
+    const candidateValues = attributeIds.map(id => attrs[id]).filter(Boolean)
+    return isConfirmed && candidateValues.some(value => comparableVariant(String(truthKey), truthField.value) !== comparableVariant(String(truthKey), value)) ? [label] : []
   })
   for (const label of variantConflicts) reasons.push(`${label} divergente`)
   score = Math.max(0, score - variantConflicts.length * 40)
