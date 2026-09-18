@@ -350,12 +350,22 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setQuantity(String(data.available_quantity || 1))
     setAttributeDrafts(Object.fromEntries((data.attributes?.list || []).map(attribute => [attribute.id, attribute.value_name])))
 
+    // Mínimo de digitação: sem preço confirmado, sugere o valor mediano das
+    // ofertas comparáveis (levemente abaixo da mediana). Sigue editável.
     const aRes = await fetch(`/api/assertive/analyses/${data.analysis_id}`)
     if (aRes.ok) {
       const aData = await aRes.json()
-      setResearch(aData.analysis?.research || null)
+      const research = aData.analysis?.research || null
+      setResearch(research)
+      if (data.price == null && research?.price_stats?.median > 0) {
+        const stats = research.price_stats as { min: number; max: number; median: number }
+        const suggested = Math.max(stats.min, Math.round(stats.median * 0.97 * 100) / 100)
+        setPrice(String(suggested))
+        save({ price: suggested })
+      }
     }
     setLoading(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   const refreshShippingAvailability = useCallback(async () => {
