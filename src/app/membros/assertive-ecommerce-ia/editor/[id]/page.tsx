@@ -305,6 +305,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
   const [listing, setListing] = useState<Listing | null>(null)
   const [research, setResearch] = useState<Research | null>(null)
+  const [refreshingResearch, setRefreshingResearch] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [validating, setValidating] = useState(false)
@@ -2091,7 +2092,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             </section>
 
             {/* referências */}
-            {competitors.length > 0 && (
+            {research && (
               <section className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
                 <h2 className="text-white font-semibold flex items-center gap-2 mb-1">
                   <Trophy className="w-4 h-4 text-amber-500" /> Referências analisadas
@@ -2101,17 +2102,18 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   {research?.exact_product_count ? ` · ${research.exact_product_count} do produto exato` : ''}
                 </p>
                 <p className="text-gray-600 text-[10px] mb-4 leading-relaxed">
-                  Ranking oficial de mais vendidos da categoria. A API do Mercado Livre não informa
-                  se a exposição é paga, por isso não classificamos orgânico ou patrocinado.
+                  Catálogo, destaques oficiais e páginas públicas são fontes diferentes.
+                  Posição observada na busca não comprova liderança em vendas.
                 </p>
 
-                {research?.public_search?.available === false && (
+                {research && (
                   <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-4">
                     <p className="text-amber-400 text-xs font-medium mb-1">
-                      Espionagem automática indisponível para esta busca
+                      {research.public_search?.available ? 'Referências públicas disponíveis' : 'Complementar com páginas públicas (opcional)'}
                     </p>
                     <p className="text-gray-400 text-[10px] mb-2">
-                      Posição real na busca, vendas e vendedor verificado requerem coleta ao vivo.
+                      Com o coletor instalado em Configurações, abra a busca e clique em “Enviar esta página”.
+                      Abra também um anúncio para enviar suas fotos e ficha. Atualizar não altera seu rascunho.
                     </p>
                     <div className="flex gap-2">
                       {research?.public_search?.search_url && (
@@ -2125,18 +2127,23 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                         </a>
                       )}
                       <button
+                        disabled={refreshingResearch}
                         onClick={async () => {
-                          if (!listing) return
-                          await fetch(`/api/assertive/analyses/${listing.analysis_id}/run`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ from: 'researching' }),
-                          })
-                          window.location.reload()
+                          if (!listing || refreshingResearch) return
+                          setRefreshingResearch(true)
+                          setError(null)
+                          try {
+                            const response = await fetch(`/api/assertive/analyses/${listing.analysis_id}/research`, { method: 'POST' })
+                            const data = await response.json()
+                            if (!response.ok) throw new Error(data.error || 'Não foi possível atualizar as referências.')
+                            setResearch(data.research)
+                          } catch (failure) {
+                            setError(failure instanceof Error ? failure.message : 'Falha ao atualizar as referências.')
+                          } finally { setRefreshingResearch(false) }
                         }}
                         className="inline-flex items-center gap-1 bg-[#242424] hover:bg-[#2a2a2a] text-gray-300 text-[11px] px-3 py-1.5 rounded-md transition-colors"
                       >
-                        Atualizar espionagem
+                        {refreshingResearch ? 'Atualizando…' : 'Atualizar referências'}
                       </button>
                     </div>
                   </div>

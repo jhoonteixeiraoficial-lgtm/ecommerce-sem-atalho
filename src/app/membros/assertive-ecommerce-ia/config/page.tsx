@@ -214,7 +214,7 @@ export default function ConfigPage() {
             Envia ao Assertive as páginas públicas do Mercado Livre que você
             já visita — busca e anúncios de concorrentes — para a espionagem
             usar posição real, selo MAIS VENDIDO e vendas observadas.
-            Cada página coletada vale por 6 horas para toda a comunidade.
+            Os trechos enviados ficam disponíveis só para sua pesquisa por até 6 horas.
           </p>
 
           <ol className="text-gray-400 text-xs space-y-1.5 mb-4 list-decimal list-inside">
@@ -231,7 +231,8 @@ export default function ConfigPage() {
               (ou Violentmonkey)
             </li>
             <li>Clique em <strong className="text-gray-300">Instalar coletor</strong> — o token já vai embutido, nada para configurar</li>
-            <li>Navegue no Mercado Livre normalmente. Aparece o selo 🕵️ no canto da página quando ela conta para o dossiê</li>
+            <li>Abra uma busca ou anúncio e clique em “Enviar esta página” no painel do Assertive. Nada é enviado sem esse clique.</li>
+            <li>Volte ao editor e clique em “Atualizar referências”. Seus textos, preços e fotos não são alterados.</li>
           </ol>
 
           <div className="flex flex-wrap gap-2">
@@ -262,9 +263,9 @@ export default function ConfigPage() {
           <div className="flex gap-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mt-4">
             <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
             <p className="text-emerald-200/70 text-xs leading-relaxed">
-              Seguro para a sua conta: o coletor é passivo — só lê páginas
-              públicas que você mesmo abre. Não usa seu login, não clica e não
-              publica nada no Mercado Livre.
+              Opcional e sem tarifa de coleta: envia apenas trechos públicos escolhidos,
+              sem cookies ou dados de login. Não navega nem publica no Mercado Livre.
+              Não há garantia contra bloqueios; respeite os termos da plataforma. As demais etapas de IA podem ter custos.
             </p>
           </div>
         </section>

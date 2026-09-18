@@ -55,11 +55,16 @@ export async function loadPublicSearch(
   query: string,
   read: (key: string) => Promise<unknown> = readStoredSnapshot,
   now = Date.now(),
+  options: { userId?: string; allowCollection?: boolean } = {},
 ): Promise<PublicSearchSnapshot> {
   try {
+    if (options.userId) {
+      const own = await read(`BROWSER:${options.userId}:${publicSearchCacheKey(query)}`)
+      if (valid(own, query, now)) return own
+    }
     const snapshot = await read(publicSearchCacheKey(query))
     if (valid(snapshot, query, now)) return snapshot
-    const collected = await collectPublicSearch(query, publicSearchCacheKey(query))
+    const collected = options.allowCollection === false ? null : await collectPublicSearch(query, publicSearchCacheKey(query))
     if (valid(collected, query, Date.now())) return collected
   } catch { /* Ranking is unavailable; preserve the rest of the research. */ }
   return { available: false, query, observed_at: new Date(now).toISOString(),

@@ -309,6 +309,7 @@ export async function runResearch(
     },
     () => researchMarket(token, query, {
       deepLimit: 8,
+      collectorUserId: analysis.user_id,
       categoryHint: opts.categoryOverride || null,
       sourceCategoryId: truth.source_category_id || null,
       sourceDomainId: truth.source_domain_id || null,

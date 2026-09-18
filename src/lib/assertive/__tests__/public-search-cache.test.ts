@@ -8,6 +8,13 @@ const now = Date.parse('2026-09-17T12:00:00Z')
 const snapshot = { available: true, query: 'Garrafa preta 1 litro', observed_at: new Date(now).toISOString(), search_url: 'https://lista.mercadolivre.com.br/Garrafa-preta-1-litro', entries: [{ position: 1, organic_position: 1, sponsored: false, item_id: 'MLB123', catalog_product_id: null, url: 'https://produto.mercadolivre.com.br/MLB-123-garrafa_JM', title: 'Garrafa', bestseller_badge: false, sold_quantity: null }] }
 
 describe('public search cache', () => {
+  it('reads browser observations only for the requesting owner and supports cache-only refresh', async () => {
+    const read = vi.fn(async (key: string) => key.startsWith('BROWSER:user-a:') ? snapshot : null)
+    expect((await loadPublicSearch(snapshot.query, read, now, { userId: 'user-a', allowCollection: false })).available).toBe(true)
+    expect(read).toHaveBeenCalledWith(`BROWSER:user-a:${publicSearchCacheKey(snapshot.query)}`)
+    expect((await loadPublicSearch(snapshot.query, read, now, { userId: 'user-b', allowCollection: false })).available).toBe(false)
+    expect(mocks.collect).not.toHaveBeenCalled()
+  })
   it('calls the budgeted collector on a cache miss, but not on a hit', async () => {
     const fresh = { ...snapshot, observed_at: new Date().toISOString() }
     mocks.collect.mockResolvedValue(fresh)

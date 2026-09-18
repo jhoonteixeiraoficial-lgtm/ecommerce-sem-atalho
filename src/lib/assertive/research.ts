@@ -563,6 +563,8 @@ function median(nums: number[]): number {
 
 // ---------------------------------------------------------------- entrada
 export interface ResearchOptions {
+  collectorUserId?: string
+  allowPublicCollection?: boolean
   /** quantos candidatos entram na fase 2 (análise profunda) */
   deepLimit?: number
   categoryHint?: string | null
@@ -587,7 +589,10 @@ export async function researchMarket(
 ): Promise<ResearchResult> {
   const deepLimit = opts.deepLimit ?? 8
   const warnings: string[] = []
-  const publicSearch = await loadPublicSearch(query)
+  const collectionOptions = { userId: opts.collectorUserId, allowCollection: opts.allowPublicCollection }
+  const publicSearch = opts.collectorUserId || opts.allowPublicCollection === false
+    ? await loadPublicSearch(query, undefined, Date.now(), collectionOptions)
+    : await loadPublicSearch(query)
   if (!publicSearch.available && publicSearch.unavailable_reason) warnings.push(publicSearch.unavailable_reason)
 
   // --- categoria/domínio oficiais
@@ -684,31 +689,7 @@ export async function researchMarket(
   }
 
   if (candidateIds.size === 0) {
-    return {
-      query,
-      domain_id: resolvedDomainId,
-      domain_name: categorySource === 'url_source' ? null : primary?.domain_name ?? null,
-      category_id: categoryId,
-      category_name: categoryName,
-      category_resolution: categoryResolution,
-      keywords: [],
-      competitors: [],
-      benchmark: buildBenchmarkSet([], publicSearch),
-      public_search: publicSearch,
-      catalog_matches: [],
-      candidates_found: 0,
-      price_stats: null,
-      price_basis: 'NONE',
-      exact_product_count: 0,
-      exact_catalog_count: 0,
-      competitor_matrix: {},
-      regional: buildRegionalRadar([]),
-      category_source: categorySource,
-      warnings: [
-        ...warnings,
-        'Nenhuma referência de catálogo encontrada para este produto no Mercado Livre. Isso pode indicar um nicho pouco explorado ou que o nome do produto precisa ser mais específico.',
-      ],
-    }
+    warnings.push('Nenhuma referência de catálogo encontrada. Anúncios públicos verificados continuam elegíveis para a pesquisa.')
   }
 
   // --- fase 2: pré-seleção pelos sinais baratos, depois análise profunda
@@ -743,13 +724,14 @@ export async function researchMarket(
   })
 
   const valid = dossiers.filter((d): d is CompetitorDossier => d !== null)
+  const catalogProductIds = new Set(valid.map(d => d.product_id))
 
   // Enriquecimento público: páginas de anúncio verificadas (coletor do
   // navegador ou ScrapingBee) somam fotos, descrição real, vendas observadas
   // e exposição orgânica aos dossiês de catálogo com o mesmo item_id.
   if (publicSearch.available) {
     try {
-      const publicDossiers = await loadPublicCompetitors(publicSearch, opts.truth)
+      const publicDossiers = await loadPublicCompetitors(publicSearch, opts.truth, undefined, collectionOptions)
       for (const pd of publicDossiers) {
         const existing = valid.find(d => d.item_id && d.item_id === pd.item_id)
         if (existing) {
@@ -795,7 +777,7 @@ export async function researchMarket(
   }
 
   const catalogMatches: CatalogMatch[] = valid
-    .filter(candidate => candidate.match_class === 'EXACT_PRODUCT')
+    .filter(candidate => catalogProductIds.has(candidate.product_id) && candidate.match_class === 'EXACT_PRODUCT')
     .map(candidate => ({
       product_id: candidate.product_id,
       title: candidate.title,

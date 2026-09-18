@@ -367,11 +367,11 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
             {productName.trim() && (
               <details className="mt-3 bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3">
                 <summary className="text-gray-400 text-xs cursor-pointer select-none">
-                  🕵️ Opcional: deixar a espionagem ainda mais precisa (30 segundos)
+                  🕵️ Opcional: complementar a pesquisa com páginas públicas
                 </summary>
                 <p className="text-gray-500 text-xs mt-2 leading-relaxed">
                   Com o coletor instalado (Configurações → Espionagem ao Vivo),
-                  abra a busca do Mercado Livre abaixo, espere ~10 segundos e feche.
+                  abra a busca do Mercado Livre abaixo e clique em “Enviar esta página”.
                   O anúncio sai com posição real da busca e vendas dos concorrentes.
                 </p>
                 <a

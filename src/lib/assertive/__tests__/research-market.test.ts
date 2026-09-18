@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ mlGet: vi.fn(), loadPublicSearch: vi.fn() }))
+const mocks = vi.hoisted(() => ({ mlGet: vi.fn(), loadPublicSearch: vi.fn(), loadPublicCompetitors: vi.fn() }))
 vi.mock('../public-search-cache', () => ({ loadPublicSearch: mocks.loadPublicSearch }))
+vi.mock('../public-competitors', () => ({ loadPublicCompetitors: mocks.loadPublicCompetitors }))
 
 vi.mock('../ml-api', async importOriginal => {
   const original = await importOriginal<typeof import('../ml-api')>()
@@ -35,6 +36,7 @@ const truth: ProductTruth = {
 describe('researchMarket', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.loadPublicCompetitors.mockResolvedValue([])
     mocks.loadPublicSearch.mockResolvedValue({ available: false, query: truth.name, observed_at: '2026-09-17T12:00:00Z', search_url: '', entries: [], unavailable_reason: 'Ranking público não verificado' })
     mocks.mlGet.mockImplementation(async (path: string) => {
       if (path.startsWith('/sites/MLB/domain_discovery/search')) {
@@ -116,6 +118,22 @@ describe('researchMarket', () => {
     expect(mocks.loadPublicSearch).toHaveBeenCalledWith(truth.name)
     expect(result.public_search).toEqual(snapshot)
     expect(result.benchmark?.primary?.evidence.some(e => e.includes('Busca pública: posição observada #2'))).toBe(true)
+  })
+
+  it('keeps verified public competitors when the catalog has no results', async () => {
+    const baseline = await researchMarket('token', truth.name, { truth })
+    const publicOffer = {
+      ...baseline.competitors[0], product_id: 'MLB300', item_id: 'MLB300',
+      title: truth.name, attributes: { BRAND: 'Kitest', MODEL: 'KA250', GTIN: '7898559182505' },
+      public_offer_verified: true, source_url: 'https://produto.mercadolivre.com.br/MLB-300-caneta_JM',
+    }
+    mocks.loadPublicSearch.mockResolvedValue({ available: true, query: truth.name, observed_at: new Date().toISOString(), search_url: '', entries: [] })
+    mocks.loadPublicCompetitors.mockResolvedValue([publicOffer])
+    const original = mocks.mlGet.getMockImplementation()!
+    mocks.mlGet.mockImplementation((path: string) => path.startsWith('/products/search?') ? { results: [] } : original(path))
+    const result = await researchMarket('token', truth.name, { truth, sourceCategoryId: truth.source_category_id })
+    expect(result.competitors.map(c => c.item_id)).toContain('MLB300')
+    expect(result.catalog_matches).toHaveLength(0)
   })
 
   it('preserva categoria/domínio da URL e não chama catálogo sem oferta de concorrente', async () => {

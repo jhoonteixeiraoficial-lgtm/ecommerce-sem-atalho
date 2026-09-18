@@ -21,7 +21,7 @@ export const runtime = 'nodejs'
 const schema = z.object({
   kind: z.enum(['search', 'listing']),
   url: z.string().url().max(2000),
-  html: z.string().min(1000).max(3_500_000),
+  html: z.string().min(100).max(1_500_000),
 })
 
 const HOSTS_ML = ['www.mercadolivre.com.br', 'produto.mercadolivre.com.br', 'lista.mercadolivre.com.br']
@@ -61,10 +61,13 @@ function urlValidaDeColeta(raw: string): URL | null {
 }
 
 /** Deriva a consulta de uma página de busca a partir da URL (mesma slug do ML). */
-export function derivarConsultaDeBusca(url: URL): string | null {
+function derivarConsultaDeBusca(url: URL): string | null {
+  if (url.hostname !== 'lista.mercadolivre.com.br' || /[_/]/.test(url.pathname.slice(1))) return null
+  if (['offset', 'page', 'sort', 'order', 'shipping', 'seller_id'].some(key => url.searchParams.has(key))) return null
   const porParametro = url.searchParams.get('q') || url.searchParams.get('as_word')
   if (porParametro?.trim()) return porParametro.trim().slice(0, 200)
-  const slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, ''))
+  let slug: string
+  try { slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, '')) } catch { return null }
   if (!slug || slug.includes('/')) return null
   const consulta = slug.replace(/-/g, ' ').replace(/\s+/g, ' ').trim()
   return consulta ? consulta.slice(0, 200) : null
@@ -116,7 +119,21 @@ async function manipular(req: NextRequest) {
   if (!url) {
     return Response.json({ error: 'URL fora dos domínios do Mercado Livre.' }, { status: 400 })
   }
-  const pageUrl = url.href.split('#')[0]
+  const clean = new URL(url.origin + url.pathname)
+  for (const key of ['q', 'as_word', 'pdp_filters', 'item_id', 'searchVariation']) {
+    const value = url.searchParams.get(key)
+    if (value) clean.searchParams.set(key, value)
+  }
+  // Links orgânicos da busca trazem o anúncio só no fragmento (wid=MLB...).
+  const sourceHash = new URLSearchParams(url.hash.replace(/^#/, ''))
+  const safeHash = new URLSearchParams()
+  for (const key of ['wid', 'item_id']) {
+    const value = sourceHash.get(key)
+    if (value) safeHash.set(key, value)
+  }
+  if ([...safeHash.keys()].length) clean.hash = safeHash.toString()
+  const pageUrl = clean.href
+  const scopedKey = (key: string) => `BROWSER:${userId}:${key}`
   const observadoEm = new Date().toISOString()
 
   if (ehPaginaAntiBot(html)) {
@@ -139,7 +156,7 @@ async function manipular(req: NextRequest) {
           { status: 422 }
         )
       }
-      await salvarCache(publicSearchCacheKey(consulta), snapshot)
+      await salvarCache(scopedKey(publicSearchCacheKey(consulta)), { ...snapshot, source: 'BROWSER_USER' })
       return Response.json({ ok: true, kind, query: consulta, entries: snapshot.entries.length })
     }
 
@@ -152,7 +169,7 @@ async function manipular(req: NextRequest) {
       itemId ? parsePublicListing(htmlSanitizado, pageUrl, itemId, observadoEm) : null
 
     let pagina = tentar(idDaUrl)
-    if (!pagina) {
+    if (!pagina && !idDaUrl && /\/p\/MLB\d+/.test(url.pathname)) {
       // Catálogo sem filtro de item: a própria página anuncia "Anúncio #NNN"
       const anunciado = html.match(/Anúncio\s*#(\d+)/)?.[1]
       pagina = anunciado ? tentar(`MLB${anunciado}`) : null
@@ -167,13 +184,13 @@ async function manipular(req: NextRequest) {
       )
     }
 
-    const payload = { url: pageUrl, html: htmlSanitizado, observed_at: observadoEm }
-    await salvarCache(`PUBLIC_LISTING:v1:${hash(pageUrl)}`, payload)
-    await salvarCache(`PUBLIC_LISTING_ID:v1:${resolvido.itemId}`, payload)
+    const payload = { url: pageUrl, html: htmlSanitizado, observed_at: observadoEm, source: 'BROWSER_USER' }
+    await salvarCache(scopedKey(`PUBLIC_LISTING:v1:${hash(pageUrl)}`), payload)
+    await salvarCache(scopedKey(`PUBLIC_LISTING_ID:v1:${resolvido.itemId}`), payload)
 
     return Response.json({ ok: true, kind, item_id: resolvido.itemId, title: resolvido.title })
-  } catch (e) {
-    console.error('[assertive-collect]', e instanceof Error ? e.message : e)
+  } catch {
+    console.error('[assertive-collect] processing_failed')
     return Response.json({ error: 'Falha ao processar a coleta.' }, { status: 500 })
   }
 }

@@ -18,7 +18,13 @@ const FRAGMENTOS_PDP = [
 
 export function sanitizarHtmlPdp(html: string): string {
   const $ = load(html)
-  $('script,style,input,iframe,form,textarea,noscript,link,meta').remove()
+  $('script,style,input,iframe,textarea,noscript,link,meta').remove()
+  // O resumo do vendedor fica dentro do <form> do buybox: unwrap preserva a
+  // evidência sem manter o elemento de formulário.
+  $('form').each((_, element) => {
+    const $el = $(element)
+    $el.replaceWith($el.children())
+  })
   $('[hidden], [aria-hidden="true"]').remove()
   $('*').each((_, element) => {
     for (const attribute of Object.keys('attribs' in element ? element.attribs : {})) {
@@ -50,6 +56,11 @@ export function extrairItemIdDaUrl(rawUrl: string): string | null {
   if (porParametro && /^MLB\d+$/.test(porParametro)) return porParametro
   const porPathItem = url.pathname.match(/\/MLB-(\d+)(?:-|\/|$)/)?.[1]
   if (porPathItem) return `MLB${porPathItem}`
-  const porPathCatalogo = url.pathname.match(/\/p\/(MLB\d+)(?:\/|$)/)?.[1]
-  return porPathCatalogo || null
+  // Links de busca orgânica trazem o anúncio só no fragmento (wid=MLB...);
+  // a página confirma (ou rejeita) o id via "Anúncio #NNN".
+  const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''))
+  const porHash = hashParams.get('wid') ?? hashParams.get('item_id')
+  if (porHash && /^MLB\d+$/.test(porHash)) return porHash
+  // A catalog ID is not a seller's listing ID.
+  return null
 }

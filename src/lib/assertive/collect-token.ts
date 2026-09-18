@@ -21,19 +21,24 @@ async function admin() {
 /** Retorna o token do usuário, criando um na primeira chamada. */
 export async function getUserCollectToken(userId: string): Promise<string> {
   const supabase = await admin()
-  const { data } = await supabase
+  const { data, error: readError } = await supabase
     .from('assertive_collect_tokens')
     .select('token')
     .eq('user_id', userId)
     .maybeSingle()
+  if (readError) throw new Error('Não foi possível consultar o token de coleta.')
   if (data?.token) return data.token as string
 
   const token = novoToken()
   const { error } = await supabase
     .from('assertive_collect_tokens')
-    .upsert({ user_id: userId, token }, { onConflict: 'user_id' })
+    .upsert({ user_id: userId, token }, { onConflict: 'user_id', ignoreDuplicates: true })
   if (error) throw new Error('Não foi possível gerar o token de coleta.')
-  return token
+  // Another installer may have created the token concurrently. GET must not rotate it.
+  const { data: saved, error: savedError } = await supabase
+    .from('assertive_collect_tokens').select('token').eq('user_id', userId).single()
+  if (savedError || !saved?.token) throw new Error('Não foi possível consultar o token de coleta.')
+  return saved.token as string
 }
 
 /** Gera um novo token (invalida o anterior). */
