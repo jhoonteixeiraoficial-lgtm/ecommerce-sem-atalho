@@ -209,7 +209,7 @@ function hasUnsupportedMeasurement(value: string, truth: ProductTruth): boolean 
 }
 
 /** Título factual: identidade confirmada prevalece sobre texto livre da IA. */
-export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit: number): string {
+export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit: number, keywords: string[] = []): string {
   const identity = truth.identity
   const productType = identity?.product_type || truth.fields.product_type?.value
   const brand = identity?.brand || truth.fields.brand?.value
@@ -265,6 +265,29 @@ export function buildSemanticTitle(truth: ProductTruth, proposed: string, limit:
     add(fact.value)
   }
 
+  // Termos realmente buscados (pesquisa + DNA dos vencedores) preenchem o
+  // orçamento de caracteres restante. Só entram palavras novas, sem medida
+  // não confirmada e sem estourar o limite.
+  const usedWords = new Set(titleWords(parts.join(' ')))
+  let addedKeywords = 0
+  for (const keyword of keywords) {
+    if (addedKeywords >= 3 || parts.join(' ').length >= limit) break
+    const phrase = compactMeasurements(String(keyword || '').trim())
+    if (!phrase || phrase.length < 3) continue
+    // mantém a grafia original (acentos/maiúsculas) e só usa palavras novas
+    const fresh = phrase.split(/\s+/).filter(word => {
+      const tokens = titleWords(word)
+      return tokens.length === 1 && !usedWords.has(tokens[0])
+    })
+    if (!fresh.length) continue
+    if (hasUnsupportedMeasurement(fresh.join(' '), truth)) continue
+    const candidate = `${parts.join(' ')} ${fresh.join(' ')}`.trim()
+    if (candidate.length > limit) continue
+    parts.push(fresh.join(' '))
+    for (const word of fresh) for (const token of titleWords(word)) usedWords.add(token)
+    addedKeywords++
+  }
+
   return completeTitle(parts.join(' '), limit)
 }
 
@@ -298,25 +321,49 @@ function confirmedDescriptionFields(truth: ProductTruth) {
   )
 }
 
+/** Perguntas e respostas construídas SOMENTE com fatos confirmados. */
+function factualFaq(truth: ProductTruth): string[] {
+  const get = (key: string) => truth.fields[key]?.value?.trim()
+  const condition = get('condition')
+  const faq: Array<[string, string]> = []
+  const brand = get('brand')
+  if (brand) faq.push(['De qual marca é este produto?', `A marca confirmada deste produto é ${brand}.`])
+  if (get('model')) faq.push(['Qual é o modelo?', `O modelo confirmado é ${get('model')}.`])
+  if (condition) faq.push(['O produto é novo ou usado?', `Condição registrada no anúncio: ${condition}.`])
+  if (get('capacity')) faq.push(['Qual a capacidade?', `A capacidade confirmada é ${get('capacity')}.`])
+  if (get('voltage')) faq.push(['Funciona em qual voltagem?', `A voltagem confirmada é ${get('voltage')}.`])
+  if (get('material')) faq.push(['De que material é feito?', `O material confirmado é ${get('material')}.`])
+  const units = get('units_per_pack')
+  if (units && !/^1$/.test(units.replace(/\D/g, '') || '1')) faq.push(['Quantas unidades vêm no pacote?', `A embalagem contém ${units}.`])
+  return faq.map(([question, answer]) => `- ${question} ${answer}`)
+}
+
 function factualDescription(title: string, truth: ProductTruth): string {
   const facts = confirmedDescriptionFields(truth)
     .filter(([key]) => DESCRIPTION_LABELS[key])
-    .map(([key, field]) => `- ${DESCRIPTION_LABELS[key]}: ${field.value}`)
+    .map(([key, field]) => ({ label: DESCRIPTION_LABELS[key], value: field.value, key }))
+  const highlightLabels = new Set(['brand', 'model', 'material', 'capacity', 'power', 'voltage', 'color', 'line', 'family_or_line'])
+  const highlights = facts.filter(fact => highlightLabels.has(fact.key))
   const productType = truth.identity?.product_type || truth.fields.product_type?.value || truth.name
   const productFunction = truth.identity?.function || truth.fields.function?.value
+  const variant = truth.identity?.variant || truth.fields.variant?.value
   const overview = productFunction
-    ? `${productType} indicado para ${productFunction}. Consulte os dados confirmados para escolher a versão correta.`
-    : `${productType} com identidade e especificações verificadas para facilitar uma compra segura.`
+    ? `${productType} indicado para ${productFunction}. Todos os dados abaixo são confirmados, para você escolher com segurança.`
+    : `${productType} com identidade e especificações verificadas, para facilitar uma compra segura.`
+  const faq = factualFaq(truth)
   return [
     title,
     '',
     'Sobre o produto',
     overview,
+    ...(variant ? [`Variação: ${variant}.`] : []),
     '',
     'Destaques do produto',
     `- Produto: ${productType}`,
     ...(productFunction ? [`- Aplicação: ${productFunction}`] : []),
-    ...(facts.length ? ['', 'Especificações confirmadas', ...facts] : []),
+    ...highlights.map(fact => `- ${fact.label}: ${fact.value}`),
+    ...(facts.length ? ['', 'Especificações confirmadas', ...facts.map(fact => `- ${fact.label}: ${fact.value}`)] : []),
+    ...(faq.length ? ['', 'Dúvidas frequentes', ...faq] : []),
     '',
     'Antes de comprar',
     'Confira modelo, variação e demais especificações confirmadas para garantir que esta é a opção adequada para sua necessidade.',
@@ -358,6 +405,10 @@ function guardDescription(proposed: string, title: string, truth: ProductTruth):
   const sections = [repaired]
   if (facts.length && !/especifica[cç][oõ]es confirmadas/i.test(repaired)) {
     sections.push(['Especificações confirmadas', ...facts].join('\n'))
+  }
+  const faq = factualFaq(truth)
+  if (faq.length && !/d[uú]vidas frequentes/i.test(repaired)) {
+    sections.push(['Dúvidas frequentes', ...faq].join('\n'))
   }
   if (!/antes de comprar/i.test(repaired)) {
     sections.push('Antes de comprar\nConfira modelo, variação e especificações confirmadas antes de concluir a compra.')
@@ -540,6 +591,13 @@ export async function generateListing(input: GenerateInput): Promise<GeneratedLi
 
   const titleLimit = Math.min(maxTitleLength(category), 60)
   const photoRequirements = getPhotoRequirements(research.domain_id)
+  // o plano de fotos precisa superar a mediana real das referências vencedoras
+  const referencePhotoMedian = dna.image_patterns?.median_count ?? 0
+  const referencePhotoMax = dna.image_patterns?.max_count ?? 0
+  const recommendedPhotos = Math.min(
+    Math.max(photoRequirements.recommended_photos, referencePhotoMedian ? referencePhotoMedian + 1 : 5),
+    7
+  )
   // limita o schema enviado à IA para controlar custo, mantendo os mais relevantes
   const schema = prioritizeAttributes(attributes).slice(0, 45)
   const copyBrief = buildCopyBrief({
@@ -556,9 +614,12 @@ ${JSON.stringify(copyBrief)}
 CATEGORIA OFICIAL: ${category?.name || 'não determinada'} (${category?.id || 'sem id'})
 LIMITE DO TÍTULO: ${titleLimit} caracteres
 PLANO VISUAL DA CATEGORIA: ${JSON.stringify({
-    recommended_photos: Math.min(Math.max(photoRequirements.recommended_photos, 5), 7),
+    recommended_photos: recommendedPhotos,
     shot_types: photoRequirements.shot_types,
     restrictions: photoRequirements.restrictions,
+    referencias_vencedoras: referencePhotoMedian > 0
+      ? { mediana_de_fotos: referencePhotoMedian, maximo_de_fotos: referencePhotoMax, nota: 'Seu plano deve cobrir todos os enquadramentos que as referências usam e ainda adicionar valor.' }
+      : 'sem medição de fotos das referências',
   })}
 
 PADRÕES COMPETITIVOS PERMITIDOS (estrutura, nunca valores dos concorrentes):
@@ -569,12 +630,12 @@ FICHA TÉCNICA DISPONÍVEL NESTA CATEGORIA (preencha o máximo possível COM EVI
 ${attributeSchemaForPrompt(schema)}
 
 TAREFA:
-1. Título de até ${titleLimit} caracteres, usando os termos realmente buscados, começando pelo tipo de produto e incluindo marca e modelo quando confirmados.
+1. Título de até ${titleLimit} caracteres, usando os termos realmente buscados, começando pelo tipo de produto e incluindo marca e modelo quando confirmados. Use as KEYWORDS do brief: são os termos com maior volume de busca e dos anúncios vencedores.
 2. Duas alternativas de título.
 3. family_name: nome factual do produto para o catálogo do ML, com tipo, marca e modelo protegidos. Máximo 60 caracteres.
-4. Descrição original e profissional. Omita garantia, certificação, compatibilidade, conteúdo da embalagem, medidas ou desempenho que não estejam no brief.
+4. Descrição original e profissional, que converte: parágrafos curtos, benefícios práticos derivados APENAS dos fatos do brief (explique o que um fato confirmado significa na prática, sem criar fatos novos) e uma seção final "Dúvidas frequentes" respondida só com fatos do brief. Omita garantia, certificação, compatibilidade, conteúdo da embalagem, medidas ou desempenho que não estejam no brief.
 5. Preencha os atributos com evidência. Os sem evidência vão para "missing" com uma pergunta clara.
-6. Plano de 5 a 7 fotos adequado a este produto específico. Não proponha embalagem, acessórios, medidas, textos ou detalhes que não estejam confirmados no brief.
+6. Plano de ${Math.max(5, recommendedPhotos)} fotos ou mais (até 7) adequado a este produto específico, cobrindo os enquadramentos que as referências vencedoras usam. Não proponha embalagem, acessórios, medidas, textos ou detalhes que não estejam confirmados no brief.
 7. Em "improvements", diga objetivamente o que este anúncio entrega a mais que as referências.
 
 Tom: ${input.tone || 'profissional'}.`
@@ -600,11 +661,11 @@ Tom: ${input.tone || 'profissional'}.`
   const titleCandidates = [raw.title, ...(raw.title_alternatives || [])]
     .map(candidate => String(candidate || '').trim())
     .filter(Boolean)
-    .map(candidate => guardTitle(copyBrief, buildSemanticTitle(truth, candidate, titleLimit), titleLimit))
+    .map(candidate => guardTitle(copyBrief, buildSemanticTitle(truth, candidate, titleLimit, copyBrief.keywords), titleLimit))
   const titleGuard = titleCandidates
     .filter(candidate => candidate.accepted)
     .sort((a, b) => titleCandidateScore(b.value, copyBrief) - titleCandidateScore(a.value, copyBrief))[0]
-    || guardTitle(copyBrief, buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit), titleLimit)
+    || guardTitle(copyBrief, buildSemanticTitle(truth, String(raw.title || truth.name), titleLimit, copyBrief.keywords), titleLimit)
   const title = titleGuard.value
   const rawFamilyGuard = guardTitle(copyBrief, completeTitle(String(raw.family_name || truth.name), 60), 60)
   const familyGuard = guardTitle(
