@@ -409,12 +409,13 @@ export async function runReferenceSearchJob(
       const { createReferenceAsset } = await import('./image-assets')
       const admin = (await import('@/lib/supabase/admin')).createAdminClient()
       const created: ImageAsset[] = []
+      let errSample = ''
       for (const url of donorUrls) {
         try {
           const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-          if (!res.ok) continue
+          if (!res.ok) { errSample = `HTTP ${res.status} em ${url.slice(0, 60)}`; continue }
           const bytes = Buffer.from(await res.arrayBuffer())
-          if (bytes.byteLength < 10_000) continue
+          if (bytes.byteLength < 10_000) { errSample = `foto pequena (${bytes.byteLength}B)`; continue }
           const meta = await sharp(bytes).metadata()
           const sha256 = createHash('sha256').update(bytes).digest('hex')
           const storageKey = `${job.user_id}/${job.analysis_id}/ref-${sha256}.jpg`
@@ -435,14 +436,14 @@ export async function runReferenceSearchJob(
           })
           created.push(asset)
           if (created.length >= 3) break
-        } catch {
-          // foto do doador falhou: tenta a próxima
+        } catch (e) {
+          errSample = (e instanceof Error ? e.message : String(e)).slice(0, 200)
         }
       }
       if (!created.length) {
         throw new ProgressiveImageError(
           'REFERENCE_NOT_FOUND',
-          'Nenhuma referência visual exata foi encontrada.',
+          `Nenhuma referência do doador pôde ser usada. Último erro: ${errSample}`,
           30_000
         )
       }
