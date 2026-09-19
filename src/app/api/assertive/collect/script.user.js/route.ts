@@ -9,7 +9,7 @@ export const runtime = 'nodejs'
 const SCRIPT = String.raw`// ==UserScript==
 // @name         Assertive — Referências públicas
 // @namespace    assertive-collector
-// @version      1.3.0
+// @version      1.4.0
 // @description  Envia somente trechos públicos da busca ou anúncio após sua confirmação. Não navega, não publica e não envia cookies.
 // @match        https://lista.mercadolivre.com.br/*
 // @match        https://www.mercadolivre.com.br/*/p/MLB*
@@ -75,6 +75,7 @@ const SCRIPT = String.raw`// ==UserScript==
   // v1.3: AUTO-ENVIO — instalar o coletor é o consentimento. Nada de botão
   // por página: ao abrir uma busca ou anúncio, os trechos públicos seguem
   // sozinhos (sanitizados, deduplicados por sessão e limitados a 1 por URL).
+  var spyMode = /[?&]assertive_spy=1/.test(location.search);
   function mount() {
     if (document.getElementById('assertive-collect-panel')) return;
     var type = kind();
@@ -108,6 +109,7 @@ const SCRIPT = String.raw`// ==UserScript==
         var data; try { data = JSON.parse(r.responseText); } catch (_) { data = {}; }
         if (r.status >= 200 && r.status < 300 && data.ok) {
           done(type === 'search' ? '✓ ' + data.entries + ' anúncios capturados para sua análise.' : '✓ Anúncio capturado. As referências entram na próxima análise.');
+          if (spyMode) setTimeout(function () { try { window.close(); } catch (_) {} }, 2500);
         } else if (r.status === 409) {
           done('Página de verificação do ML — resolva o desafio e ela será capturada.');
         } else done('Captura não enviada (' + r.status + ').');

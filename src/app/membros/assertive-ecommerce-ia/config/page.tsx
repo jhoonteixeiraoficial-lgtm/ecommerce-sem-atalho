@@ -228,11 +228,12 @@ export default function ConfigPage() {
               >
                 Tampermonkey
               </a>{' '}
-              (ou Violentmonkey)
+              (Chrome: 'Adicionar ao Chrome' na loja). Versão 1.4
             </li>
-            <li>Clique em <strong className="text-gray-300">Instalar coletor</strong> — o token já vai embutido, nada para configurar</li>
-            <li>Abra uma busca ou anúncio e clique em “Enviar esta página” no painel do Assertive. Nada é enviado sem esse clique.</li>
-            <li>Volte ao editor e clique em “Atualizar referências”. Seus textos, preços e fotos não são alterados.</li>
+            <li>Se a página ficar cheia de código, a extensão não está instalada ainda — volte ao passo 1</li>
+            <li>Clique em <strong className="text-gray-300">Instalar coletor</strong>: o Tampermonkey abre a tela de instalação → clique em <strong className="text-gray-300">Instalar</strong> nela</li>
+            <li>No Assertive, use o botão <strong className="text-gray-300">🎯 Espionar agora</strong>: abre a busca do ML, captura sozinho em ~10 segundos e a aba fecha.</li>
+            <li>Se já tinha o coletor antigo instalado, reinstale por cima (v1.4).</li>
           </ol>
 
           <div className="flex flex-wrap gap-2">

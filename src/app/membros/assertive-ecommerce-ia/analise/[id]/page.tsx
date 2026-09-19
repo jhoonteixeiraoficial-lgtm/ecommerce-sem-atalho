@@ -85,6 +85,16 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
   useEffect(() => { load() }, [load])
 
   const [espionage, setEspionage] = useState<{ available: boolean; entries: number } | null>(null)
+  const [espionando, setEspionando] = useState(false)
+  function runEspionage() {
+    const slug = encodeURIComponent(productName.trim().replace(/\s+/g, '-').toLowerCase())
+    setEspionando(true)
+    const win = window.open(`https://lista.mercadolivre.com.br/${slug}?assertive_spy=1`, '_blank')
+    setTimeout(() => {
+      try { win?.close() } catch { /* aba já fechada */ }
+      setEspionando(false)
+    }, 12000)
+  }
   useEffect(() => {
     if (analysis?.status !== 'needs_input') return
     let active = true
@@ -398,17 +408,17 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
                 </summary>
                 <p className="text-gray-500 text-xs mt-2 leading-relaxed">
                   Com o coletor instalado (Configurações → Espionagem ao Vivo),
-                  abra a busca do Mercado Livre abaixo e clique em “Enviar esta página”.
-                  O anúncio sai com posição real da busca e vendas dos concorrentes.
+                  clique no botão: abrimos a busca do ML, o coletor envia os
+                  dados públicos sozinho e a aba fecha em ~10 segundos.
                 </p>
-                <a
-                  href={`https://lista.mercadolivre.com.br/${encodeURIComponent(productName.trim().replace(/\s+/g, '-').toLowerCase())}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 mt-2 text-amber-400 hover:text-amber-300 text-xs font-medium"
+                <button
+                  type="button"
+                  onClick={runEspionage}
+                  disabled={espionando}
+                  className="inline-flex items-center gap-1.5 mt-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-black text-xs font-semibold px-3 py-2 rounded-lg transition"
                 >
-                  🎯 Abrir busca no Mercado Livre ↗
-                </a>
+                  {espionando ? 'Espionando… a aba fecha sozinha' : '🎯 Espionar agora (~10 segundos)'}
+                </button>
               </details>
             )}
 

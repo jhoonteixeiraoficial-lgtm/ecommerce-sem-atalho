@@ -51,7 +51,7 @@ export interface GenerateProductImageInput {
 export interface ProductImageGenerationResult {
   buffer: Buffer
   mime_type: string
-  provider: 'gemini'
+  provider: 'gemini' | 'pollinations'
   model: string
   attempts: number
   latency_ms: number
@@ -328,5 +328,41 @@ Retorne exatamente uma imagem.`
     }
     }
   }
+
+  // FALLBACK GRATUITO E ILIMITADO: quando o Gemini recusa (cota/crédito,
+  // HTTP 429/403), o Pollinations (flux, sem chave) assume a geração.
+  // A verificação de fidelidade continua valendo para a imagem produzida.
+  if (/HTTP 4\d\d|cota|quota|credits|depleted/i.test(lastError)) {
+    const freePrompt = `${prompt}\n\nphotorealistic marketplace product photography, exact product shown, high detail`
+    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1800))}?width=1024&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random() * 9999)}`
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 120_000)
+    try {
+      const res = await fetch(pollinationsUrl, { signal: controller.signal })
+      if (res.ok) {
+        const buffer = Buffer.from(await res.arrayBuffer())
+        if (buffer.byteLength > 20_000) {
+          return {
+            buffer,
+            mime_type: res.headers.get('content-type')?.startsWith('image/') ? res.headers.get('content-type')! : 'image/jpeg',
+            provider: 'pollinations',
+            model: 'flux',
+            attempts: attempts + 1,
+            latency_ms: Date.now() - startedAt,
+            prompt_hash: promptHash,
+            truth_brief_hash: truthBriefHash,
+            source_sha256: sourceHash,
+            reference_sha256s: referenceHashes,
+            output_sha256: createHash('sha256').update(buffer).digest('hex'),
+          }
+        }
+      }
+    } catch {
+      // Pollinations também falhou: segue para o erro original
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   throw new Error(`Falha ao gerar a imagem. Último erro: ${lastError}`)
 }
