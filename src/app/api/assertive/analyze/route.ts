@@ -146,7 +146,7 @@ export async function POST(req: NextRequest) {
     const message = /Nenhuma IA/i.test(raw)
       ? raw
       : /HTTP 4\d\d/.test(raw) && /api key|unauthorized|401|403/i.test(raw)
-        ? 'A chave de API da IA foi recusada. Verifique em Configurações.'
+        ? 'A IA da plataforma está temporariamente indisponível. Tente novamente em instantes.'
         : raw
 
     await supabase
