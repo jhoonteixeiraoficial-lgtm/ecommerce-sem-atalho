@@ -648,6 +648,8 @@ export async function runGeneration(
   const sourcePhotos = (truth.source_pictures || []) as string[]
   const exactReferencePhotos = exactProductReferenceUrls(research)
   const generatedReferencePhotos = [...new Set([...sourcePhotos, ...exactReferencePhotos])]
+  // FALLBACK: nenhum candidato de referência → usa as fotos oficiais do
+  // catálogo/espionagem do doador mais forte (âncoras do img2img gratuito).
 
   const renditionAssetIds = Array.isArray(analysis.input_data?.photo_asset_ids)
     ? analysis.input_data.photo_asset_ids.filter((id): id is string => typeof id === 'string' && Boolean(id))
@@ -922,7 +924,7 @@ export async function runGeneration(
         improvements: generated.improvements,
         price_rationale: generated.price_rationale,
         // receita visual do anúncio escalado (fonte das fotos geradas)
-        photo_recipe: photoRecipe,
+        photo_recipe: photoRecipe ? { ...photoRecipe, donor_urls: recipeDonor.pictures.slice(0, 3) } : null,
         // apenas o que o autofill não conseguiu resolver
         missing: enrichment.remaining,
         autofill: enrichment.stats,
