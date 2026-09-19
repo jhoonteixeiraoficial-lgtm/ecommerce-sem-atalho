@@ -419,7 +419,6 @@ export async function runReferenceSearchJob(
           const meta = await sharp(bytes).metadata()
           const sha256 = createHash('sha256').update(bytes).digest('hex')
           const storageKey = `${job.user_id}/${job.analysis_id}/ref-${sha256}.jpg`
-          await admin.storage.from('assertive-originals').upload(storageKey, bytes, { contentType: 'image/jpeg', upsert: true })
           const asset = await createReferenceAsset({
             user_id: job.user_id,
             analysis_id: job.analysis_id,
