@@ -60,6 +60,8 @@ export interface LoadedImageReference {
   asset: ImageAsset
   buffer: Buffer
   mime_type: string
+  /** URL pública da referência (foto do usuário ou do concorrente) p/ img2img */
+  url: string | null
 }
 
 export interface RunNextProgressiveImageJobInput {
@@ -250,6 +252,7 @@ async function loadDefaultReferences(job: ImageJob, userId: string): Promise<Loa
     asset,
     buffer: await downloadOwnedImageAsset(userId, asset.id),
     mime_type: asset.mime_type,
+    url: asset.public_url ?? null,
   }))
 }
 
@@ -480,6 +483,7 @@ export async function runGenerationSlotJob(
       // Receita Visual do anúncio escalado: replica a estratégia da foto
       // vencedora (ângulo, luz, composição, dúvida do comprador), nunca os pixels.
       recipeShot: readRecipeShot(context, job.position),
+      referenceUrls: references.map(r => r.url).filter((u): u is string => Boolean(u)),
       role: job.role,
       previousFailure: previousFailure(job),
       apiKey: context.config?.provider === 'gemini' ? context.config.api_key : undefined,

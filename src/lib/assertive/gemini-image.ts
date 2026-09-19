@@ -43,6 +43,8 @@ export interface GenerateProductImageInput {
     overlay_theme?: string | null
   }
   role?: PhotoRole
+  /** URLs públicas das referências (para geração img2img gratuita) */
+  referenceUrls?: string[]
   previousFailure?: { code: string; message: string }
   apiKey?: string
   models?: string[]
@@ -333,8 +335,15 @@ Retorne exatamente uma imagem.`
   // HTTP 429/403), o Pollinations (flux, sem chave) assume a geração.
   // A verificação de fidelidade continua valendo para a imagem produzida.
   if (/HTTP 4\d\d|cota|quota|credits|depleted/i.test(lastError)) {
-    const freePrompt = `${prompt}\n\nphotorealistic marketplace product photography, exact product shown, high detail`
-    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1800))}?width=1024&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random() * 9999)}`
+    const anchorUrlEarly = input.referenceUrls?.find(u => u.startsWith('https://'))
+  const freePrompt = anchorUrlEarly
+    ? 'Edit this exact product photograph: place the unchanged product on a pure white seamless background, professional studio lighting, soft contact shadow, sharp focus, photorealistic. Keep shape, color, material, branding, labels and proportions strictly identical to the photo.'
+    : `${prompt}\n\nphotorealistic marketplace product photography, exact product shown, high detail`
+    const seed = Math.floor(Math.random() * 9999)
+    const anchorUrl = anchorUrlEarly
+    const pollinationsUrl = anchorUrl
+      ? `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1200))}?image=${encodeURIComponent(anchorUrl)}&model=kontext&width=1024&height=1024&nologo=true&seed=${seed}`
+      : `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1800))}?width=1024&height=1024&model=flux&nologo=true&seed=${seed}`
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 120_000)
     try {

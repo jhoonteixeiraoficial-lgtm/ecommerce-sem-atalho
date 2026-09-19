@@ -169,12 +169,14 @@ function createState(options: {
       asset,
       buffer: Buffer.from(`bytes-${asset.id}`),
       mime_type: asset.mime_type,
+      url: asset.public_url ?? null,
     })),
     generateImage: async input => {
       if (options.generationError) throw options.generationError
       return {
         buffer: Buffer.from(`generated-${input.shot?.order}`),
         mime_type: 'image/png',
+        url: null,
         provider: 'gemini',
         model: 'image-model',
         attempts: 1,
@@ -189,6 +191,7 @@ function createState(options: {
     normalizeImage: async buffer => ({
       buffer,
       mime_type: 'image/jpeg',
+        url: null,
       width: 1200,
       height: 1200,
       source: { width: 1200, height: 1200, format: 'jpeg', orientation: 1 },
