@@ -350,11 +350,15 @@ Retorne exatamente uma imagem.`
     const pollinationsUrl = anchorUrl
       ? `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1200))}?image=${encodeURIComponent(anchorUrl)}&model=kontext&width=1024&height=1024&nologo=true&seed=${seed}`
       : `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1800))}?width=1024&height=1024&model=flux&nologo=true&seed=${seed}`
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 120_000)
-    try {
-      const res = await fetch(pollinationsUrl, { signal: controller.signal })
-      if (res.ok) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 150_000)
+      try {
+        await runInQueue
+        const attemptSeed = seed + attempt * 7919
+        const attemptUrl = pollinationsUrl.replace(/seed=\d+/, `seed=${attemptSeed}`)
+        const res = await fetch(attemptUrl, { signal: controller.signal })
+        if (!res.ok) { lastError = `pollinations HTTP ${res.status}`; continue }
         const buffer = Buffer.from(await res.arrayBuffer())
         if (buffer.byteLength > 20_000) {
           return {
@@ -362,7 +366,7 @@ Retorne exatamente uma imagem.`
             mime_type: res.headers.get('content-type')?.startsWith('image/') ? res.headers.get('content-type')! : 'image/jpeg',
             provider: 'pollinations',
             model: 'flux',
-            attempts: attempts + 1,
+            attempts: attempts + attempt + 1,
             latency_ms: Date.now() - startedAt,
             prompt_hash: promptHash,
             truth_brief_hash: truthBriefHash,
@@ -371,11 +375,13 @@ Retorne exatamente uma imagem.`
             output_sha256: createHash('sha256').update(buffer).digest('hex'),
           }
         }
+        lastError = 'pollinations retornou imagem inválida'
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : 'pollinations erro'
+      } finally {
+        clearTimeout(timer)
       }
-    } catch {
-      // Pollinations também falhou: segue para o erro original
-    } finally {
-      clearTimeout(timer)
+      await new Promise(r => setTimeout(r, 20_000 * (attempt + 1)))
     }
   }
 
