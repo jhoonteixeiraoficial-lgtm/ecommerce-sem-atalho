@@ -230,7 +230,7 @@ export default function ConfigPage() {
 
           <div className="flex flex-wrap gap-2">
             <a
-              href="/api/assertive/collect/script.user.js"
+              href="/membros/assertive-ecommerce-ia/coletor"
               target="_blank"
               rel="noopener noreferrer"
               className="bg-amber-500 text-black text-sm font-semibold px-4 py-2 rounded-lg hover:bg-amber-400 transition"
