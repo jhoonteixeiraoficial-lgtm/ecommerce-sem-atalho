@@ -598,8 +598,10 @@ export async function runGenerationSlotJob(
         const ref = references[job.position % references.length]
         const studio = await studioEnhance(ref.buffer)
         normalized = await dependencies.normalizeImage(studio.buffer)
-      } catch {
-        throw originalRejection ?? new ProgressiveImageError('IMAGE_JOB_FAILED', 'Nenhuma imagem pôde ser produzida.')
+      } catch (studioError) {
+        const detalhe = studioError instanceof Error ? studioError.message.slice(0, 140) : 'erro desconhecido'
+        const origem = originalRejection instanceof Error ? originalRejection.message.slice(0, 100) : ''
+        throw new ProgressiveImageError('IMAGE_JOB_FAILED', 'Estúdio: '+detalhe+' | original: '+origem)
       }
     }
 
