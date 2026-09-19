@@ -17,17 +17,31 @@ export interface StudioResult {
   height: number
 }
 
+export interface StudioSlotVariation {
+  /** Slot position 0-5, used to seed rotation and framing offset. */
+  position: number
+  /** Total slots in the gallery, used to distribute variations evenly. */
+  totalSlots?: number
+}
+
 export async function studioEnhance(
   original: Buffer,
-  options: { marginPct?: number; background?: string } = {}
+  options: { marginPct?: number; background?: string; variation?: StudioSlotVariation } = {}
 ): Promise<StudioResult> {
   const marginPct = options.marginPct ?? 0.08
   const background = options.background ?? '#ffffff'
+  const total = Math.max(1, options.variation?.totalSlots ?? 1)
+  const position = options.variation?.position ?? 0
+  // Distribute distinct rotations [-4..4]deg and offsets [-3..3]% per slot
+  const angle = ((position % total) - (total - 1) / 2) * (8 / Math.max(1, total - 1))
+  const offX = ((position % total) - (total - 1) / 2) * (0.06 / Math.max(1, total - 1))
+  const offY = (((position + Math.floor(total / 2)) % total) - (total - 1) / 2) * (0.06 / Math.max(1, total - 1))
 
-  // 1) normaliza decodificação (webp/heic/etc.) e endireita
+  // 1) normaliza decodificação (webp/heic/etc.) e endireita; rotaciona sutilmente para diferenciar slots
   const base = await sharp(original)
     .rotate()
     .flatten({ background })
+    .rotate(Number.isFinite(angle) ? angle : 0)
     .toBuffer()
 
   // 2) recorta a moldura do fundo (trim remove bordas de cor uniforme)
@@ -43,8 +57,8 @@ export async function studioEnhance(
   const scale = Math.min((CANVAS * (1 - marginPct * 2)) / productW, (CANVAS * (1 - marginPct * 2)) / productH)
   const finalW = Math.max(1, Math.round(productW * scale))
   const finalH = Math.max(1, Math.round(productH * scale))
-  const left = Math.round((CANVAS - finalW) / 2)
-  const top = Math.round((CANVAS - finalH) / 2)
+  const left = Math.round((CANVAS - finalW) / 2 + offX * CANVAS)
+  const top = Math.round((CANVAS - finalH) / 2 + offY * CANVAS)
 
   const canvas = await sharp({
     create: { width: CANVAS, height: CANVAS, channels: 3, background },

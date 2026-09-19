@@ -581,10 +581,18 @@ export async function runGenerationSlotJob(
         throw new ProgressiveImageError('IMAGE_FIDELITY_REJECTED', fidelity?.reason ?? 'fidelidade rejeitada')
       }
     } catch (e) {
-      // Qualquer falha de geração (cota, HTTP 5xx, rejeição de qualidade) cai
-      // no Estúdio — grátis e imediato. Só configuração ausente relança.
-      const isConfig = e instanceof ProgressiveImageError && e.code === 'IMAGE_PROVIDER_CONFIGURATION'
-      if (isConfig) throw e
+      // Erros de configuração e de qualidade (fidelidade/cobertura/duplicata)
+      // não podem ser mascarados pelo Estúdio: eles exigem revisão explícita
+      // do vendedor. Apenas falhas transitórias de geração caem no Estúdio.
+      const message = e instanceof Error ? e.message : String(e || '')
+      const isQuality = e instanceof ProgressiveImageError && (
+        e.code === 'IMAGE_BACKGROUND_REJECTED' ||
+        e.code === 'IMAGE_FIDELITY_REJECTED' ||
+        e.code === 'IMAGE_DUPLICATE_REJECTED'
+      )
+      const isPermanentConfig = /GEMINI_API_KEY ausente|Nenhum modelo Gemini|API_KEY_INVALID|api[_ -]?key.*(?:invalid|not valid)/i.test(message)
+        || (e instanceof ProgressiveImageError && e.code === 'IMAGE_PROVIDER_CONFIGURATION')
+      if (isPermanentConfig || isQuality) throw e
       originalRejection = e
       normalized = null
     }
@@ -596,7 +604,7 @@ export async function runGenerationSlotJob(
       try {
         const { studioEnhance } = await import('./studio')
         const ref = references[job.position % references.length]
-        const studio = await studioEnhance(ref.buffer)
+        const studio = await studioEnhance(ref.buffer, { variation: { position: job.position, totalSlots: 6 } })
         normalized = await dependencies.normalizeImage(studio.buffer)
       } catch (studioError) {
         const detalhe = studioError instanceof Error ? studioError.message.slice(0, 140) : 'erro desconhecido'
@@ -606,35 +614,47 @@ export async function runGenerationSlotJob(
     }
 
     const outputHash = createHash('sha256').update(normalized.buffer).digest('hex')
-    const output = await dependencies.persistGeneratedAsset({
-      user_id: job.user_id,
-      analysis_id: job.analysis_id,
-      parent_asset_id: references[0].asset.id,
-      bytes: normalized.buffer,
-      mime_type: normalized.mime_type,
-      width: normalized.width,
-      height: normalized.height,
-      sha256: outputHash,
-      storage_key: `${job.user_id}/${job.analysis_id}/progressive-${job.position}-${job.generation_nonce}-${outputHash.slice(0, 20)}.jpg`,
-      provider: generated?.provider ?? 'studio',
-      model: generated?.model ?? 'sharp-studio',
-      metadata: {
-        truth_brief_hash: generated?.truth_brief_hash ?? null,
-        prompt_hash: generated?.prompt_hash ?? null,
-        source_sha256: generated?.source_sha256 ?? null,
-        reference_sha256s: generated?.reference_sha256s ?? [],
-        provider_output_sha256: generated?.output_sha256 ?? outputHash,
-        review_required: true,
-        review_status: 'PENDING',
-        auto_verdict: fidelity?.status ?? 'ACCEPT',
-        role: job.role,
-        image_plan_step: normalizedShot,
-        image_job_id: job.id,
-        generation_nonce: job.generation_nonce,
-        fidelity: fidelity?.status ?? 'ACCEPT',
-      },
-    })
-    await dependencies.attachSlot(job.listing_id, job.user_id, job.position, output.id, job.lock_token)
+    let outputId: string
+    try {
+      const output = await dependencies.persistGeneratedAsset({
+        user_id: job.user_id,
+        analysis_id: job.analysis_id,
+        parent_asset_id: references[0].asset.id,
+        bytes: normalized.buffer,
+        mime_type: normalized.mime_type,
+        width: normalized.width,
+        height: normalized.height,
+        sha256: outputHash,
+        storage_key: `${job.user_id}/${job.analysis_id}/progressive-${job.position}-${job.generation_nonce}-${outputHash.slice(0, 20)}.jpg`,
+        provider: generated?.provider ?? 'studio',
+        model: generated?.model ?? 'sharp-studio',
+        metadata: {
+          truth_brief_hash: generated?.truth_brief_hash ?? null,
+          prompt_hash: generated?.prompt_hash ?? null,
+          source_sha256: generated?.source_sha256 ?? null,
+          reference_sha256s: generated?.reference_sha256s ?? [],
+          provider_output_sha256: generated?.output_sha256 ?? outputHash,
+          review_required: true,
+          review_status: 'PENDING',
+          auto_verdict: fidelity?.status ?? 'ACCEPT',
+          role: job.role,
+          image_plan_step: normalizedShot,
+          image_job_id: job.id,
+          generation_nonce: job.generation_nonce,
+          fidelity: fidelity?.status ?? 'ACCEPT',
+        },
+      })
+      outputId = output.id
+    } catch (persistError) {
+      const detalhe = persistError instanceof Error ? persistError.message.slice(0, 240) : 'erro desconhecido'
+      throw new ProgressiveImageError('IMAGE_PERSIST_FAILED', detalhe, 60_000)
+    }
+    try {
+      await dependencies.attachSlot(job.listing_id, job.user_id, job.position, outputId, job.lock_token)
+    } catch (attachError) {
+      const detalhe = attachError instanceof Error ? attachError.message.slice(0, 240) : 'erro desconhecido'
+      throw new ProgressiveImageError('IMAGE_ATTACH_FAILED', detalhe, 60_000)
+    }
     await safelyRecord(dependencies, {
       analysis_id: job.analysis_id,
       user_id: job.user_id,
@@ -644,7 +664,7 @@ export async function runGenerationSlotJob(
         image_job_id: job.id,
         position: job.position,
         role: job.role,
-        asset_id: output.id,
+        asset_id: outputId,
         auto_verdict: fidelity?.status ?? 'ACCEPT',
         reference_count: references.length,
       },

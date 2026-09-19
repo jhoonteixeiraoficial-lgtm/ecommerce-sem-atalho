@@ -138,6 +138,8 @@ function createState(options: {
   coverPassed?: boolean
   duplicateId?: string | null
   generationError?: Error
+  persistError?: Error
+  attachError?: Error
 }) {
   const jobs = [options.next]
   const listingImages: Array<{ position: number; asset_id: string }> = []
@@ -211,22 +213,26 @@ function createState(options: {
     }),
     findDuplicate: async () => options.duplicateId || null,
     loadGalleryComparisons: async () => [],
-    persistGeneratedAsset: async input => imageAsset({
-      id: `generated-${options.next.position}`,
-      kind: 'GENERATED_SCENE',
-      origin: 'AI_GENERATED',
-      rights_status: 'LICENSED',
-      storage_bucket: 'assertive',
-      storage_key: input.storage_key,
-      public_url: `https://cdn.example/generated-${options.next.position}.jpg`,
-      sha256: input.sha256,
-      parent_asset_id: input.parent_asset_id || null,
-      provider: input.provider,
-      model: input.model,
-      fidelity_status: 'ACCEPT',
-      metadata: input.metadata,
-    }),
+    persistGeneratedAsset: async input => {
+      if (options.persistError) throw options.persistError
+      return imageAsset({
+        id: `generated-${options.next.position}`,
+        kind: 'GENERATED_SCENE',
+        origin: 'AI_GENERATED',
+        rights_status: 'LICENSED',
+        storage_bucket: 'assertive',
+        storage_key: input.storage_key,
+        public_url: `https://cdn.example/generated-${options.next.position}.jpg`,
+        sha256: input.sha256,
+        parent_asset_id: input.parent_asset_id || null,
+        provider: input.provider,
+        model: input.model,
+        fidelity_status: 'ACCEPT',
+        metadata: input.metadata,
+      })
+    },
     attachSlot: async (_listingId, _userId, position, assetId) => {
+      if (options.attachError) throw options.attachError
       listingImages.push({ position, asset_id: assetId })
       options.next.status = 'REVIEW'
       options.next.output_asset_id = assetId
@@ -475,14 +481,26 @@ describe('progressive image orchestrator', () => {
     expect(state.listingImages).toEqual([])
   })
 
-  it('falls back to the free studio render of the reference when AI output is rejected', async () => {
+  it('requires explicit retry when fidelity rejects a changed composition (no studio fallback)', async () => {
+    const state = createState({ next: job({ position: 1, role: 'DETAIL' }) })
+    state.dependencies.verifyFidelity = vi.fn().mockResolvedValue({
+      status: 'REJECT', score: 10, reason: 'objeto completamente diferente.', reason_codes: [], composition_is_new: true,
+    })
+    const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
+    expect(result.snapshot.slots[1]).toMatchObject({
+      status: 'FAILED',
+      error_code: 'IMAGE_FIDELITY_REJECTED',
+    })
+    const previousFailure = state.jobs[0].metadata?.previous_failure as { code?: string } | undefined
+    expect(previousFailure?.code).toBe('IMAGE_FIDELITY_REJECTED')
+  })
+
+  it('renders the free studio fallback when AI rejects but the reference renders cleanly', async () => {
     const sharp = (await import('sharp')).default
     const realPng = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#888888' } }).png().toBuffer()
     const state = createState({ next: job({ position: 1, role: 'DETAIL' }) })
     state.dependencies.loadReferences = async () => [{ asset: imageAsset(), buffer: realPng, mime_type: 'image/png', url: null }]
-    state.dependencies.verifyFidelity = vi.fn().mockResolvedValue({
-      status: 'REJECT', score: 10, reason: 'objeto completamente diferente.', reason_codes: [], composition_is_new: true,
-    })
+    state.dependencies.generateImage = vi.fn().mockRejectedValue(new Error('image-model retornou HTTP 500: transient'))
     const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
     expect(result.snapshot.slots[1]).toMatchObject({ status: 'REVIEW' })
   })
@@ -499,21 +517,50 @@ describe('progressive image orchestrator', () => {
     expect(state.listingImages).toEqual([])
   })
 
-  it('backs off after a transient provider failure', async () => {
+  it('backs off with the upstream detail when both AI and studio fail on a transient provider issue', async () => {
     const state = createState({
       next: job({ position: 4, role: 'LIFESTYLE' }),
       generationError: new Error('image-model retornou HTTP 503: provider payload secret'),
     })
+    state.dependencies.generateImage = vi.fn().mockRejectedValue(new Error('image-model retornou HTTP 503: provider payload secret'))
 
     const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
 
     expect(result.snapshot.slots[4]).toMatchObject({
       status: 'RETRYABLE',
-      error_code: 'IMAGE_PROVIDER_UNAVAILABLE',
-      error_message: 'O provedor de imagens está temporariamente indisponível.',
+      error_code: 'IMAGE_JOB_FAILED',
     })
-    expect(JSON.stringify(result)).not.toContain('provider payload secret')
+    expect(state.jobs[0].error_message || '').toMatch(/original:.*provider payload secret/)
     expect(new Date(state.jobs[0].next_attempt_at || 0).getTime()).toBeGreaterThan(NOW.getTime())
+  })
+
+
+  it('preserves the persist asset error in the slot message instead of generic fallback', async () => {
+    const state = createState({
+      next: job({ position: 3, role: 'LIFESTYLE', attempt_count: 3 }),
+      persistError: new Error('storage_bucket assertivedev returned 503 service unavailable'),
+    })
+    const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
+    expect(result.snapshot.slots[3]).toMatchObject({
+      status: 'FAILED',
+      error_code: 'IMAGE_PERSIST_FAILED',
+    })
+    expect(state.jobs[0].error_message).toMatch(/storage_bucket assertivedev/)
+    expect(state.jobs[0].error_message).not.toBe('Não foi possível concluir esta imagem.')
+  })
+
+  it('preserves the attach slot error in the slot message instead of generic fallback', async () => {
+    const state = createState({
+      next: job({ position: 3, role: 'LIFESTYLE', attempt_count: 3 }),
+      attachError: new Error('listing_images lock_token mismatch'),
+    })
+    const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
+    expect(result.snapshot.slots[3]).toMatchObject({
+      status: 'FAILED',
+      error_code: 'IMAGE_ATTACH_FAILED',
+    })
+    expect(state.jobs[0].error_message).toMatch(/lock_token mismatch/)
+    expect(state.jobs[0].error_message).not.toBe('Não foi possível concluir esta imagem.')
   })
 
   it('fails immediately when the image provider is not configured', async () => {

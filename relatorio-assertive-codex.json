@@ -1,0 +1,143 @@
+{
+  "meta": {
+    "gerado_em": "2026-09-19",
+    "projeto": "ecommerce-sem-atalho (Assertive IA)",
+    "caminho_local": "C:\\Users\\jonat\\Desktop\\projetos\\ecommerce-sem-atalho",
+    "producao": "https://ecommerce-sem-atalho.vercel.app",
+    "commit_master": "dd3cd89 (+ commits até 'fix: qualquer falha de geração cai no Estúdio')",
+    "deploy": "Vercel CLI --prod (integração git->deploy NÃO dispara build de produção neste projeto; deploy é manual via CLI)",
+    "supabase": "mesmo banco para local (.env.local) e produção (confirmado: listagens criadas localmente aparecem na produção)",
+    "testes_unitarios": "491/491 passando (82 arquivos)",
+    "observacao_importante_deploy": "Após 'vercel --prod --yes' o tráfego muda para a nova build, mas instâncias serverless antigas continuaram servindo código velho por vários minutos (reproduzido 4x). Qualquer teste E2E pós-deploy deve esperar ~5min ou validar via marker."
+  },
+
+  "fluxo_produto": [
+    { "etapa": "1. Entrada (foto/descrição/link)", "status": "FUNCIONA", "evidencia": "5 nichos: identificação correta (garrafa Soprano, panela Philco, trena Vonder, cafeteira Philco, furadeira Bosch)" },
+    { "etapa": "2. Espionagem por coletor (extensão)", "status": "FUNCIONA (pipeline) / PENDENTE (distribuição)", "evidencia": "Captura real validada: 60 anúncios no cache BROWSER (dedup por sessão, token via /collect/token). Extensão MV3 pronta em /extension. Chrome 153 ignora --load-extension para testes automatizados; injeção manual via CDP confirma o pipeline (CORS de token exige host_permissions da extensão real).", "pendente": "Publicar na Chrome Web Store (US$5 únicos, usuário não quer pagar) OU distribuir .zip com modo desenvolvedor (fricção técnica)" },
+    { "etapa": "3. Pesquisa de mercado", "status": "FUNCIONA", "evidencia": "catálogo (/products/search), highlights (mais-vendidos oficiais), fotos oficiais do catálogo (/products/{id} -> pictures), busca web via DuckDuckGo (fallback do Grounding)" },
+    { "etapa": "4. Receita Visual (análise do concorrente)", "status": "FUNCIONA", "evidencia": "photo_recipe com 6 shots, buyer_doubt por foto, doubts_missing. Validado em cafeteira/trena/bosch" },
+    { "etapa": "5. Geração de título/descrição", "status": "FUNCIONA (qualidade questionada pelo dono)", "evidencia": "títulos gerados em 5 nichos; copy-guard anti-invenção; keywords da pesquisa no fallback. DONO RELATA: 'título e descrição muito genéricos, sem SEO' — sem coletor os títulos dos campeões não entram no prompt (só estrutura do catálogo). Oportunidade: injetar títulos reais dos highlights/catálogo no copyBrief mesmo sem coletor" },
+    { "etapa": "6. Geração de imagens (6 slots)", "status": "PARCIAL — BUG ABERTO", "evidencia": "Cafeteira: 6/6 geradas, publicada com 6 fotos (score 88). Pasta térmica: 3/6, slots 3-4-5 falham com genérico 'Não foi possível concluir esta imagem.'", "detalhe_bug": "Ordem no runGenerationSlotJob: generateImage (Gemini->Pollinations com 3 retries/backoff/fila serializada) -> normalize -> cover/duplicata/fidelidade. Catch: qualquer falha cai no Estúdio (sharp: trim + fundo branco 1600px) EXCETO IMAGE_PROVIDER_CONFIGURATION. Slots 3-4-5 falham com genérico ANTES de exibir o detalhe instrumentado ('Estúdio: ... | original: ...') — suspeita: as tentativas rodaram em instância velha (lag de deploy) OU o throw genérico vem de outro ponto. Reprodução local pendente (comando foi cancelado)" },
+    { "etapa": "7. Validação oficial ML", "status": "FUNCIONA", "evidencia": "valid:true em 2 anúncios; perguntas bloqueantes são as reais do ML (GTIN, embalagem, tipo de alimentação)" },
+    { "etapa": "8. Publicação", "status": "FUNCIONA", "evidencia": "2 publicados via navegador real (Soprano MLB5256497993, Cafeteira MLB5261249471)" },
+    { "etapa": "9. Auditoria pós-publicação", "status": "FUNCIONA", "evidencia": "publication_audit: verified=true, score, fixes (atributos recomendados preenchidos via PATCH), objetivos. Roda automática no publish e via POST /listings/[id]/audit" },
+    { "etapa": "10. Pausa de anúncios", "status": "FUNCIONA", "evidencia": "POST /listings/[id]/pause -> PUT /items {status:paused}. 6 de 7 pausados; iPhone MLB5215481643 recusa (ML: item.status.not_modifiable — está 'inactive' no ML, não está à venda)" }
+  ],
+
+  "bugs_abertos": [
+    {
+      "id": "BUG-1",
+      "titulo": "Slots de imagem falham com genérico e o detalhe instrumentado não aparece",
+      "impacto": "alto",
+      "reproducao": "listing 5bf05fec-3d29-49d0-8b09-3c634d7c9f82 (Pasta térmica): slots 3,4,5 -> FAILED 'Não foi possível concluir esta imagem.'; re-trigger não muda",
+      "suspeitas": [
+        "1) Lag de deploy: tentativas rodaram em instância velha sem a instrumentação 'Estúdio: ... | original: ...' (reproduzido 4x no projeto)",
+        "2) O throw genérico pode vir de persistGeneratedAsset/attachSlot (pós-fidelidade), fora do bloco instrumentado",
+        "3) studioEnhance pode lançar em fotos do usuário (HEIC? 4 fotos do celular da pasta térmica) e o catch rethrow o original genérico sem detalhe"
+      ],
+      "proxima_acao": "Reproduzir em LOCALHOST (código quente garantido) e ler error_message com a instrumentação ativa; considerar capturar console.error do pump no log do servidor"
+    },
+    {
+      "id": "BUG-2",
+      "titulo": "Pump de imagens só rodava em modo progressive (CORRIGIDO, validar)",
+      "impacto": "alto",
+      "descricao": "O pump no editor exigia progressiveMode e o snapshot só era buscado em progressiveMode — anúncios normais ficavam 0 fotos para sempre. Corrigido (pump sempre + snapshot sempre). Commit 'fix(assertive): pump de imagens roda em qualquer modo'. Pasta térmica passou a gerar 4/6 sozinha após o fix",
+      "validacao_pendente": "Confirmar em mais 2-3 anúncios novos que as 6 fotos geram sem nenhum clique"
+    },
+    {
+      "id": "BUG-3",
+      "titulo": "Fallback do Estúdio pode salvar a própria referência como imagem 'gerada' (achado do Codex)",
+      "impacto": "médio",
+      "descricao": "Quando a IA rejeita, o slot usa a foto real da referência processada (fundo branco). É intencional (fidelidade por construção, user exigiu 'a qualquer custo'), mas: (a) o anti-duplicata é pulado de propósito; (b) provider/model ficam 'studio'/'sharp-studio'; (c) imagem repetida visualmente quando o mesmo doador alimenta vários slots",
+      "melhoria_sugerida": "Rotacionar doador por posição (já faz % references.length), aplicar variações de enquadramento por slot no sharp (crop/zoom/ângulo) e marcar review_required para o usuário confirmar"
+    },
+    {
+      "id": "BUG-4",
+      "titulo": "Cache de IA pode misturar configurações entre vendedores (achado do Codex)",
+      "impacto": "alto se confirmar",
+      "onde": "withAICache em ai-router.ts — o scope inclui user_id/config_id/provider/base_url, mas conferir se a CHAVE do cache em ai-cache.ts incorpora o user_id de fato (ou só o task+prompt). Se a chave for só task+prompt, a resposta de um vendedor com config paga serve para outro com config free e vice-versa",
+      "proxima_acao": "rg 'cacheKey|makeKey' src/lib/assertive/ai-cache.ts e garantir user_id na chave quando config presente"
+    },
+    {
+      "id": "BUG-5",
+      "titulo": "Preço/referência pode representar produto pela oferta mais barata sem comprovar liderança (achado do Codex)",
+      "impacto": "médio",
+      "onde": "ranked-offer.ts / price_context em dna.ts — priceRationale usa mediana e deixa claro a base (EXACT vs COMPARABLE), mas conferir se alguma escolha de 'representante' usa min() em vez de mediana/mais-vendidos",
+      "proxima_acao": "auditar ranked-offer.ts e dna.ts price_context: garantir mediana + prova de liderança (highlights) em vez de menor preço"
+    },
+    {
+      "id": "BUG-6",
+      "titulo": "Lag de deploy (instâncias velhas servem código antigo por minutos)",
+      "impacto": "médio para desenvolvimento/testes",
+      "descricao": "Reproduzido 4x: após 'Ready', cliques E2E ainda executam código antigo (ex.: mensagem de erro antiga, instrumentação ausente). Não é bug de produto, mas invalida testes E2E imediatos pós-deploy",
+      "mitigacao": "esperar 3-5min pós-deploy antes de testar; ou adicionar endpoint /api/versao com hash do build para assert nos testes"
+    },
+    {
+      "id": "PEND-1",
+      "titulo": "SEO dos títulos depende do coletor",
+      "impacto": "médio",
+      "descricao": "O copyBrief usa keywords da pesquisa + DNA. Sem coletor, os títulos REAIS dos campeões não entram. O catálogo/highlights já retornam títulos oficiais — injetá-los no copyBrief.benchmark_patterns mesmo sem coletor eleva o SEO a zero custo"
+    },
+    {
+      "id": "PEND-2",
+      "titulo": "Distribuição do coletor sem compra",
+      "impacto": "alto para o recurso de espionagem",
+      "opcoes": [
+        "A) Publicar na Web Store (US$5 únicos — dono não quer pagar)",
+        "B) Botão de download do .zip + guia 'modo desenvolvedor -> carregar compactada' nas Configurações (grátis, fricção média, ~6 cliques)",
+        "C) Bookmarklet (sem permissões de storage do token; captura sob demanda por clique) — mais fraco mas zero instalação",
+        "D) Manter espionagem opcional: fluxo já funciona com catálogo+web sem coletor"
+      ]
+    },
+    {
+      "id": "PEND-3",
+      "titulo": "Carga multiusuário com contas reais",
+      "impacto": "médio",
+      "descricao": "Testado 20 espionage + 10 studio paralelos de UM usuário (todos 200). Falta simular vários membros com contas distintas (rate limits por usuário, locks, fila global do Pollinations por instância)"
+    }
+  ],
+
+  "validacoes_feitas": {
+    "anuncios_publicados_e_auditados": [
+      { "item": "MLB5256497993", "produto": "Garrafa térmica Soprano Cristal 1L preta", "audit": { "score": 88, "fotos": 6 }, "status_ml": "paused" },
+      { "item": "MLB5261249471", "produto": "Cafeteira elétrica Philco PCM22", "audit": { "score": 88, "fotos": 6 }, "status_ml": "paused" }
+    ],
+    "nichos_testados": ["garrafa térmica", "panela elétrica", "trena", "cafeteira", "furadeira (slots pendentes de retry)"],
+    "captura_coletor": { "anuncios_no_cache": 60, "listagens_individuais": ["MLB4719836299", "MLB3662188477"] },
+    "carga": { "espionagem_concorrente": "20/20 OK", "estudio_paralelo": "10/10 OK" }
+  },
+
+  "config_producao": {
+    "env_vars_vercel": ["GEMINI_API_KEY (free tier)", "GROQ_API_KEY (free)", "ASSERTIVE_TEXT_PROVIDER=groq", "ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED (verificar se está definida — o run route exige 'true')", "ASSERTIVE_SEARCH_DAILY_CREDITS (necessária para coleta ScrapingBee; coletor não usa)"],
+    "alerta": "Confirmar em Vercel -> Settings -> Environment Variables se ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED=true existe — sem ela o endpoint /images/jobs/run responde 404 e nenhum slot gera (hipótese forte para '0 fotos' em alguns anúncios)"
+  },
+
+  "o_que_o_dono_reportou": {
+    "fotos_nao_geram": "parcialmente confirmado: BUG-2 (pump) corrigido; BUG-1 aberto; verificar flag do env acima",
+    "fotos_repetidas/ruins": "confirmado: BUG-3 (mesmo doador para vários slots) + qualidade do Pollinations variável",
+    "titulo/descrição genéricos sem SEO": "PEND-1: injetar títulos reais do catálogo/highlights no copyBrief",
+    "não usa anúncio campeão": "parcial: receita visual usa o doador mais forte; cross de TÍTULOS/SEO dos campeões ainda não entra no gerador sem coletor",
+    "erro em qualquer produto que eu peço": "não é erro de pipeline: todos param em needs_input com perguntas técnicas do ML (6+ por anúncio). Decisão de produto necessária: preencher automaticamente com valores de catálogo/web quando houver evidência e rotular 'confira', em vez de perguntar ao vendedor",
+    "coletor deve ser integrado sem instalação": "limitação técnica real: site não pode ler páginas de outro domínio e o ML bloqueia scraping de servidor (provado: até ScrapingBee premium cai no anti-bot). Caminhos válidos: extensão na loja (transparente) / zip+dev mode / bookmarklet"
+  },
+
+  "sugestao_ordem_de_ataque_para_o_codex": [
+    "1. Confirmar ASSERTIVE_PROGRESSIVE_IMAGE_PIPELINE_ENABLED=true na Vercel (1 min — pode explicar 'não gera fotos')",
+    "2. Reproduzir BUG-1 em localhost com instrumentação ativa e corrigir a causa real",
+    "3. Garantir user_id na chave do cache de IA (BUG-4)",
+    "4. Injetar títulos reais do catálogo/highlights no copyBrief (PEND-1) — maior ganho de SEO imediato",
+    "5. Auditar ranked-offer/dna para preço por mediana+liderança (BUG-5)",
+    "6. Variação de enquadramento por slot no Estúdio (BUG-3) para eliminar repetição visual",
+    "7. Definir distribuição do coletor (PEND-2) com o dono",
+    "8. Teste multiusuário com 2-3 contas reais (PEND-3)"
+  ],
+
+  "comandos_uteis": {
+    "typecheck": "npx tsc --noEmit",
+    "testes_assertive": "npx vitest run src/lib/assertive src/app/api/assertive",
+    "deploy_producao": "npx vercel --prod --yes (após npx vercel login; token via --token expira)",
+    "auditar_anuncio": "POST /api/assertive/listings/[id]/audit",
+    "pausar_anuncio": "POST /api/assertive/listings/[id]/pause",
+    "testes_e2e_noturnos": "tests/e2e-research-refresh.test.ts, tests/e2e-collect-diag.test.ts (skipIf E2E_RESEARCH), scripts/e2e-collect.mjs (CDP)"
+  }
+}
