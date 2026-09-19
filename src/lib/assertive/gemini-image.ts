@@ -175,6 +175,8 @@ export async function editProductImage(input: EditProductImageInput): Promise<Pr
   throw new Error(`Falha ao melhorar a imagem. Último erro: ${lastError}`)
 }
 
+let pollinationsQueue: Promise<void> = Promise.resolve()
+
 export async function generateProductImage(input: GenerateProductImageInput): Promise<ProductImageGenerationResult> {
   const apiKeys = imageApiKeys(input.apiKey)
   if (!apiKeys.length) throw new Error('GEMINI_API_KEY ausente para geração de imagem.')
@@ -330,6 +332,10 @@ Retorne exatamente uma imagem.`
     }
     }
   }
+
+  // Pollinations anônimo: 1 req/~5s por IP. Fila global espaça as chamadas.
+  pollinationsQueue = pollinationsQueue.then(() => new Promise(r => setTimeout(r, 6000)))
+  const runInQueue = pollinationsQueue.catch(() => {})
 
   // FALLBACK GRATUITO E ILIMITADO: quando o Gemini recusa (cota/crédito,
   // HTTP 429/403), o Pollinations (flux, sem chave) assume a geração.
