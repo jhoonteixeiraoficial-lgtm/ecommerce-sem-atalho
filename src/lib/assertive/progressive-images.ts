@@ -252,7 +252,7 @@ async function loadDefaultReferences(job: ImageJob, userId: string): Promise<Loa
     asset,
     buffer: await downloadOwnedImageAsset(userId, asset.id),
     mime_type: asset.mime_type,
-    url: asset.public_url ?? null,
+    url: asset.public_url ?? (asset.metadata as { source_url?: string } | null)?.source_url ?? null,
   }))
 }
 

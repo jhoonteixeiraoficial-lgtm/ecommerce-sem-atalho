@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Assertive Espionagem",
+  "version": "1.4.0",
+  "description": "Captura páginas públicas do Mercado Livre para o Assertive (dados públicos, sem cookies).",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://ecommerce-sem-atalho.vercel.app/*",
+    "https://lista.mercadolivre.com.br/*",
+    "https://www.mercadolivre.com.br/*",
+    "https://produto.mercadolivre.com.br/*"
+  ],
+  "content_scripts": [
+    { "matches": ["https://lista.mercadolivre.com.br/*", "https://www.mercadolivre.com.br/*", "https://produto.mercadolivre.com.br/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}
