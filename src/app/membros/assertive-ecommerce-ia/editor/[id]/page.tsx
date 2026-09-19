@@ -421,7 +421,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   })
 
   useEffect(() => {
-    if (!progressiveMode) return
+    // Consulta os jobs em qualquer modo — o pump precisa do snapshot para
+    // processar os slots mesmo fora do modo progressive.
     const controller = new AbortController()
     void refreshProgressiveJobs(controller.signal).catch(loadError => {
       if (!controller.signal.aborted) {
@@ -439,7 +440,12 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   }, [id, progressiveMode])
 
   useEffect(() => {
-    if (!progressiveMode || !imageJobSnapshot || ['publishing', 'published'].includes(listing?.status || '')) return
+    // O pump roda SEMPRE que houver jobs processáveis — o modo progressive
+    // apenas muda a UI. Sem isto, anúncios fora do modo progressive ficam
+    // eternamente em 0 fotos aguardando clique manual.
+    const hasWork = Boolean(imageJobSnapshot?.runnable)
+    if (!imageJobSnapshot || ['publishing', 'published'].includes(listing?.status || '')) return
+    if (!progressiveMode && !hasWork) return
     const backoff = imageBackoffUntil.current - Date.now()
     if (backoff > 0) {
       const timer = window.setTimeout(() => setImagePumpTick(tick => tick + 1), backoff)
