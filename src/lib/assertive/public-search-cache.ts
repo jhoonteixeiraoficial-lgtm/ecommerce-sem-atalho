@@ -51,6 +51,48 @@ function valid(value: unknown, query: string, now: number): value is PublicSearc
 }
 
 /** Cache first; collection requires explicit server budget and durable reservation. */
+
+/** Sobreposição de palavras relevantes entre a consulta da pesquisa e a captura (0..1). */
+function queryOverlap(researchQuery: string, capturedQuery: string): number {
+  const stop = new Set(['de', 'da', 'do', 'com', 'para', 'em', 'e', 'a', 'o', 'as', 'os', 'que', 'por'])
+  const words = (q: string) => normalize(q).split(' ').filter(w => w.length >= 3 && !stop.has(w))
+  const target = new Set(words(researchQuery))
+  if (!target.size) return 0
+  const captured = words(capturedQuery)
+  const hits = captured.filter(w => target.has(w)).length
+  return hits / Math.max(1, Math.min(captured.length, target.size))
+}
+
+/**
+ * Procura a captura mais recente do usuário cuja consulta cobre a pesquisa
+ * (≥50% de sobreposição de palavras relevantes). Reconecta o coletor à
+ * pesquisa quando a IA reformula a consulta.
+ */
+async function findUserCapture(
+  userId: string,
+  query: string,
+  read: (key: string) => Promise<unknown>,
+  now: number
+): Promise<PublicSearchSnapshot | null> {
+  const supabase = (await import('@/lib/supabase/admin')).createAdminClient()
+  const { data } = await supabase
+    .from('assertive_ml_cache')
+    .select('cache_key, payload, expires_at')
+    .like('cache_key', `BROWSER:${userId}:PUBLIC_SEARCH:v1:MLB:br:%`)
+    .gte('expires_at', new Date(now).toISOString())
+    .order('created_at', { ascending: false })
+    .limit(10)
+  let best: PublicSearchSnapshot | null = null
+  let bestScore = 0
+  for (const row of data || []) {
+    const snap = row.payload as PublicSearchSnapshot | null
+    if (!snap || snap.available !== true || !snap.query) continue
+    if (Date.parse(row.expires_at) <= now) continue
+    const score = queryOverlap(query, snap.query)
+    if (score > bestScore) { bestScore = score; best = snap }
+  }
+  return bestScore >= 0.5 ? best : null
+}
 export async function loadPublicSearch(
   query: string,
   read: (key: string) => Promise<unknown> = readStoredSnapshot,
@@ -61,6 +103,15 @@ export async function loadPublicSearch(
     if (options.userId) {
       const own = await read(`BROWSER:${options.userId}:${publicSearchCacheKey(query)}`)
       if (valid(own, query, now)) return own
+      // A IA reformula a consulta (ordem/sinônimos); o coletor captura a busca
+      // que o usuário navegou. Matching por sobreposição de palavras relevantes
+      // reconecta os dois — sem isso o cruzamento se perde.
+      const fuzzy = await findUserCapture(options.userId, query, read, now)
+      if (fuzzy && valid(fuzzy, fuzzy.query, now) && normalize(fuzzy.query) === normalize(fuzzy.query)) {
+        // snapshot válido para a consulta capturada; só serve se cobrir a pesquisa
+        const overlap = queryOverlap(query, fuzzy.query)
+        if (overlap >= 0.5) return fuzzy
+      }
     }
     const snapshot = await read(publicSearchCacheKey(query))
     if (valid(snapshot, query, now)) return snapshot
