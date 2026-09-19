@@ -9,7 +9,7 @@ export const runtime = 'nodejs'
 const SCRIPT = String.raw`// ==UserScript==
 // @name         Assertive — Referências públicas
 // @namespace    assertive-collector
-// @version      1.2.0
+// @version      1.3.0
 // @description  Envia somente trechos públicos da busca ou anúncio após sua confirmação. Não navega, não publica e não envia cookies.
 // @match        https://lista.mercadolivre.com.br/*
 // @match        https://www.mercadolivre.com.br/*/p/MLB*
@@ -72,43 +72,54 @@ const SCRIPT = String.raw`// ==UserScript==
       return clone.outerHTML;
     }).join('\n');
   }
+  // v1.3: AUTO-ENVIO — instalar o coletor é o consentimento. Nada de botão
+  // por página: ao abrir uma busca ou anúncio, os trechos públicos seguem
+  // sozinhos (sanitizados, deduplicados por sessão e limitados a 1 por URL).
   function mount() {
-    if (!kind() || document.getElementById('assertive-collect-panel')) return;
+    if (document.getElementById('assertive-collect-panel')) return;
+    var type = kind();
+    if (!type) return;
+    var url = cleanUrl(location.href, false);
+    if (!url || sent === url || pending) return;
+    var seen = [];
+    try { seen = JSON.parse(sessionStorage.getItem('assertive-collect-sent') || '[]'); } catch (_) {}
+    if (seen.indexOf(url) !== -1) { sent = url; return; }
+
     var panel = document.createElement('aside'); panel.id = 'assertive-collect-panel';
-    panel.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647;max-width:290px;padding:14px;border-radius:12px;background:#171717;color:#fff;font:13px/1.5 system-ui;box-shadow:0 3px 16px #0006';
-    var text = document.createElement('p'); text.textContent = 'Assertive: envie só os dados públicos desta página para sua pesquisa. Sem cookies, login ou navegação automática.';
-    var button = document.createElement('button'); button.type = 'button'; button.textContent = 'Enviar esta página';
-    button.style.cssText = 'padding:9px 12px;margin-top:8px;background:#fbbf24;color:#111;border:0;border-radius:7px;cursor:pointer;font-weight:600';
-    var status = document.createElement('p'); status.setAttribute('role','status'); status.style.marginTop = '8px';
-    button.onclick = function () {
-      var type = kind(); var url = cleanUrl(location.href, false);
-      if (!type || !url || pending || sent === url) return;
-      var html = publicHtml(type);
-      if (!html || html.length > 1500000) { status.textContent = 'Página incompleta ou muito grande. Nada foi enviado.'; return; }
-      pending = true; button.disabled = true; status.textContent = 'Enviando trechos públicos…';
-      function failed(message) { pending = false; button.disabled = false; status.textContent = message; }
-      GM_xmlhttpRequest({
-        method: 'POST', url: APP_URL + '/api/assertive/collect', anonymous: true, timeout: 20000,
-        headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
-        data: JSON.stringify({ kind: type, url: url, html: html }),
-        onload: function (r) {
-          var data; try { data = JSON.parse(r.responseText); } catch (_) { data = {}; }
-          if (r.status >= 200 && r.status < 300 && data.ok) {
-            sent = url; pending = false; button.textContent = 'Página enviada';
-            status.textContent = type === 'search' ? data.entries + ' anúncios recebidos. Abra um concorrente para enviar também suas fotos e ficha.' : 'Anúncio recebido. Volte ao Assertive e atualize as referências.';
-          } else failed(data.error || 'Não foi possível enviar. Tente novamente.');
-        },
-        onerror: function () { failed('Sem conexão com o Assertive. Tente novamente.'); },
-        ontimeout: function () { failed('Tempo esgotado. Tente novamente.'); }
-      });
-    };
-    panel.append(text, button, status); document.body.appendChild(panel);
+    panel.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647;max-width:270px;padding:12px;border-radius:12px;background:#171717;color:#fff;font:13px/1.5 system-ui;box-shadow:0 3px 16px #0006';
+    var status = document.createElement('p'); status.setAttribute('role','status');
+    status.textContent = 'Assertive: capturando dados públicos desta página… (sem cookies e sem navegação automática)';
+    panel.append(status); document.body.appendChild(panel);
+
+    pending = true;
+    function done(message) {
+      pending = false;
+      try { seen.push(url); sessionStorage.setItem('assertive-collect-sent', JSON.stringify(seen.slice(-40))); } catch (_) {}
+      status.textContent = message;
+      setTimeout(function () { panel.remove(); }, 6000);
+    }
+    var html = publicHtml(type);
+    if (!html || html.length > 1500000) { done('Página incompleta — nada foi enviado.'); return; }
+    GM_xmlhttpRequest({
+      method: 'POST', url: APP_URL + '/api/assertive/collect', anonymous: true, timeout: 20000,
+      headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+      data: JSON.stringify({ kind: type, url: url, html: html }),
+      onload: function (r) {
+        var data; try { data = JSON.parse(r.responseText); } catch (_) { data = {}; }
+        if (r.status >= 200 && r.status < 300 && data.ok) {
+          done(type === 'search' ? '✓ ' + data.entries + ' anúncios capturados para sua análise.' : '✓ Anúncio capturado. As referências entram na próxima análise.');
+        } else if (r.status === 409) {
+          done('Página de verificação do ML — resolva o desafio e ela será capturada.');
+        } else done('Captura não enviada (' + r.status + ').');
+      },
+      onerror: function () { done('Sem conexão com o Assertive.'); },
+      ontimeout: function () { done('Tempo esgotado.'); }
+    });
   }
   mount();
-  // Wait only for rendering; this never submits or opens a page automatically.
   var observer = new MutationObserver(mount);
   observer.observe(document.body, { childList: true, subtree: true });
-  setTimeout(function () { observer.disconnect(); }, 15000);
+  setTimeout(function () { observer.disconnect(); }, 20000);
 })();
 `
 

@@ -726,6 +726,36 @@ export async function researchMarket(
   const valid = dossiers.filter((d): d is CompetitorDossier => d !== null)
   const catalogProductIds = new Set(valid.map(d => d.product_id))
 
+  // Referências visuais do CATÁLOGO: fotos oficiais via API (permitida e
+  // sem anti-bot) para os dossiês mais fortes que ficaram sem galeria.
+  // Dá ao estúdio de fotos e à receita visual um doador automático,
+  // mesmo sem espionagem prévia.
+  const needsPictures = valid
+    .filter(d => (!d.pictures || d.pictures.length === 0) && /^MLB\d+$/.test(d.product_id))
+    .sort((a, b) => (b.competitive_reference_strength || 0) - (a.competitive_reference_strength || 0))
+    .slice(0, 5)
+  if (needsPictures.length && token) {
+    await mapLimitSettled(needsPictures, 3, async dossier => {
+      try {
+        const product = await mlGet<{ pictures?: Array<{ url?: string; secure_url?: string }> }>(
+          `/products/${dossier.product_id}`,
+          token,
+          { ttl: 3600 }
+        )
+        const urls = (product.pictures || [])
+          .map(p => p.secure_url || p.url)
+          .filter((u): u is string => Boolean(u && u.startsWith('https://')))
+          .slice(0, 12)
+        if (urls.length) {
+          dossier.pictures = urls
+          dossier.picture_count = urls.length
+        }
+      } catch {
+        // sem fotos do catálogo: segue sem — não bloqueia a pesquisa
+      }
+    })
+  }
+
   // Enriquecimento público: páginas de anúncio verificadas (coletor do
   // navegador ou ScrapingBee) somam fotos, descrição real, vendas observadas
   // e exposição orgânica aos dossiês de catálogo com o mesmo item_id.
