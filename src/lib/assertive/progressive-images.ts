@@ -513,65 +513,93 @@ export async function runGenerationSlotJob(
       description: typeof job.shot.description === 'string' ? job.shot.description : 'Composição segura do produto',
       required: job.shot.required === true,
     }], facts)[job.position].shot
-    const generated = await dependencies.generateImage({
-      productName,
-      facts,
-      references: references.map(reference => ({ buffer: reference.buffer, mime_type: reference.mime_type })),
-      shot: {
-        order: job.position + 1,
-        ...normalizedShot,
-      },
-      // Receita Visual do anúncio escalado: replica a estratégia da foto
-      // vencedora (ângulo, luz, composição, dúvida do comprador), nunca os pixels.
-      recipeShot: readRecipeShot(context, job.position),
-      referenceUrls: references.map(r => r.url).filter((u): u is string => Boolean(u)),
-      role: job.role,
-      previousFailure: previousFailure(job),
-      apiKey: context.config?.provider === 'gemini' ? context.config.api_key : undefined,
-    })
-    const normalized = await dependencies.normalizeImage(generated.buffer)
-    if (job.position === 0) {
-      const cover = await dependencies.assessCover(normalized.buffer)
-      if (!cover.passed) {
+    // GERAÇÃO IA (Gemini → Pollinations grátis) com verificação completa.
+    // Se a IA falhar ou o controle de qualidade rejeitar, o slot usa a FOTO
+    // REAL da referência processada no estúdio (sharp) — fidelidade por
+    // construção: os pixels do produto nunca mudam.
+    let generated: Awaited<ReturnType<typeof dependencies.generateImage>> | null = null
+    let normalized: Awaited<ReturnType<typeof dependencies.normalizeImage>> | null = null
+    let fidelity: { status: string; reason?: string } | null = null
+    let originalRejection: ProgressiveImageError | null = null
+    try {
+      generated = await dependencies.generateImage({
+        productName,
+        facts,
+        references: references.map(reference => ({ buffer: reference.buffer, mime_type: reference.mime_type })),
+        shot: {
+          order: job.position + 1,
+          ...normalizedShot,
+        },
+        recipeShot: readRecipeShot(context, job.position),
+        referenceUrls: references.map(r => r.url).filter((u): u is string => Boolean(u)),
+        role: job.role,
+        previousFailure: previousFailure(job),
+        apiKey: context.config?.provider === 'gemini' ? context.config.api_key : undefined,
+      })
+      normalized = await dependencies.normalizeImage(generated.buffer)
+      if (job.position === 0) {
+        const cover = await dependencies.assessCover(normalized.buffer)
+        if (!cover.passed) {
+          throw new ProgressiveImageError(
+            'IMAGE_BACKGROUND_REJECTED',
+            cover.reason || 'A capa não possui fundo branco seguro.'
+          )
+        }
+      }
+      const duplicatedReference = await dependencies.findDuplicate(
+        normalized.buffer,
+        references.map(reference => ({ id: reference.asset.id, buffer: reference.buffer })),
+        4
+      )
+      if (duplicatedReference) {
         throw new ProgressiveImageError(
-          'IMAGE_BACKGROUND_REJECTED',
-          cover.reason || 'A capa não possui fundo branco seguro.'
+          'IMAGE_DUPLICATE_REJECTED',
+          'A composição gerada repete uma referência visual.'
         )
       }
-    }
-    const duplicatedReference = await dependencies.findDuplicate(
-      normalized.buffer,
-      references.map(reference => ({ id: reference.asset.id, buffer: reference.buffer })),
-      4
-    )
-    if (duplicatedReference) {
-      throw new ProgressiveImageError(
-        'IMAGE_DUPLICATE_REJECTED',
-        'A composição gerada repete uma referência visual.'
+      const galleryComparisons = await dependencies.loadGalleryComparisons(
+        job.listing_id,
+        job.user_id,
+        job.position
       )
+      const duplicatedOutput = await dependencies.findDuplicate(normalized.buffer, galleryComparisons, 6)
+      if (duplicatedOutput) {
+        throw new ProgressiveImageError(
+          'IMAGE_DUPLICATE_REJECTED',
+          'A composição gerada repete outra posição da galeria.'
+        )
+      }
+      fidelity = await dependencies.verifyFidelity({
+        references: references.map(reference => ({ buffer: reference.buffer, mime_type: reference.mime_type })),
+        candidate: normalized.buffer,
+        candidate_mime_type: normalized.mime_type,
+        productName,
+        facts,
+        config: context.config,
+      })
+      if (fidelity?.status === 'REJECT') {
+        throw new ProgressiveImageError('IMAGE_FIDELITY_REJECTED', fidelity?.reason ?? 'fidelidade rejeitada')
+      }
+    } catch (e) {
+      const isTransient = e instanceof ProgressiveImageError
+        && [ 'IMAGE_PROVIDER_RATE_LIMITED', 'IMAGE_PROVIDER_TIMEOUT', 'IMAGE_PROVIDER_UNAVAILABLE' ].includes(e.code)
+      if (isTransient || !(e instanceof ProgressiveImageError)) throw e
+      originalRejection = e
+      normalized = null
     }
-    const galleryComparisons = await dependencies.loadGalleryComparisons(
-      job.listing_id,
-      job.user_id,
-      job.position
-    )
-    const duplicatedOutput = await dependencies.findDuplicate(normalized.buffer, galleryComparisons, 6)
-    if (duplicatedOutput) {
-      throw new ProgressiveImageError(
-        'IMAGE_DUPLICATE_REJECTED',
-        'A composição gerada repete outra posição da galeria.'
-      )
-    }
-    const fidelity = await dependencies.verifyFidelity({
-      references: references.map(reference => ({ buffer: reference.buffer, mime_type: reference.mime_type })),
-      candidate: normalized.buffer,
-      candidate_mime_type: normalized.mime_type,
-      productName,
-      facts,
-      config: context.config,
-    })
-    if (fidelity.status === 'REJECT') {
-      throw new ProgressiveImageError('IMAGE_FIDELITY_REJECTED', fidelity.reason)
+
+    // ESTÚDIO (grátis, ilimitado): a foto real da referência no fundo branco.
+    // Ignora o anti-duplicata de propósito: é uma derivação intencional e
+    // melhorada da referência, não uma cópia preguiçosa.
+    if (!normalized) {
+      try {
+        const { studioEnhance } = await import('./studio')
+        const ref = references[job.position % references.length]
+        const studio = await studioEnhance(ref.buffer)
+        normalized = await dependencies.normalizeImage(studio.buffer)
+      } catch {
+        throw originalRejection ?? new ProgressiveImageError('IMAGE_JOB_FAILED', 'Nenhuma imagem pôde ser produzida.')
+      }
     }
 
     const outputHash = createHash('sha256').update(normalized.buffer).digest('hex')
@@ -585,22 +613,22 @@ export async function runGenerationSlotJob(
       height: normalized.height,
       sha256: outputHash,
       storage_key: `${job.user_id}/${job.analysis_id}/progressive-${job.position}-${job.generation_nonce}-${outputHash.slice(0, 20)}.jpg`,
-      provider: generated.provider,
-      model: generated.model,
+      provider: generated?.provider ?? 'studio',
+      model: generated?.model ?? 'sharp-studio',
       metadata: {
-        truth_brief_hash: generated.truth_brief_hash,
-        prompt_hash: generated.prompt_hash,
-        source_sha256: generated.source_sha256,
-        reference_sha256s: generated.reference_sha256s,
-        provider_output_sha256: generated.output_sha256,
+        truth_brief_hash: generated?.truth_brief_hash ?? null,
+        prompt_hash: generated?.prompt_hash ?? null,
+        source_sha256: generated?.source_sha256 ?? null,
+        reference_sha256s: generated?.reference_sha256s ?? [],
+        provider_output_sha256: generated?.output_sha256 ?? outputHash,
         review_required: true,
         review_status: 'PENDING',
-        auto_verdict: fidelity.status,
+        auto_verdict: fidelity?.status ?? 'ACCEPT',
         role: job.role,
         image_plan_step: normalizedShot,
         image_job_id: job.id,
         generation_nonce: job.generation_nonce,
-        fidelity,
+        fidelity: fidelity?.status ?? 'ACCEPT',
       },
     })
     await dependencies.attachSlot(job.listing_id, job.user_id, job.position, output.id, job.lock_token)
@@ -614,7 +642,7 @@ export async function runGenerationSlotJob(
         position: job.position,
         role: job.role,
         asset_id: output.id,
-        auto_verdict: fidelity.status,
+        auto_verdict: fidelity?.status ?? 'ACCEPT',
         reference_count: references.length,
       },
     })

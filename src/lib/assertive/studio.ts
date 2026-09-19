@@ -46,22 +46,13 @@ export async function studioEnhance(
   const left = Math.round((CANVAS - finalW) / 2)
   const top = Math.round((CANVAS - finalH) / 2)
 
-  const buffer = await sharp(trimmed)
-    .resize(finalW, finalH)
-    .modulate({ brightness: 1.04, saturation: 1.02 })
-    .sharpen({ sigma: 0.8 })
-    .composite([{
-      input: {
-        create: {
-          width: CANVAS,
-          height: CANVAS,
-          channels: 3,
-          background,
-        },
-      },
-      left: 0,
-      top: 0,
-    }])
+  const canvas = await sharp({
+    create: { width: CANVAS, height: CANVAS, channels: 3, background },
+  })
+    .jpeg({ quality: 95 })
+    .toBuffer()
+
+  const buffer = await sharp(canvas)
     .composite([{ input: await sharp(trimmed).resize(finalW, finalH).png().toBuffer(), left, top }])
     .jpeg({ quality: 88, mozjpeg: true })
     .toBuffer()

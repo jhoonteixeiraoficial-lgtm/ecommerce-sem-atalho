@@ -475,6 +475,18 @@ describe('progressive image orchestrator', () => {
     expect(state.listingImages).toEqual([])
   })
 
+  it('falls back to the free studio render of the reference when AI output is rejected', async () => {
+    const sharp = (await import('sharp')).default
+    const realPng = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#888888' } }).png().toBuffer()
+    const state = createState({ next: job({ position: 1, role: 'DETAIL' }) })
+    state.dependencies.loadReferences = async () => [{ asset: imageAsset(), buffer: realPng, mime_type: 'image/png', url: null }]
+    state.dependencies.verifyFidelity = vi.fn().mockResolvedValue({
+      status: 'REJECT', score: 10, reason: 'objeto completamente diferente.', reason_codes: [], composition_is_new: true,
+    })
+    const result = await runNextProgressiveImageJob({ listingId: 'listing-1', userId: 'user-1' }, state.dependencies)
+    expect(result.snapshot.slots[1]).toMatchObject({ status: 'REVIEW' })
+  })
+
   it('stops billable regeneration when fidelity rejects a changed product', async () => {
     const state = createState({ next: job({ position: 1, role: 'DETAIL' }) })
     state.dependencies.verifyFidelity = vi.fn().mockResolvedValue({
