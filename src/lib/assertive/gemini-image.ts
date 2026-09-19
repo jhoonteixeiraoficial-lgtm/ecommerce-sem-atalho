@@ -356,9 +356,14 @@ Retorne exatamente uma imagem.`
       try {
         await runInQueue
         const attemptSeed = seed + attempt * 7919
-        const attemptUrl = pollinationsUrl.replace(/seed=\d+/, `seed=${attemptSeed}`)
+        // alterna estratégias: kontext (âncora) quando disponível, flux puro
+        // como alternativa — o serviço oscila e uma via pode ressuscitar a outra
+        const useAnchor = anchorUrlEarly !== undefined && anchorUrlEarly !== null && attempt !== 1
+        const attemptUrl = useAnchor
+          ? pollinationsUrl.replace(/seed=\d+/, `seed=${attemptSeed}`)
+          : `https://image.pollinations.ai/prompt/${encodeURIComponent(freePrompt.slice(0, 1800))}?width=1024&height=1024&model=flux&nologo=true&seed=${attemptSeed}`
         const res = await fetch(attemptUrl, { signal: controller.signal })
-        if (!res.ok) { lastError = `pollinations HTTP ${res.status}`; continue }
+        if (!res.ok) { lastError = `pollinations HTTP ${res.status} (${useAnchor ? 'kontext' : 'flux'})`; continue }
         const buffer = Buffer.from(await res.arrayBuffer())
         if (buffer.byteLength > 20_000) {
           return {
