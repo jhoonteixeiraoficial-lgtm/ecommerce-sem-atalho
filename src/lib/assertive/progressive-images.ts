@@ -581,10 +581,11 @@ export async function runGenerationSlotJob(
         throw new ProgressiveImageError('IMAGE_FIDELITY_REJECTED', fidelity?.reason ?? 'fidelidade rejeitada')
       }
     } catch (e) {
-      const isTransient = e instanceof ProgressiveImageError
-        && [ 'IMAGE_PROVIDER_RATE_LIMITED', 'IMAGE_PROVIDER_TIMEOUT', 'IMAGE_PROVIDER_UNAVAILABLE' ].includes(e.code)
-      if (isTransient || !(e instanceof ProgressiveImageError)) throw e
-      originalRejection = e
+      // Qualquer falha de geração (cota, HTTP 5xx, rejeição de qualidade) cai
+      // no Estúdio — grátis e imediato. Só configuração ausente relança.
+      const isConfig = e instanceof ProgressiveImageError && e.code === 'IMAGE_PROVIDER_CONFIGURATION'
+      if (isConfig) throw e
+      originalRejection = e instanceof ProgressiveImageError ? e : null
       normalized = null
     }
 
