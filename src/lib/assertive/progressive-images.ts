@@ -404,13 +404,25 @@ export async function runReferenceSearchJob(
     if (!accepted.length) {
       // FALLBACK: fotos oficiais do doador (catálogo/espionagem) viram
       // referências — o img2img gratuito ancora nelas e o slot gera.
-      const donorUrls = (context.listing.attributes as { photo_recipe?: { donor_urls?: string[] } } | null)?.photo_recipe?.donor_urls || []
+      // Doadores FRESCOS: lista congelada + research atual da análise
+      // (o "Atualizar referências" re-cruza com o coletor a qualquer momento).
+      const donorUrls: string[] = ((context.listing.attributes as { photo_recipe?: { donor_urls?: string[] } } | null)?.photo_recipe?.donor_urls || []).slice()
+      try {
+        const admin = (await import('@/lib/supabase/admin')).createAdminClient()
+        const { data: an } = await admin.from('assertive_analyses').select('research').eq('id', job.analysis_id).maybeSingle()
+        const comps = (an?.research as { competitors?: Array<{ pictures?: string[]; competitive_reference_strength?: number }> } | null)?.competitors || []
+        const fresh = comps
+          .filter(c => Array.isArray(c.pictures) && c.pictures.length > 0)
+          .sort((a, b) => (b.competitive_reference_strength || 0) - (a.competitive_reference_strength || 0))
+          .slice(0, 3)
+        for (const c of fresh) donorUrls.push(...(c.pictures ?? []).slice(0, 2))
+      } catch { /* research indisponível: segue com a lista congelada */ }
+      const uniqUrls = [...new Set(donorUrls)].filter(u => u.startsWith('https://')).slice(0, 4)
       const sharp = (await import('sharp')).default
       const { createReferenceAsset } = await import('./image-assets')
-      const admin = (await import('@/lib/supabase/admin')).createAdminClient()
       const created: ImageAsset[] = []
       let errSample = ''
-      for (const url of donorUrls) {
+      for (const url of uniqUrls) {
         try {
           const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
           if (!res.ok) { errSample = `HTTP ${res.status} em ${url.slice(0, 60)}`; continue }
