@@ -520,7 +520,7 @@ export async function runGenerationSlotJob(
     let generated: Awaited<ReturnType<typeof dependencies.generateImage>> | null = null
     let normalized: Awaited<ReturnType<typeof dependencies.normalizeImage>> | null = null
     let fidelity: { status: string; reason?: string } | null = null
-    let originalRejection: ProgressiveImageError | null = null
+    let originalRejection: unknown = null
     try {
       generated = await dependencies.generateImage({
         productName,
@@ -585,7 +585,7 @@ export async function runGenerationSlotJob(
       // no Estúdio — grátis e imediato. Só configuração ausente relança.
       const isConfig = e instanceof ProgressiveImageError && e.code === 'IMAGE_PROVIDER_CONFIGURATION'
       if (isConfig) throw e
-      originalRejection = e instanceof ProgressiveImageError ? e : null
+      originalRejection = e
       normalized = null
     }
 
