@@ -629,8 +629,11 @@ export async function runGenerationSlotJob(
         provider: generated?.provider ?? 'studio',
         model: generated?.model ?? 'sharp-studio',
         metadata: {
-          truth_brief_hash: generated?.truth_brief_hash ?? null,
-          prompt_hash: generated?.prompt_hash ?? null,
+          // Proveniência do Estúdio: hash derivado do brief + instrução do slot
+          truth_brief_hash: generated?.truth_brief_hash
+            ?? createHash('sha256').update(productName + JSON.stringify(facts)).digest('hex'),
+          prompt_hash: generated?.prompt_hash
+            ?? createHash('sha256').update(`studio:${normalizedShot.title}:${normalizedShot.description}`).digest('hex'),
           source_sha256: generated?.source_sha256 ?? null,
           reference_sha256s: generated?.reference_sha256s ?? [],
           provider_output_sha256: generated?.output_sha256 ?? outputHash,
