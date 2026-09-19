@@ -400,14 +400,55 @@ export async function runReferenceSearchJob(
       ownAssetIds: context.ownAssetIds,
       maxAssets: 8,
     })
-    if (!assets.length) {
-      throw new ProgressiveImageError(
-        'REFERENCE_NOT_FOUND',
-        'Nenhuma referência visual exata foi encontrada.',
-        30_000
-      )
+    let accepted = assets
+    if (!accepted.length) {
+      // FALLBACK: fotos oficiais do doador (catálogo/espionagem) viram
+      // referências — o img2img gratuito ancora nelas e o slot gera.
+      const donorUrls = (context.listing.attributes as { photo_recipe?: { donor_urls?: string[] } } | null)?.photo_recipe?.donor_urls || []
+      const sharp = (await import('sharp')).default
+      const { createReferenceAsset } = await import('./image-assets')
+      const admin = (await import('@/lib/supabase/admin')).createAdminClient()
+      const created: ImageAsset[] = []
+      for (const url of donorUrls) {
+        try {
+          const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+          if (!res.ok) continue
+          const bytes = Buffer.from(await res.arrayBuffer())
+          if (bytes.byteLength < 10_000) continue
+          const meta = await sharp(bytes).metadata()
+          const sha256 = createHash('sha256').update(bytes).digest('hex')
+          const storageKey = `${job.user_id}/${job.analysis_id}/ref-${sha256}.jpg`
+          await admin.storage.from('assertive-originals').upload(storageKey, bytes, { contentType: 'image/jpeg', upsert: true })
+          const asset = await createReferenceAsset({
+            user_id: job.user_id,
+            analysis_id: job.analysis_id,
+            bytes,
+            mime_type: 'image/jpeg',
+            width: meta.width ?? 1024,
+            height: meta.height ?? 1024,
+            sha256,
+            storage_key: storageKey,
+            source_url: url,
+            origin: 'COMPETITOR',
+            rights_status: 'REFERENCE_ONLY',
+            metadata: { donor_fallback: true },
+          })
+          created.push(asset)
+          if (created.length >= 3) break
+        } catch {
+          // foto do doador falhou: tenta a próxima
+        }
+      }
+      if (!created.length) {
+        throw new ProgressiveImageError(
+          'REFERENCE_NOT_FOUND',
+          'Nenhuma referência visual exata foi encontrada.',
+          30_000
+        )
+      }
+      accepted = created
     }
-    await dependencies.completeReference(job.id, job.user_id, job.lock_token, assets.map(asset => asset.id))
+    await dependencies.completeReference(job.id, job.user_id, job.lock_token, accepted.map(asset => asset.id))
     await safelyRecord(dependencies, {
       analysis_id: job.analysis_id,
       user_id: job.user_id,
