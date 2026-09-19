@@ -626,6 +626,15 @@ PADRÕES COMPETITIVOS PERMITIDOS (estrutura, nunca valores dos concorrentes):
 ${copyBrief.benchmark_patterns.title_shapes.join(' | ') || 'sem padrão confiável'}
 ${copyBrief.benchmark_patterns.description_shapes.join(' | ') || 'estrutura factual'}
 
+TÍTULOS REAIS DOS ANÚNCIOS CAMPEÕES DESTA BUSCA (aprenda a ESTRUTURA, a ordem
+dos termos e as palavras-chave que eles usam; NUNCA copie um título inteiro):
+${(research.competitors || [])
+  .filter(c => c.title)
+  .sort((a, b) => (b.competitive_reference_strength || 0) - (a.competitive_reference_strength || 0))
+  .slice(0, 5)
+  .map((c, i) => `${i + 1}. ${c.title}`)
+  .join('\n') || 'nenhum título de campeão disponível — use os termos-chave do brief'}
+
 FICHA TÉCNICA DISPONÍVEL NESTA CATEGORIA (preencha o máximo possível COM EVIDÊNCIA):
 ${attributeSchemaForPrompt(schema)}
 

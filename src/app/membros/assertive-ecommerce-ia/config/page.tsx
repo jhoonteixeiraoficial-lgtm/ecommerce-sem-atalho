@@ -218,23 +218,15 @@ export default function ConfigPage() {
           </p>
 
           <ol className="text-gray-400 text-xs space-y-1.5 mb-4 list-decimal list-inside">
-            <li>
-              Instale a extensão gratuita{' '}
-              <a
-                href="https://www.tampermonkey.net/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-amber-400 hover:underline"
-              >
-                Tampermonkey
-              </a>{' '}
-              (Chrome: 'Adicionar ao Chrome' na loja). Versão 1.4
-            </li>
-            <li>Se a página ficar cheia de código, a extensão não está instalada ainda — volte ao passo 1</li>
-            <li>Clique em <strong className="text-gray-300">Instalar coletor</strong>: o Tampermonkey abre a tela de instalação → clique em <strong className="text-gray-300">Instalar</strong> nela</li>
-            <li>No Assertive, use o botão <strong className="text-gray-300">🎯 Espionar agora</strong>: abre a busca do ML, captura sozinho em ~10 segundos e a aba fecha.</li>
-            <li>Se já tinha o coletor antigo instalado, reinstale por cima (v1.4).</li>
-          </ol>
+              <li>
+                Baixe a extensão gratuita:{' '}
+                <a href="/assertive-espionagem.zip" download className="text-amber-400 hover:underline font-semibold">Assertive Espionagem (.zip)</a>
+              </li>
+              <li>Extraia o .zip em uma pasta do computador (botão direito → Extrair tudo)</li>
+              <li>No Chrome: abra <strong className="text-gray-300">chrome://extensions</strong>, ative <strong className="text-gray-300">Modo do desenvolvedor</strong> (canto superior direito)</li>
+              <li>Clique em <strong className="text-gray-300">Carregar sem compactação</strong> e escolha a pasta extraída</li>
+              <li>Pronto: abra a busca no ML e o botão <strong className="text-gray-300">🎯 Espionar agora</strong> no Assertive captura tudo sozinho</li>
+            </ol>
 
           <div className="flex flex-wrap gap-2">
             <a
