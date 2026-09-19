@@ -84,6 +84,23 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load])
 
+  const [espionage, setEspionage] = useState<{ available: boolean; entries: number } | null>(null)
+  useEffect(() => {
+    if (analysis?.status !== 'needs_input') return
+    let active = true
+    const check = async () => {
+      try {
+        const res = await fetch(`/api/assertive/analyses/${id}/espionage`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (active) setEspionage({ available: data.available, entries: data.entries })
+      } catch { /* indicador é best effort */ }
+    }
+    check()
+    const timer = setInterval(check, 15000)
+    return () => { active = false; clearInterval(timer) }
+  }, [analysis?.status, id])
+
   const pollProgress = useEffectEvent(async () => {
     const res = await fetch(`/api/assertive/analyses/${id}`)
     if (!res.ok) return
@@ -363,6 +380,16 @@ export default function AnalisePage({ params }: { params: Promise<{ id: string }
                 </>
               )}
             </button>
+
+            {productName.trim() && espionage && (
+              <div className={`flex items-center gap-2 mb-3 rounded-lg border px-3 py-2 text-xs ${espionage.available ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/30 bg-amber-500/10 text-amber-200'}`}>
+                <span>
+                  {espionage.available
+                    ? `🕵️ Espionagem pronta: ${espionage.entries} anúncios reais capturados — a pesquisa vai cruzar catálogo + coletor.`
+                    : '🕵️ Sem espionagem ainda: abra a busca no ML e navegue (o coletor envia sozinho), depois volte e atualize as referências.'}
+                </span>
+              </div>
+            )}
 
             {productName.trim() && (
               <details className="mt-3 bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3">

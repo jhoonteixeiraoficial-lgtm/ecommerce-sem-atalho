@@ -632,6 +632,29 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setSaving(false)
   }
 
+  /** Estúdio gratuito: fundo branco ilimitado, sem IA, a partir da 1ª foto. */
+  async function runStudio() {
+    if (!listing) return
+    const source = listing.photos?.[0]
+    if (!source) { setError('Envie uma foto própria primeiro.'); return }
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/assertive/listings/${id}/studio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photo_url: source }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.url) throw new Error(data.error || 'Falha no estúdio.')
+      const urls = [...(listing.photos || []), data.url].slice(0, 12)
+      await saveGallery(urls)
+    } catch (studioError) {
+      setError(studioError instanceof Error ? studioError.message : 'Falha no estúdio.')
+      setSaving(false)
+    }
+  }
+
   async function retryGeneratedImage() {
     setSaving(true)
     setError(null)
@@ -1201,15 +1224,27 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-200">
                   <span>{imageReview.warning}</span>
                   {!isPublished && (
-                    <button
-                      type="button"
-                      onClick={retryGeneratedImage}
-                      disabled={saving}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/10 disabled:opacity-50"
-                    >
-                      {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                      Gerar outra opção
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={runStudio}
+                        disabled={saving || !(listing.photos?.length)}
+                        title="Fundo branco ilimitado e grátis, a partir da sua foto (sem IA)"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-400/10 disabled:opacity-50"
+                      >
+                        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                        Estúdio grátis
+                      </button>
+                      <button
+                        type="button"
+                        onClick={retryGeneratedImage}
+                        disabled={saving}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/10 disabled:opacity-50"
+                      >
+                        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                        Gerar outra opção
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
