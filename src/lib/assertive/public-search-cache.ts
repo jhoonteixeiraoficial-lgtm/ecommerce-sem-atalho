@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { collectPublicSearch } from './public-search-collector'
+import { parsePublicSearch } from './public-search'
 import { publicSearchUrl, type PublicSearchSnapshot } from './public-search'
 
 const MAX_AGE_MS = 6 * 60 * 60 * 1000
@@ -84,12 +85,19 @@ async function findUserCapture(
     .limit(10)
   let best: PublicSearchSnapshot | null = null
   let bestScore = 0
+  let bestHasImages = false
   for (const row of data || []) {
     const snap = row.payload as PublicSearchSnapshot | null
     if (!snap || snap.available !== true || !snap.query) continue
     if (Date.parse(row.expires_at) <= now) continue
     const score = queryOverlap(query, snap.query)
-    if (score > bestScore) { bestScore = score; best = snap }
+    const hasImages = (snap.entries || []).some(e => e.image_url)
+    // captura COM fotos vence empate: as âncoras do img2img são o recurso escasso
+    if (score > bestScore || (score === bestScore && hasImages && !bestHasImages)) {
+      bestScore = score
+      best = snap
+      bestHasImages = hasImages
+    }
   }
   return bestScore >= 0.5 ? best : null
 }
@@ -102,16 +110,19 @@ export async function loadPublicSearch(
   try {
     if (options.userId) {
       const own = await read(`BROWSER:${options.userId}:${publicSearchCacheKey(query)}`)
-      if (valid(own, query, now)) return own
+      const ownValid = valid(own, query, now)
+      const ownHasImages = Boolean(own && (own as { entries?: Array<{ image_url?: string | null }> }).entries?.some(e => e.image_url))
       // A IA reformula a consulta (ordem/sinônimos); o coletor captura a busca
-      // que o usuário navegou. Matching por sobreposição de palavras relevantes
-      // reconecta os dois — sem isso o cruzamento se perde.
-      const fuzzy = await findUserCapture(options.userId, query, read, now)
-      if (fuzzy && valid(fuzzy, fuzzy.query, now) && normalize(fuzzy.query) === normalize(fuzzy.query)) {
-        // snapshot válido para a consulta capturada; só serve se cobrir a pesquisa
-        const overlap = queryOverlap(query, fuzzy.query)
-        if (overlap >= 0.5) return fuzzy
-      }
+      // que o usuário navegou. Matching por sobreposição reconecta os dois —
+      // e captura COM fotos vence quando a exata não tem (parser antigo).
+      const fuzzy = await findUserCapture(options.userId, query, read, now).catch(() => null)
+      const fuzzySnap = fuzzy && valid(fuzzy, fuzzy.query, now) ? fuzzy : null
+      const fuzzyOverlap = fuzzySnap ? queryOverlap(query, fuzzySnap.query) : 0
+      const fuzzyHasImages = fuzzySnap ? (fuzzySnap.entries || []).some(e => e.image_url) : false
+      if (ownValid && ownHasImages) return own
+      if (fuzzySnap && fuzzyHasImages && fuzzyOverlap >= 0.5) return fuzzySnap
+      if (ownValid) return own
+      if (fuzzySnap && fuzzyOverlap >= 0.5) return fuzzySnap
     }
     const snapshot = await read(publicSearchCacheKey(query))
     if (valid(snapshot, query, now)) return snapshot
@@ -121,4 +132,27 @@ export async function loadPublicSearch(
   return { available: false, query, observed_at: new Date(now).toISOString(),
     search_url: publicSearchUrl(query), entries: [],
     unavailable_reason: 'Ranking da busca pública não verificado: sem coleta válida nas últimas 6 horas. A posição no catálogo não substitui esse ranking.' }
+}
+
+/** Re-processa capturas antigas do usuário com o parser atual (ganha image_url). */
+export async function reparseUserCaptures(userId: string): Promise<number> {
+  const supabase = (await import('@/lib/supabase/admin')).createAdminClient()
+  const { data } = await supabase
+    .from('assertive_ml_cache')
+    .select('cache_key, payload, expires_at')
+    .like('cache_key', `BROWSER:${userId}:PUBLIC_SEARCH:v1:MLB:br:%`)
+    .gte('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(10)
+  let updated = 0
+  for (const row of data || []) {
+    const payload = row.payload as { html?: string; query?: string; observed_at?: string; entries?: Array<{ image_url?: string | null }> } | null
+    if (!payload?.html || !payload.query || !payload.observed_at) continue
+    if (payload.entries?.some(e => e.image_url)) continue
+    const reparsed = parsePublicSearch(payload.html, payload.query, payload.observed_at)
+    if (!reparsed.available) continue
+    await supabase.from('assertive_ml_cache').update({ payload: { ...payload, ...reparsed } }).eq('cache_key', row.cache_key)
+    updated++
+  }
+  return updated
 }

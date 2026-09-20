@@ -416,6 +416,16 @@ export async function runReferenceSearchJob(
           .sort((a, b) => (b.competitive_reference_strength || 0) - (a.competitive_reference_strength || 0))
           .slice(0, 3)
         for (const c of fresh) donorUrls.push(...(c.pictures ?? []).slice(0, 2))
+        // fotos direto da CAPTURA do coletor: os cards da busca pública
+        const entryImgs = (an?.research as { public_search?: { entries?: Array<{ image_url?: string | null; sponsored?: boolean; organic_position?: number | null }> } } | null)?.public_search?.entries || []
+        const captureImgs = entryImgs
+          .filter(e => !e.sponsored && e.image_url)
+          .sort((a, b) => (a.organic_position ?? 99) - (b.organic_position ?? 99))
+          .slice(0, 3)
+          .map(e => e.image_url!)
+        console.log('[ref-fallback] entries na research=', entryImgs.length, 'com_img=', entryImgs.filter(e=>e.image_url).length, 'an_existe=', !!an, 'ps_existe=', !!(an?.research as {public_search?: unknown} | null)?.public_search)
+        donorUrls.push(...captureImgs)
+        console.log('[ref-fallback] congelado=', donorUrls.length - captureImgs.length, '+ captura=', captureImgs.length, '+ total=', donorUrls.length)
       } catch { /* research indisponível: segue com a lista congelada */ }
       const uniqUrls = [...new Set(donorUrls)].filter(u => u.startsWith('https://')).slice(0, 4)
       const sharp = (await import('sharp')).default

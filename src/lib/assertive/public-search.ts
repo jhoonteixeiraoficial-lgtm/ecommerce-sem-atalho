@@ -8,6 +8,8 @@ export interface PublicSearchEntry {
   catalog_product_id: string | null
   url: string
   title: string
+  /** primeira foto pública do card (CDN do ML) — âncora do img2img */
+  image_url?: string | null
   bestseller_badge: boolean
   sold_quantity: number | null
 }
@@ -53,9 +55,19 @@ export function parsePublicSearch(html: string, query: string, observedAt: strin
     if (variant && /^\d+$/.test(variant)) url.searchParams.set('searchVariation', variant)
     if (itemId && url.hostname === 'www.mercadolivre.com.br') url.searchParams.set('pdp_filters', `item_id:${itemId}`)
     if (sponsored && itemId) url = new URL(`https://www.mercadolivre.com.br/pdp?item_id=${itemId}`)
+    const rawImg = card.find('img').toArray()
+      .map(img => $(img).attr('data-src') || $(img).attr('src') || '')
+      .find(src => src.includes('http2.mlstatic.com')) || ''
+    let imageUrl: string | null = null
+    if (rawImg) {
+      try {
+        const iu = new URL(rawImg)
+        if (iu.protocol === 'https:' && iu.hostname === 'http2.mlstatic.com') imageUrl = iu.href
+      } catch { /* url inválida */ }
+    }
     entries.push({
       position: index + 1, organic_position: sponsored ? null : organicPosition,
-      sponsored, item_id: itemId, catalog_product_id: catalogId, url: url.href, title,
+      sponsored, item_id: itemId, catalog_product_id: catalogId, url: url.href, title, image_url: imageUrl,
       bestseller_badge: card.find('span').toArray().some(el => /^MAIS VENDIDO$/i.test($(el).text().trim())),
       sold_quantity: null,
     })
